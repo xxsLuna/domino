@@ -153,7 +153,7 @@ base_url = https://api.example.com
 allow = /login, /leads, /leads/*
 
 [ui]
-theme = dark            ; light | dark
+theme = auto            ; light | dark | auto（跟随系统）
 primary = #4f46e5       ; 强调色（按钮、链接、卡片标题）
 style = sharp           ; soft（默认，圆角）| sharp（直角）
 radius = 0              ; 直接指定圆角像素（优先于 style）
@@ -191,7 +191,7 @@ on auth_failed -> goto login
 
 `[ui]` 分节是一套轻量、Tailwind 风格的主题系统：
 
-- **`theme`** —— `light` / `dark` 配色。
+- **`theme`** —— `light` / `dark` 配色，或 `auto`（默认）跟随系统深浅色。
 - **`primary`** —— 贯穿全应用的强调色。
 - **`style = sharp`** —— 全局直角（无圆角）、边框更实、卡片扁平。
 - **`radius`** —— 精确指定圆角像素。

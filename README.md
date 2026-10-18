@@ -162,7 +162,7 @@ base_url = https://api.example.com
 allow = /login, /leads, /leads/*
 
 [ui]
-theme = dark            ; light | dark
+theme = auto            ; light | dark | auto (follows the OS)
 primary = #4f46e5       ; accent (buttons, links, card headers)
 style = sharp           ; soft (default, rounded) | sharp (squared-off)
 radius = 0              ; explicit corner radius in px (overrides style)
@@ -201,7 +201,7 @@ Any endpoint exposing one of these APIs works — just point domino at it:
 
 The `[ui]` section is a small, Tailwind-flavored theme system:
 
-- **`theme`** — `light` / `dark` palette.
+- **`theme`** — `light` / `dark` palette, or `auto` (default) to follow the OS color scheme.
 - **`primary`** — the accent color used across the whole app.
 - **`style = sharp`** — squared corners everywhere (no rounding), stronger borders, flat cards.
 - **`radius`** — pin an exact corner radius in pixels.

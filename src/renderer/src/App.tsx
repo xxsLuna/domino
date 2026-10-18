@@ -3,6 +3,7 @@ import { loadLlmConfig, pushRecent } from '@core/session/prefs'
 import type { LLMConfig } from '@core/llm'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from './loadDomino'
 import { getStorage } from './platform'
+import { useSystemTheme } from './useSystemTheme'
 import { Settings } from './screens/Settings'
 import { Welcome } from './screens/Welcome'
 import { Runtime } from './screens/Runtime'
@@ -16,6 +17,14 @@ export function App(): React.JSX.Element {
   const [loaded, setLoaded] = useState<LoadedDomino | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const systemTheme = useSystemTheme()
+
+  // Explicit domino theme wins; theme=auto (and the shell screens) follow the OS.
+  const effectiveTheme =
+    loaded && loaded.domino.ui.theme !== 'auto' ? loaded.domino.ui.theme : systemTheme
+  useEffect(() => {
+    document.documentElement.dataset.theme = effectiveTheme
+  }, [effectiveTheme])
 
   // Boot: BYOK config + OS-level *.domino open requests (double click / open-with).
   useEffect(() => {

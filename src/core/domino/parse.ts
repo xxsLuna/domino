@@ -81,9 +81,12 @@ export function parseDomino(source: string): ParseResult {
   }
 
   /* -------------------------------- ui -------------------------------- */
-  const themeRaw = (get('ui', 'theme') ?? 'light').toLowerCase()
-  if (themeRaw !== 'light' && themeRaw !== 'dark') {
-    errors.push({ line: getLine('ui', 'theme'), message: `[ui] theme must be light or dark, got "${themeRaw}"` })
+  const themeRaw = (get('ui', 'theme') ?? 'auto').toLowerCase()
+  if (themeRaw !== 'light' && themeRaw !== 'dark' && themeRaw !== 'auto') {
+    errors.push({
+      line: getLine('ui', 'theme'),
+      message: `[ui] theme must be light, dark or auto, got "${themeRaw}"`
+    })
   }
   const styleRaw = (get('ui', 'style') ?? 'soft').toLowerCase()
   if (styleRaw !== 'soft' && styleRaw !== 'sharp') {
@@ -107,7 +110,7 @@ export function parseDomino(source: string): ParseResult {
     }
   }
   const ui: UiSection = {
-    theme: themeRaw === 'dark' ? 'dark' : 'light',
+    theme: themeRaw === 'light' || themeRaw === 'dark' ? themeRaw : 'auto',
     style: styleRaw === 'sharp' ? 'sharp' : 'soft',
     density: densityRaw === 'compact' ? 'compact' : 'comfortable',
     primary: get('ui', 'primary'),

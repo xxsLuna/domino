@@ -75,9 +75,21 @@ describe('parseDomino', () => {
     expect(ui.success).toBe('#10b981')
     // defaults when [ui] omitted entirely
     const bare = parseDomino('[meta]\nname = Y\n').domino!.ui
+    expect(bare.theme).toBe('auto')
     expect(bare.style).toBe('soft')
     expect(bare.density).toBe('comfortable')
     expect(bare.radius).toBeUndefined()
+  })
+
+  it('accepts theme = auto and rejects unknown themes', () => {
+    const auto = parseDomino('[meta]\nname = X\n[ui]\ntheme = auto\n')
+    expect(auto.ok).toBe(true)
+    expect(auto.domino!.ui.theme).toBe('auto')
+    const bad = parseDomino('[meta]\nname = X\n[ui]\ntheme = sepia\n')
+    expect(bad.domino!.ui.theme).toBe('auto') // falls back
+    expect(bad.errors.some((e) => e.message.includes('theme must be light, dark or auto'))).toBe(
+      true
+    )
   })
 
   it('rejects invalid [ui] design values', () => {

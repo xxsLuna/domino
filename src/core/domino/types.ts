@@ -22,7 +22,8 @@ export interface ApiSection {
 }
 
 export interface UiSection {
-  theme: 'light' | 'dark'
+  /** `auto` follows the OS color-scheme preference (default). */
+  theme: 'light' | 'dark' | 'auto'
   /** Accent color (buttons, links, card headers). Any CSS color. */
   primary?: string
   /** Corner treatment: sharp = squared-off Tailwind "rounded-none" feel. */

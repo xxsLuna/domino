@@ -323,6 +323,10 @@ pre.error-box {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* The runtime paints its own themed surface — otherwise the light body
+     shows through and panel-colored boxes look like stray black blocks. */
+  background: var(--bg);
+  color: var(--text);
 }
 .toolbar {
   display: flex;

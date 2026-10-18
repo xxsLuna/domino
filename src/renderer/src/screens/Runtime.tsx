@@ -15,6 +15,7 @@ import { CardGrid } from '@core/ui/CardGrid'
 import type { ActionEvent, UiSpec } from '@core/spec'
 import type { LoadedDomino } from '../loadDomino'
 import { getStorage } from '../platform'
+import { useSystemTheme } from '../useSystemTheme'
 
 interface RuntimeProps {
   loaded: LoadedDomino
@@ -26,6 +27,9 @@ interface RuntimeProps {
 export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps): React.JSX.Element {
   const { domino } = loaded
   const storage = getStorage()
+  const systemTheme = useSystemTheme()
+  // theme = auto follows the OS color scheme; explicit light/dark wins over it.
+  const theme = domino.ui.theme === 'auto' ? systemTheme : domino.ui.theme
 
   const sessionRef = useRef(new SessionStore())
   const historyRef = useRef<ChatMessage[]>([])
@@ -295,7 +299,7 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
   return (
     <div
       className="runtime"
-      data-theme={domino.ui.theme}
+      data-theme={theme}
       data-style={domino.ui.style}
       data-density={domino.ui.density}
       style={themeVars(domino.ui)}

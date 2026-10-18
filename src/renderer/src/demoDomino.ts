@@ -17,7 +17,7 @@ base_url = http://127.0.0.1:8787
 allow = /login, /leads, /leads/*, /me
 
 [ui]
-theme = dark
+theme = auto
 primary = #4f46e5
 style = sharp
 density = compact
