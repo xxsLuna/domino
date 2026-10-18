@@ -114,7 +114,8 @@ jobs:
               exit 1
             fi
             echo "$CERTS"
-            DIGEST=$(echo "$CERTS" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+            # "Signer #1 certificate SHA-256 digest: …" or "V2 Signer: certificate SHA-256 digest: …"
+            DIGEST=$(echo "$CERTS" | grep -m1 -oE 'certificate SHA-256 digest: [0-9a-f]+' | awk '{print $NF}')
             echo "APK signing certificate SHA-256: $DIGEST"
             if [ "$DIGEST" != "$ANDROID_CERT_SHA256" ]; then
               echo "::error::release APK is not signed with the domino release key"
