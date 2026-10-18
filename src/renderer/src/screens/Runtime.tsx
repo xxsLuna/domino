@@ -43,6 +43,8 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
   const [canBack, setCanBack] = useState(false)
   const [canForward, setCanForward] = useState(false)
   const [pageName, setPageName] = useState('')
+  // "app" renders like a real website; "inspect" reveals per-component cards.
+  const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
 
   const session = sessionRef.current
 
@@ -344,6 +346,13 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
               BYOK 미설정
             </button>
           ) : null}
+          <button
+            className={`icon-btn${chrome === 'inspect' ? ' active' : ''}`}
+            onClick={() => setChrome(chrome === 'app' ? 'inspect' : 'app')}
+            title={chrome === 'app' ? '구조 보기 (컴포넌트 카드)' : '앱처럼 보기'}
+          >
+            ▦
+          </button>
           <button className="icon-btn" onClick={onOpenSettings} title="설정">
             ⚙
           </button>
@@ -366,6 +375,7 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
             spec={shown}
             onEvent={handleEvent}
             streaming={Boolean(previewSpec)}
+            chrome={chrome}
           />
         ) : (
           <div className="center-state">

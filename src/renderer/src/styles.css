@@ -144,6 +144,11 @@ code {
 .icon-btn:not(:disabled):hover {
   border-color: var(--primary);
 }
+.icon-btn.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
 
 /* ------------------------------ fields ------------------------------ */
 .field {
@@ -467,6 +472,26 @@ pre.error-box {
 }
 .card-body > p:first-child {
   margin-top: 0;
+}
+/* App chrome: components sit directly on the page like a real website —
+   no inspector card, border, or header. Structure mode (▦) restores them. */
+.card-bare {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  overflow: visible;
+}
+.card-grid[data-chrome='app'] .card-bare > .form,
+.card-grid[data-chrome='app'] .card-bare > .section,
+.card-grid[data-chrome='app'] .card-bare > .alert {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+.card-grid[data-chrome='app'] .card-bare > .alert {
+  padding: 10px 12px;
 }
 
 /* ---------------------------- components ---------------------------- */

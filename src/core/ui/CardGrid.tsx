@@ -13,9 +13,14 @@ interface CardGridProps {
   onEvent: (event: ActionEvent) => void
   /** Optional per-node renderer override (e.g. streaming placeholders). */
   streaming?: boolean
+  /**
+   * "app" (default) renders like a real website — no inspector chrome.
+   * "inspect" wraps every node in a labeled card (useful while debugging specs).
+   */
+  chrome?: 'app' | 'inspect'
 }
 
-export function CardGrid({ page, spec, onEvent, streaming }: CardGridProps): React.JSX.Element {
+export function CardGrid({ page, spec, onEvent, streaming, chrome = 'app' }: CardGridProps): React.JSX.Element {
   const runtime: Runtime = {
     dispatch: (e) => {
       onEvent({
@@ -30,16 +35,20 @@ export function CardGrid({ page, spec, onEvent, streaming }: CardGridProps): Rea
 
   return (
     <RuntimeContext.Provider value={runtime}>
-      <div className="card-grid" data-streaming={streaming ? 'true' : undefined}>
+      <div
+        className="card-grid"
+        data-chrome={chrome}
+        data-streaming={streaming ? 'true' : undefined}
+      >
         {page.layout.map((node, i) => (
-          <CardSlot key={node.id ?? `${node.name}-${i}`} node={node} />
+          <CardSlot key={node.id ?? `${node.name}-${i}`} node={node} chrome={chrome} />
         ))}
       </div>
     </RuntimeContext.Provider>
   )
 }
 
-function CardSlot({ node }: { node: CardNode }): React.JSX.Element {
+function CardSlot({ node, chrome }: { node: CardNode; chrome: 'app' | 'inspect' }): React.JSX.Element {
   const def = getComponent(node.name)
   const style: React.CSSProperties = {}
 
@@ -73,6 +82,14 @@ function CardSlot({ node }: { node: CardNode }): React.JSX.Element {
       {children ? <ChildNodes nodes={children} /> : null}
     </Comp>
   )
+
+  if (chrome === 'app') {
+    return (
+      <div className="card card-bare" style={style}>
+        {rendered}
+      </div>
+    )
+  }
 
   return (
     <div className="card" style={style}>

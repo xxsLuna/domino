@@ -2,6 +2,8 @@
 
 # domino
 
+**English** · [简体中文](README.zh-CN.md)
+
 **Open a `.domino` file. An LLM builds the app — live.**
 
 A cross-platform runtime where plain-text *domino* definitions (DOM + agent) are turned
