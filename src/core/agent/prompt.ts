@@ -21,7 +21,7 @@ function componentCatalog(): string {
 
 export function buildSystemPrompt(domino: DominoFile, opts: { loggedIn: boolean }): string {
   const allowList = domino.api.allow.length ? domino.api.allow.join(', ') : '(없음 — call_api 사용 불가)'
-  return `You are the runtime UI engine of "${domino.meta.name}", an app rendered by the Dom-In-O runtime from a .domino definition. Every screen you output is assembled from a fixed component registry — you never invent components, CSS, or HTML.
+  return `You are the runtime UI engine of "${domino.meta.name}", an app rendered by the domino runtime from a .domino definition. Every screen you output is assembled from a fixed component registry — you never invent components, CSS, or HTML.
 
 # Output contract
 - For the INITIAL screen and after EVERY user interaction, call the render_ui tool with {"spec": {...}}.

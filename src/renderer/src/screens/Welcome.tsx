@@ -63,7 +63,7 @@ export function Welcome({ onLoaded, onOpenSettings }: WelcomeProps): React.JSX.E
         <div className="brand">
           <span className="brand-mark">🁫</span>
           <div>
-            <h1>Dom-In-O</h1>
+            <h1>domino</h1>
             <p className="muted">.domino 파일로 열리는, LLM이 실시간 만드는 앱 런타임</p>
           </div>
         </div>

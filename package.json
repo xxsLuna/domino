@@ -1,12 +1,12 @@
 {
-  "name": "dom-in-o-ui",
+  "name": "domino",
   "version": "0.1.0",
-  "description": "Dom-In-O: .domino powered, LLM-generated UI runtime",
+  "description": "domino: open .domino files and let an LLM generate the app UI in real time",
   "main": "out/main/index.js",
   "private": true,
   "build": {
     "appId": "ui.domino.runtime",
-    "productName": "Dom-In-O",
+    "productName": "domino",
     "directories": {
       "output": "release"
     },

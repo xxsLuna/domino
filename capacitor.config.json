@@ -1,6 +1,6 @@
 {
   "appId": "ui.domino.runtime",
-  "appName": "Dom-In-O",
+  "appName": "domino",
   "webDir": "dist-web",
   "server": {
     "androidScheme": "https"
