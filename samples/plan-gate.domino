@@ -1,0 +1,23 @@
+; Conditional routing: plan tier and error state drive the screen.
+[meta]
+name = PlanGate
+home = overview
+
+[auth]
+required = true
+login_endpoint = https://api.app.example.com/v1/login
+skip_if_logged_in = false
+
+[api]
+base_url = https://api.app.example.com/v1
+allow = /login, /overview, /billing, /upgrade
+
+[ui]
+theme = dark
+
+[script]
+when not logged_in -> goto login
+when error == "billing" -> goto upgrade
+when plan == "pro" and logged_in -> goto overview
+when plan == "free" and logged_in -> goto overview
+on logout -> goto login

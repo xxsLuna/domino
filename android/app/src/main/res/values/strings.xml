@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Dom-In-O</string>
+    <string name="title_activity_main">Dom-In-O</string>
+    <string name="package_name">ui.domino.runtime</string>
+    <string name="custom_url_scheme">ui.domino.runtime</string>
+</resources>

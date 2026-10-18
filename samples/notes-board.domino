@@ -1,0 +1,15 @@
+; Notes board — no auth, straight to the main page.
+[meta]
+name = NotesBoard
+home = main
+
+[api]
+base_url = https://api.notes.example.com
+allow = /notes, /notes/*
+
+[ui]
+theme = light
+primary = #059669
+
+[script]
+when not logged_in -> goto main

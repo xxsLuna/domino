@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+release/
+.vite/
+*.local
+*.tsbuildinfo
+.DS_Store
+dist-web
+# Capacitor: commit the generated android/ project, ignore its build outputs.
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+.zcode/

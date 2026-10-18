@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "useDefineForClassFields": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@core/*": ["src/core/*"],
+      "@renderer/*": ["src/renderer/src/*"]
+    }
+  },
+  "include": ["src/renderer/src/**/*.ts", "src/renderer/src/**/*.tsx", "src/core/**/*.ts", "src/core/**/*.tsx"]
+}
