@@ -175,5 +175,5 @@ jobs:
           ls -l "${FILES[@]}"
           gh release create "$TAG" "${FILES[@]}" \
             --target "$GITHUB_SHA" \
-            --title "domino $VERSION" \
+            --title "Domino UI $VERSION" \
             --generate-notes
