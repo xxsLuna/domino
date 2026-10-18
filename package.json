@@ -1,7 +1,11 @@
 {
   "name": "domino",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "domino: open .domino files and let an LLM generate the app UI in real time",
+  "author": {
+    "name": "Luna",
+    "email": "xxs.main@gmail.com"
+  },
   "main": "out/main/index.js",
   "private": true,
   "build": {
@@ -31,6 +35,9 @@
         "deb"
       ],
       "category": "Utility"
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
     }
   },
   "scripts": {

@@ -12,7 +12,7 @@ boilerplate — the definition describes the app, and the agent renders it in re
 
 [![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
-[![Tests](https://img.shields.io/badge/tests-53%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#download)
 
 macOS · Windows · Linux · Android (web build)
@@ -108,13 +108,14 @@ agent, which renders the next screen in real time.
 
 Grab the latest build for your OS from the
 [**Releases**](https://github.com/xxsLuna/domino/releases) page
-(CI publishes macOS `.dmg`/`.zip`, Windows `.exe`, and Linux `.AppImage`/`.deb` on every push to `main`).
+(CI builds every push to `main` and publishes a release — tag `v<version>` from
+`package.json` — whenever the version is new; bump the version to ship the next one).
 
 | Platform | Artifact |
 |----------|----------|
-| macOS | `domino-*-mac.dmg`, `.zip` |
-| Windows | `domino-*-win.exe` (NSIS installer) |
-| Linux | `domino-*-linux.AppImage`, `.deb` |
+| macOS (Apple silicon) | `domino-<version>-arm64.dmg`, `domino-<version>-arm64-mac.zip` |
+| Windows | `domino-<version>-win-x64.exe` (NSIS installer) |
+| Linux | `domino-<version>.AppImage`, `domino_<version>_amd64.deb` |
 | Android | build the Capacitor shell — see [Android](#android) |
 
 ## Quick start
