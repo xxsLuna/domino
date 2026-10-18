@@ -303,6 +303,10 @@ npm run android:sync    # build:web + cap sync android
 npx cap open android    # 在 Android Studio 中打开，然后在设备/模拟器上运行
 ```
 
+CI 使用仓库密钥 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、
+`ANDROID_KEY_PASSWORD` 中的签名密钥为发布版 APK 签名，并用 `build.yml` 中的 SHA-256 指纹校验签名证书。
+没有这些密钥时发布调试签名的 APK。请务必备份 keystore —— Android 只接受同一密钥签名的更新。
+
 ## 架构
 
 ```

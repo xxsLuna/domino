@@ -74,6 +74,9 @@ jobs:
   android:
     needs: test
     runs-on: ubuntu-latest
+    env:
+      # SHA-256 of the release signing certificate (public); release APKs must match it.
+      ANDROID_CERT_SHA256: 950e63ed12f4764f94627aeacfa936444f368e9e4cdf9e92273dfd5d9c1b5cb4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -102,6 +105,13 @@ jobs:
             export DOMINO_KEYSTORE="$RUNNER_TEMP/release.keystore"
             ./gradlew --no-daemon assembleRelease
             APK=app/build/outputs/apk/release/app-release.apk
+            APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+            DIGEST=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+            echo "APK signing certificate SHA-256: $DIGEST"
+            if [ "$DIGEST" != "$ANDROID_CERT_SHA256" ]; then
+              echo "::error::release APK is not signed with the domino release key"
+              exit 1
+            fi
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; publishing a debug-signed APK"
             ./gradlew --no-daemon assembleDebug
