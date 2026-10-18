@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// Version comes from package.json so the APK matches the desktop release.
+def pkgVersion = new groovy.json.JsonSlurper().parse(rootProject.file('../package.json')).version
+def (vMajor, vMinor, vPatch) = pkgVersion.tokenize('-')[0].tokenize('.').collect { it as int }
+
+// Release signing key, provided by CI from repository secrets (see build.yml).
+def releaseKeystore = System.getenv('DOMINO_KEYSTORE')
+
 android {
     namespace = "ui.domino.runtime"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +14,8 @@ android {
         applicationId "ui.domino.runtime"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode vMajor * 10000 + vMinor * 100 + vPatch
+        versionName pkgVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +23,19 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseKeystore) {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv('DOMINO_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('DOMINO_KEY_ALIAS')
+                keyPassword System.getenv('DOMINO_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseKeystore) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

@@ -68,11 +68,57 @@ jobs:
           name: domino-web
           path: dist-web/
 
+  # Android: the web build in the Capacitor shell. Signed with the release key
+  # from repository secrets when configured; otherwise a debug-signed APK
+  # (installable, but each new key requires uninstalling the previous build).
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - run: npm ci
+      - run: npm run android:sync
+      - name: Build APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          DOMINO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DOMINO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DOMINO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p release
+          cd android
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export DOMINO_KEYSTORE="$RUNNER_TEMP/release.keystore"
+            ./gradlew --no-daemon assembleRelease
+            APK=app/build/outputs/apk/release/app-release.apk
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; publishing a debug-signed APK"
+            ./gradlew --no-daemon assembleDebug
+            APK=app/build/outputs/apk/debug/app-debug.apk
+          fi
+          cp "$APK" "../release/domino-$VERSION-android.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: domino-android
+          path: release/*.apk
+          if-no-files-found: error
+
   # Publish the installers as a GitHub Release, one per package.json version.
   # A version that already has a release is left untouched — bump the version
   # to ship a new one, so a tag always matches the commit its files came from.
   release:
-    needs: build
+    needs: [build, android]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -91,6 +137,10 @@ jobs:
         with:
           name: domino-linux
           path: dist-release
+      - uses: actions/download-artifact@v4
+        with:
+          name: domino-android
+          path: dist-release
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,7 +152,7 @@ jobs:
             exit 0
           fi
           shopt -s nullglob
-          FILES=(dist-release/*.dmg dist-release/*.zip dist-release/*.exe dist-release/*.AppImage dist-release/*.deb)
+          FILES=(dist-release/*.dmg dist-release/*.zip dist-release/*.exe dist-release/*.AppImage dist-release/*.deb dist-release/*.apk)
           ls -l "${FILES[@]}"
           gh release create "$TAG" "${FILES[@]}" \
             --target "$GITHUB_SHA" \

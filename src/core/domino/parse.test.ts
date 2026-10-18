@@ -5,7 +5,8 @@ import { parseDomino } from './parse'
 import { applyScript, buildScriptContext } from './script'
 import { evalCondition } from './conditions'
 
-const sample = (name: string): string => readFileSync(join(__dirname, '../../../samples', name), 'utf-8')
+const sample = (name: string): string =>
+  readFileSync(join(__dirname, '../../../samples', name), 'utf-8')
 
 describe('parseDomino', () => {
   it('parses the example-crm sample', () => {
@@ -67,7 +68,9 @@ describe('parseDomino', () => {
   })
 
   it('parses [ui] design theme keys and applies defaults', () => {
-    const result = parseDomino('[meta]\nname = X\n[ui]\nstyle = sharp\ndensity = compact\nradius = 2\nsuccess = #10b981\n')
+    const result = parseDomino(
+      '[meta]\nname = X\n[ui]\nstyle = sharp\ndensity = compact\nradius = 2\nsuccess = #10b981\n'
+    )
     const ui = result.domino!.ui
     expect(ui.style).toBe('sharp')
     expect(ui.density).toBe('compact')
@@ -118,8 +121,12 @@ describe('condition DSL', () => {
   })
 
   it('evaluates and/or/parens', () => {
-    expect(evalCondition('logged_in and plan == "pro"', ctx({ logged_in: true, plan: 'pro' }))).toBe(true)
-    expect(evalCondition('logged_in and plan == "pro"', ctx({ logged_in: true, plan: 'free' }))).toBe(false)
+    expect(
+      evalCondition('logged_in and plan == "pro"', ctx({ logged_in: true, plan: 'pro' }))
+    ).toBe(true)
+    expect(
+      evalCondition('logged_in and plan == "pro"', ctx({ logged_in: true, plan: 'free' }))
+    ).toBe(false)
     expect(evalCondition('a == 1 or b == 2', ctx({ a: 0, b: 2 }))).toBe(true)
     expect(evalCondition('(a == 1 or b == 2) and c', ctx({ a: 0, b: 2, c: false }))).toBe(false)
   })
@@ -151,7 +158,38 @@ describe('applyScript', () => {
     const gate = parseDomino(sample('plan-gate.domino')).domino!
     const out = applyScript(gate, buildScriptContext({ loggedIn: false }))
     expect(out.goto).toBe('login')
-    const out2 = applyScript(gate, buildScriptContext({ loggedIn: true, error: 'billing', vars: { plan: 'pro' } }))
+    const out2 = applyScript(
+      gate,
+      buildScriptContext({ loggedIn: true, error: 'billing', vars: { plan: 'pro' } })
+    )
     expect(out2.goto).toBe('upgrade')
+  })
+})
+
+describe('[guide] and meta description', () => {
+  it('keeps guide prose verbatim, including ; and # and blank lines', () => {
+    const res = parseDomino(`[meta]
+name = Shop
+description = Small storefront admin
+
+[guide]
+Admin console for a small shop; staff only.
+
+# Endpoints
+GET /orders -> list of {id, total, status}
+[api]
+allow = /orders
+`)
+    expect(res.ok).toBe(true)
+    expect(res.errors).toEqual([])
+    expect(res.domino?.meta.description).toBe('Small storefront admin')
+    expect(res.domino?.guide).toBe(
+      'Admin console for a small shop; staff only.\n\n# Endpoints\nGET /orders -> list of {id, total, status}'
+    )
+    expect(res.domino?.api.allow).toEqual(['/orders'])
+  })
+
+  it('omits guide when the section is absent', () => {
+    expect(parseDomino('[meta]\nname = A').domino?.guide).toBeUndefined()
   })
 })

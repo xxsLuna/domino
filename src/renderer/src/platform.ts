@@ -1,3 +1,4 @@
+import { bridgedFetch, setHttpFetch, type NetTransport } from '@core/net'
 import type { KeyValueStorage } from '@core/session/prefs'
 
 /**
@@ -17,6 +18,27 @@ interface DominoBridge {
   readFileUrl(fileUrl: string): Promise<string>
   onOpenFile(cb: (filePath: string) => void): void
   secure?: SecureStore
+  netFetch?: NetTransport
+  pathForFile?(file: File): string
+  update?: UpdateBridge
+}
+
+export interface UpdateInfo {
+  current: string
+  version: string
+  notes: string
+  url: string
+  assetName: string
+  size: number
+}
+
+export type UpdateProgress =
+  { phase: 'download'; received: number; total: number } | { phase: 'install' }
+
+interface UpdateBridge {
+  check(): Promise<UpdateInfo | null>
+  install(onProgress: (p: UpdateProgress) => void, onError: (message: string) => void): void
+  openReleases(): void
 }
 
 declare global {
@@ -27,6 +49,12 @@ declare global {
 
 export function isElectron(): boolean {
   return Boolean(window.dominoBridge)
+}
+
+/** On desktop, outbound HTTP runs in the main process — free of browser CORS. */
+export function installPlatformFetch(): void {
+  const transport = window.dominoBridge?.netFetch
+  if (transport) setHttpFetch(bridgedFetch(transport))
 }
 
 function localStorageAdapter(): KeyValueStorage {

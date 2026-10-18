@@ -1,3 +1,5 @@
+import { httpFetch } from '../net'
+
 /**
  * call_api execution with domino allowlist enforcement.
  */
@@ -56,7 +58,7 @@ export async function executeApi(
   const url = resolveEndpoint(req.path, api.baseUrl)
   const method = (req.method ?? 'GET').toUpperCase()
   try {
-    const res = await fetch(url, {
+    const res = await httpFetch(url, {
       method,
       headers: {
         'content-type': 'application/json',

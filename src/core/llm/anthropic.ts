@@ -1,3 +1,5 @@
+import { httpFetch } from '../net'
+import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
 
@@ -51,10 +53,11 @@ export function createAnthropicAdapter(config: LLMConfig): LLMAdapter {
   return {
     async *chat(req: ChatRequest): AsyncIterable<StreamDelta> {
       const { system, messages } = toAnthropic(req.messages)
-      const res = await fetch(`${baseUrl}/v1/messages`, {
+      const res = await httpFetch(`${baseUrl}/v1/messages`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          ...routingHeaders(baseUrl),
           'x-api-key': config.apiKey ?? '',
           'anthropic-version': '2023-06-01'
         },

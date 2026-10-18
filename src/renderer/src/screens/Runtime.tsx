@@ -14,6 +14,7 @@ import { resolveEndpoint } from '@core/agent/api'
 import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
 import { createAdapter, type ChatMessage, type LLMConfig } from '@core/llm'
+import { httpFetch } from '@core/net'
 import { hashContext, SessionStore } from '@core/session/session'
 import { clearToken, extractToken, getToken, setToken } from '@core/session/prefs'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
@@ -258,7 +259,7 @@ export function Runtime({
       setStatus('로그인 중…')
       setError(null)
       try {
-        const res = await fetch(resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl), {
+        const res = await httpFetch(resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(data)

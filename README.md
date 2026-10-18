@@ -12,7 +12,7 @@ boilerplate — the definition describes the app, and the agent renders it in re
 
 [![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
-[![Tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/badge/tests-116%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#download)
 
 macOS · Windows · Linux · Android (web build)
@@ -85,6 +85,13 @@ agent, which renders the next screen in real time.
   wrapped by Capacitor for Android, all sharing one platform-independent core.
 - **Recent list & settings** — launching without a definition shows basic info, your recent
   dominos, and a settings button for the BYOK provider panel.
+- **domino maker** — describe the app you want in plain words (what the service is, what each
+  API takes and returns, which screens you need); it asks about anything essential that is
+  missing, then writes a validated `.domino` file you can run, save or refine.
+- **Drag & drop** — drop a `.domino` file anywhere on the window to open it.
+- **Auto-update** — on launch the app checks GitHub Releases; one click downloads the new
+  version, installs it and relaunches (desktop). On Android it downloads the new APK for the
+  system installer.
 
 ## How it works
 
@@ -116,7 +123,7 @@ Grab the latest build for your OS from the
 | macOS (Apple silicon) | `domino-<version>-arm64.dmg`, `domino-<version>-arm64-mac.zip` |
 | Windows | `domino-<version>-win-x64.exe` (NSIS installer) |
 | Linux | `domino-<version>.AppImage`, `domino_<version>_amd64.deb` |
-| Android | build the Capacitor shell — see [Android](#android) |
+| Android | `domino-<version>-android.apk` |
 
 ## Quick start
 
@@ -134,7 +141,8 @@ Want to try it instantly without a key? See [Local demo](#local-demo-no-api-key-
 Three ways to load an app definition:
 
 - **URL** — paste `https://…/app.domino` or `domino://app.example.com/crm.domino` into the welcome screen.
-- **File** — pick a `*.domino` file from disk (double-clicking the file also works on desktop).
+- **File** — pick a `*.domino` file from disk, or drag it onto the window (double-clicking the file also works on desktop).
+- **domino maker** — no file yet? Describe the app on the welcome screen and let the LLM write one.
 - **Recent** — one click reopens anything you loaded before.
 
 On first open, domino remembers the definition in your recent list.
@@ -157,6 +165,7 @@ visited are served from the session cache without spending tokens.
 ```ini
 [meta]
 name = ExampleCRM
+description = Lead tracking for a small sales team
 logo = https://example.com/logo.png
 home = main
 
@@ -184,7 +193,17 @@ danger = #ef4444
 when not logged_in -> goto login
 when logged_in -> goto main
 on auth_failed -> goto login
+
+[guide]
+; Free text for the UI agent — kept verbatim. Describe the service, each API
+; (method, path, request/response fields, what to show) and the screens you want.
+Sales reps log in and see their pipeline.
+GET /leads returns [{id, name, company, stage, value}] — show it as a table, newest first.
+POST /leads {name, company, value} creates a lead; afterwards return to the list.
 ```
+
+`[guide]` is passed to the agent as the app's brief (alongside `[meta] description`), so the
+screens, data and wording follow it; the allow list and runtime-owned login still apply.
 
 The `[script]` condition DSL supports identifiers (`logged_in`), `not`, comparisons
 (`==`, `!=`, `<`, `>`), `and` / `or`, parentheses, and dotted paths (`param.plan == "pro"`).

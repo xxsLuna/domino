@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /**
@@ -8,6 +9,10 @@ import { resolve } from 'node:path'
  * Same renderer code as the Electron shell; platform differences are
  * isolated behind window.dominoBridge checks in src/renderer/src/platform.ts.
  */
+
+const appVersion: string = JSON.parse(
+  readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
+).version
 
 // Stable per-conversation id some providers (opencode zen) require for routing.
 const SESSION_ID = '1f0e3a24-6c9d-4b7e-9a21-7d4f5e8b0c32'
@@ -42,6 +47,7 @@ export default defineConfig(({ mode }) => {
     root: resolve(__dirname, 'src/renderer'),
     base: './',
     plugins: [react(), tailwindcss()],
+    define: { __APP_VERSION__: JSON.stringify(appVersion) },
     resolve: {
       alias: {
         '@core': resolve(__dirname, 'src/core'),

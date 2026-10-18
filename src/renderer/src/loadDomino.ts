@@ -1,6 +1,7 @@
 import { parseDomino } from '@core/domino/parse'
 import type { DominoFile, ParseError } from '@core/domino/types'
 import type { DominoSource } from '@core/session/prefs'
+import { httpFetch } from '@core/net'
 import { isElectron } from './platform'
 
 /**
@@ -73,7 +74,7 @@ async function loadUrl(raw: string): Promise<string> {
 async function fetchRemote(url: string): Promise<string> {
   let res: Response
   try {
-    res = await fetch(url)
+    res = await httpFetch(url)
   } catch (err) {
     throw new DominoLoadError(`요청 실패: ${(err as Error).message}`)
   }

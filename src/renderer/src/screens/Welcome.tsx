@@ -10,9 +10,10 @@ import { getStorage } from '../platform'
 interface WelcomeProps {
   onLoaded: (loaded: LoadedDomino) => void
   onOpenSettings: () => void
+  onOpenMaker: () => void
 }
 
-export function Welcome({ onLoaded, onOpenSettings }: WelcomeProps): React.JSX.Element {
+export function Welcome({ onLoaded, onOpenSettings, onOpenMaker }: WelcomeProps): React.JSX.Element {
   const storage = getStorage()
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
@@ -160,6 +161,25 @@ export function Welcome({ onLoaded, onOpenSettings }: WelcomeProps): React.JSX.E
       </Card>
 
       <Card>
+        <Card.Content className="flex flex-col gap-4 sm:flex-row sm:items-center">
+          <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-accent-soft text-accent-soft-foreground">
+            <Icon name="lightbulb" size={22} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold">domino maker</p>
+            <p className="text-sm text-muted">
+              만들고 싶은 앱을 자연어로 설명하면, 부족한 정보를 물어본 뒤 .domino 파일을 만들어
+              드립니다.
+            </p>
+          </div>
+          <Button onPress={onOpenMaker} isDisabled={busy}>
+            <Icon name="plus" />
+            새로 만들기
+          </Button>
+        </Card.Content>
+      </Card>
+
+      <Card>
         <Card.Header>
           <Card.Title>최근 domino</Card.Title>
         </Card.Header>
@@ -210,7 +230,7 @@ export function Welcome({ onLoaded, onOpenSettings }: WelcomeProps): React.JSX.E
       <footer className="text-center text-xs text-muted">
         데스크톱에서는 <code className="rounded bg-default px-1">.domino</code> 파일을 바로 열거나{' '}
         <code className="rounded bg-default px-1">domino://</code> 링크를 클릭해 실행할 수 있습니다.
-        설정에서 LLM Provider(BYOK)를 등록하세요.
+        파일을 창에 끌어다 놓아도 열립니다. 설정에서 LLM Provider(BYOK)를 등록하세요.
       </footer>
     </div>
   )

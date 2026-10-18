@@ -11,7 +11,7 @@
 
 [![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
-[![Tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/badge/tests-116%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#下载)
 
 macOS · Windows · Linux · Android（Web 构建）
@@ -78,6 +78,11 @@ macOS · Windows · Linux · Android（Web 构建）
   （Android），三端共享同一套平台无关核心。
 - **最近打开与设置** —— 不打开定义直接启动时，显示基本信息、最近的 domino 列表，以及
   BYOK 提供商设置面板入口。
+- **domino maker** —— 用自然语言描述想要的应用（是什么服务、每个 API 接收和返回什么、需要
+  哪些页面），缺少关键信息时会先提问，补全后生成经过校验的 `.domino` 文件，可直接运行、保存或继续修改。
+- **拖放打开** —— 把 `.domino` 文件拖到窗口任意位置即可打开。
+- **自动更新** —— 启动时检查 GitHub Releases，一键完成下载 → 安装 → 重启（桌面端）；Android
+  会下载新的 APK 交给系统安装程序。
 
 ## 工作原理
 
@@ -108,7 +113,7 @@ Release —— 想发布新版本就提升版本号）：
 | macOS（Apple 芯片） | `domino-<版本号>-arm64.dmg`、`domino-<版本号>-arm64-mac.zip` |
 | Windows | `domino-<版本号>-win-x64.exe`（NSIS 安装包） |
 | Linux | `domino-<版本号>.AppImage`、`domino_<版本号>_amd64.deb` |
-| Android | 自行构建 Capacitor 壳 —— 见 [Android](#android) |
+| Android | `domino-<版本号>-android.apk` |
 
 ## 快速开始
 
@@ -126,7 +131,8 @@ Release —— 想发布新版本就提升版本号）：
 三种加载方式：
 
 - **URL** —— 在欢迎页粘贴 `https://…/app.domino` 或 `domino://app.example.com/crm.domino`。
-- **文件** —— 从磁盘选择 `*.domino` 文件（桌面端双击文件也可以直接打开）。
+- **文件** —— 从磁盘选择 `*.domino` 文件，或直接拖到窗口上（桌面端双击文件也可以直接打开）。
+- **domino maker** —— 还没有文件？在欢迎页用自然语言描述应用，让 LLM 帮你写一个。
 - **最近打开** —— 一键重新打开之前加载过的任何定义。
 
 首次打开后，domino 会把定义记入最近列表。
@@ -147,6 +153,7 @@ Web 端保存在 `localStorage`。支持的端点见[支持的提供商](#支持
 ```ini
 [meta]
 name = ExampleCRM
+description = Lead tracking for a small sales team
 logo = https://example.com/logo.png
 home = main
 
@@ -174,7 +181,16 @@ danger = #ef4444
 when not logged_in -> goto login
 when logged_in -> goto main
 on auth_failed -> goto login
+
+[guide]
+; 给界面智能体的自由文本，原样保留。描述服务、每个 API（方法、路径、请求/响应字段、要显示什么）和需要的页面。
+Sales reps log in and see their pipeline.
+GET /leads returns [{id, name, company, stage, value}] — show it as a table, newest first.
+POST /leads {name, company, value} creates a lead; afterwards return to the list.
 ```
+
+`[guide]` 会和 `[meta] description` 一起作为应用说明交给智能体，页面、数据和文案都会据此生成；
+白名单和由运行时负责的登录规则依然生效。
 
 `[script]` 条件 DSL 支持标识符（`logged_in`）、`not`、比较（`==`、`!=`、`<`、`>`）、
 `and` / `or`、括号和点路径（`param.plan == "pro"`）。命令为 `goto <page>`、

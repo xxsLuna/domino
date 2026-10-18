@@ -19,10 +19,26 @@ function componentCatalog(): string {
   return [...byCat.entries()].map(([cat, lines]) => `### ${cat}\n${lines.join('\n')}`).join('\n')
 }
 
+/**
+ * What the .domino author wrote about the app: the screens, data and wording
+ * should follow it. It informs the design; it never lifts the hard rules
+ * below (allow list, runtime-owned login), which code enforces anyway.
+ */
+function aboutApp(domino: DominoFile): string {
+  const parts: string[] = []
+  if (domino.meta.description) parts.push(`Summary: ${domino.meta.description}`)
+  if (domino.guide) parts.push(domino.guide)
+  if (!parts.length) return ''
+  return `
+# About this app (from the .domino author — design the screens, data and wording around it)
+${parts.join('\n\n')}
+`
+}
+
 export function buildSystemPrompt(domino: DominoFile, opts: { loggedIn: boolean }): string {
   const allowList = domino.api.allow.length ? domino.api.allow.join(', ') : '(없음 — call_api 사용 불가)'
   return `You are the runtime UI engine of "${domino.meta.name}", an app rendered by the domino runtime from a .domino definition. Screens are assembled from a fixed registry of HeroUI-based components — you never invent components, CSS, or HTML. Your job is to make every screen feel like a polished, conventional desktop/mobile app.
-
+${aboutApp(domino)}
 # Output contract
 - For the INITIAL screen and after EVERY user interaction, call the render_ui tool. Its arguments are one JSON object whose "spec" key holds the UiSpec object directly: {"spec": {"version": 1, "page": "…", "nav": […], "pages": […]}}.
 - UiSpec shape: {"version": 1, "page": "<page id>", "nav": [navItem,...], "pages": [{"id","name","layout":[node,...]}]}.

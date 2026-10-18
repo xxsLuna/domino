@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Spinner } from '@heroui/react'
-import { loadLlmConfig, pushRecent } from '@core/session/prefs'
+import { loadLlmConfig, pushRecent, type DominoSource } from '@core/session/prefs'
 import { Alert } from '@core/ui/components'
+import { Icon } from '@core/ui/icons'
 import type { LLMConfig } from '@core/llm'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from './loadDomino'
 import { getStorage } from './platform'
+import { useFileDrop } from './useFileDrop'
 import { useSystemTheme } from './useSystemTheme'
+import { Maker } from './screens/Maker'
 import { Settings } from './screens/Settings'
+import { UpdateBanner } from './screens/UpdateBanner'
 import { Welcome } from './screens/Welcome'
 import { Runtime } from './screens/Runtime'
 
@@ -17,6 +21,9 @@ export function App(): React.JSX.Element {
   const storage = getStorage()
   const [config, setConfig] = useState<LLMConfig | null>(null)
   const [loaded, setLoaded] = useState<LoadedDomino | null>(null)
+  // Bumped on every open so a newly opened domino gets a fresh runtime.
+  const [openSeq, setOpenSeq] = useState(0)
+  const [makerOpen, setMakerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const systemTheme = useSystemTheme()
@@ -28,29 +35,48 @@ export function App(): React.JSX.Element {
     document.documentElement.dataset.theme = effectiveTheme
   }, [effectiveTheme])
 
+  const show = useCallback((result: LoadedDomino) => {
+    setLoaded(result)
+    setOpenSeq((n) => n + 1)
+    setMakerOpen(false)
+    setLoadError(null)
+  }, [])
+
+  /** One path for every way a domino gets opened (file, drop, OS, maker). */
+  const openSource = useCallback(
+    async (source: DominoSource): Promise<void> => {
+      try {
+        const result = await loadAndParse(source)
+        await pushRecent(storage, { source, name: result.name })
+        show(result)
+      } catch (err) {
+        setLoaded(null)
+        setLoadError(err instanceof DominoLoadError ? err.message : (err as Error).message)
+      }
+    },
+    [show, storage]
+  )
+
+  // Drag a .domino file anywhere onto the window to open it.
+  const dragging = useFileDrop((file) => {
+    if (!/\.domino$/i.test(file.name)) {
+      setLoadError(`${file.name}: .domino 파일만 열 수 있습니다.`)
+      return
+    }
+    const path = window.dominoBridge?.pathForFile?.(file)
+    void (async () => {
+      await openSource(path ? { type: 'file', path } : { type: 'text', text: await file.text() })
+    })()
+  })
+
   // Boot: BYOK config + OS-level *.domino open requests (double click / open-with).
   useEffect(() => {
     void loadLlmConfig(storage).then(setConfig)
     const bridge = window.dominoBridge
     if (!bridge || openFileRegistered) return
     openFileRegistered = true
-    bridge.onOpenFile((filePath) => {
-      void (async () => {
-        try {
-          const result = await loadAndParse({ type: 'file', path: filePath })
-          await pushRecent(storage, {
-            source: { type: 'file', path: filePath },
-            name: result.name
-          })
-          setLoaded(result)
-          setLoadError(null)
-        } catch (err) {
-          setLoaded(null)
-          setLoadError(err instanceof DominoLoadError ? err.message : (err as Error).message)
-        }
-      })()
-    })
-  }, [storage])
+    bridge.onOpenFile((filePath) => void openSource({ type: 'file', path: filePath }))
+  }, [openSource, storage])
 
   if (!config) {
     return (
@@ -61,36 +87,54 @@ export function App(): React.JSX.Element {
     )
   }
 
+  const errorBanner = loadError ? (
+    <div className="mx-auto w-full max-w-[760px] px-4 pt-4">
+      <Alert
+        variant="danger"
+        title="domino를 열 수 없습니다"
+        message={loadError}
+        onClose={() => setLoadError(null)}
+      />
+    </div>
+  ) : null
+
   return (
     <div className="app">
+      <UpdateBanner />
       {loaded ? (
         <Runtime
+          key={openSeq}
           loaded={loaded}
           config={config}
           onHome={() => setLoaded(null)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
+      ) : makerOpen ? (
+        <Maker
+          config={config}
+          onBack={() => setMakerOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenDomino={(text) => void openSource({ type: 'text', text })}
+        />
       ) : (
         <>
-          {loadError ? (
-            <div className="mx-auto w-full max-w-[760px] px-4 pt-4">
-              <Alert
-                variant="danger"
-                title="domino를 열 수 없습니다"
-                message={loadError}
-                onClose={() => setLoadError(null)}
-              />
-            </div>
-          ) : null}
+          {errorBanner}
           <Welcome
-            onLoaded={(result) => {
-              setLoaded(result)
-              setLoadError(null)
-            }}
+            onLoaded={show}
             onOpenSettings={() => setSettingsOpen(true)}
+            onOpenMaker={() => setMakerOpen(true)}
           />
         </>
       )}
+
+      {dragging ? (
+        <div className="drop-overlay" aria-hidden>
+          <div className="drop-overlay-card">
+            <Icon name="file" size={28} />
+            <p className="text-base font-semibold">.domino 파일을 놓으면 바로 열립니다</p>
+          </div>
+        </div>
+      ) : null}
 
       {settingsOpen ? (
         <Settings

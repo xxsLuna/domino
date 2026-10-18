@@ -401,6 +401,69 @@ function planToolCalls(messages) {
   return [{ name: 'render_ui', args: { spec: pickSpec(messages) } }]
 }
 
+/* ---------------------------- mock domino maker --------------------------- */
+
+/** The maker asks one round of questions, then writes a file from the answers. */
+function planMakerCalls(messages) {
+  const users = messages.filter((m) => m.role === 'user').map((m) => String(m.content ?? ''))
+  const description = users[0] ?? ''
+  const answers = users.find((u) => u.startsWith('Answers:'))
+  if (!answers) {
+    return [
+      {
+        name: 'ask_user',
+        args: {
+          intro: `요청을 이해했습니다: "${description.slice(0, 60)}${description.length > 60 ? '…' : ''}"`,
+          questions: [
+            { id: 'base_url', question: 'API 서버 주소가 무엇인가요?', why: '앱이 호출할 수 있는 주소를 정해야 합니다.', placeholder: 'https://api.example.com', options: ['아직 없음'] },
+            { id: 'login', question: '사용자가 로그인해야 하나요?', options: ['예', '아니요'] }
+          ]
+        }
+      }
+    ]
+  }
+  const pick = (q) => (new RegExp(`${q}[^\\n]*\\n\\s*→ ([^\\n]*)`).exec(answers)?.[1] ?? '').trim()
+  const base = pick('API 서버 주소') || 'https://api.example.com'
+  const login = /^예|yes/i.test(pick('로그인'))
+  const content = [
+    '[meta]',
+    'name = Requests',
+    'description = 요청을 등록하고 승인하는 사내 앱',
+    'home = main',
+    '',
+    ...(login
+      ? ['[auth]', 'required = true', 'login_endpoint = /login', 'token_key = access_token', 'skip_if_logged_in = true', '']
+      : []),
+    '[api]',
+    `base_url = ${/^https?:/.test(base) ? base : 'https://api.example.com'}`,
+    `allow = ${login ? '/login, ' : ''}/requests, /requests/*`,
+    '',
+    '[ui]',
+    'theme = auto',
+    '',
+    '[script]',
+    login ? 'when not logged_in -> goto login' : 'when not logged_in -> goto main',
+    ...(login ? ['when logged_in -> goto main'] : []),
+    '',
+    '[guide]',
+    description,
+    '',
+    'GET /requests → [{id, title, requester, status}] 목록을 표로 보여 준다.',
+    'POST /requests {title, reason} → 새 요청을 만든다. 성공하면 목록으로 돌아가 알림을 띄운다.'
+  ].join('\n')
+  return [
+    {
+      name: 'write_domino',
+      args: {
+        name: 'requests',
+        content,
+        summary: '요청 목록, 새 요청 작성, 승인 화면을 가진 사내 요청 관리 앱입니다.',
+        assumptions: ['테마는 시스템 설정을 따릅니다', 'API 응답 필드는 설명을 바탕으로 추정했습니다']
+      }
+    }
+  ]
+}
+
 /** Emit node keys in the order the system prompt asks for (grid before props). */
 const NODE_KEYS = ['name', 'id', 'grid', 'props', 'children']
 function nodeKeyOrder(_key, value) {
@@ -420,7 +483,8 @@ async function streamChat(res, body) {
     'cache-control': 'no-cache',
     ...cors
   })
-  const calls = planToolCalls(body.messages ?? [])
+  const isMaker = (body.tools ?? []).some((t) => (t.function?.name ?? t.name) === 'write_domino')
+  const calls = isMaker ? planMakerCalls(body.messages ?? []) : planToolCalls(body.messages ?? [])
   const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 

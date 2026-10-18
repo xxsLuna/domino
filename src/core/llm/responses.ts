@@ -1,3 +1,5 @@
+import { httpFetch } from '../net'
+import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
 
@@ -52,10 +54,11 @@ export function createResponsesAdapter(config: LLMConfig): LLMAdapter {
   const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')
   return {
     async *chat(req: ChatRequest): AsyncIterable<StreamDelta> {
-      const res = await fetch(`${baseUrl}/responses`, {
+      const res = await httpFetch(`${baseUrl}/responses`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          ...routingHeaders(baseUrl),
           authorization: `Bearer ${config.apiKey ?? ''}`
         },
         body: JSON.stringify({

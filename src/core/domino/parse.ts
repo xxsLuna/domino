@@ -1,12 +1,15 @@
 import type { AuthSection, ApiSection, DominoFile, ParseError, ParseResult, ScriptRule, ScriptCommand, UiSection } from './types'
 
-const KNOWN_SECTIONS = new Set(['meta', 'auth', 'api', 'ui', 'script'])
+const KNOWN_SECTIONS = new Set(['meta', 'auth', 'api', 'ui', 'script', 'guide'])
+const SECTION_HEADER = /^\s*\[[A-Za-z0-9_-]+\]\s*$/
 
 /** Parse a .domino v1 file. Never throws; diagnostics carry line numbers. */
 export function parseDomino(source: string): ParseResult {
   const errors: ParseError[] = []
   const sections = new Map<string, Array<{ line: number; key: string; value: string }>>()
   const scriptLines: Array<{ line: number; text: string }> = []
+  // [guide] is free prose for the agent: kept verbatim (";" and "#" included).
+  const guideLines: string[] = []
 
   const lines = source.split(/\r?\n/)
   let current: string | null = null
@@ -14,6 +17,10 @@ export function parseDomino(source: string): ParseResult {
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]
     const line = i + 1
+    if (current === 'guide' && !SECTION_HEADER.test(raw)) {
+      guideLines.push(raw.trimEnd())
+      continue
+    }
     const text = stripComment(raw).trim()
     if (!text) continue
 
@@ -59,6 +66,7 @@ export function parseDomino(source: string): ParseResult {
     errors.push({ line: getLine('meta', 'name'), message: '[meta] name is required' })
   }
   const home = get('meta', 'home') ?? 'main'
+  const guide = guideLines.join('\n').trim()
 
   /* ------------------------------- auth ------------------------------- */
   const auth: AuthSection = {
@@ -145,11 +153,12 @@ export function parseDomino(source: string): ParseResult {
   }
 
   const domino: DominoFile = {
-    meta: { name, logo: get('meta', 'logo'), home },
+    meta: { name, logo: get('meta', 'logo'), home, description: get('meta', 'description') },
     auth,
     api,
     ui,
     script,
+    ...(guide ? { guide } : {}),
     extras,
     id: `${name}|${api.baseUrl ?? ''}`
   }
@@ -159,7 +168,7 @@ export function parseDomino(source: string): ParseResult {
 function knownKeys(section: string): Set<string> {
   switch (section) {
     case 'meta':
-      return new Set(['name', 'logo', 'home'])
+      return new Set(['name', 'logo', 'home', 'description'])
     case 'auth':
       return new Set(['required', 'login_endpoint', 'token_key', 'skip_if_logged_in'])
     case 'api':

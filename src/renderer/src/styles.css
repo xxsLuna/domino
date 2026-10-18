@@ -434,6 +434,69 @@
   font-size: 13px;
 }
 
+/* ------------------------------- update ----------------------------- */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: calc(env(safe-area-inset-top) + 6px) 14px 6px;
+  background: var(--accent-soft);
+  color: var(--accent-soft-foreground);
+  font-size: 13px;
+  z-index: 20;
+}
+.update-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.update-progress {
+  width: min(240px, 40%);
+}
+
+/* ----------------------------- file drop ---------------------------- */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in oklab, var(--background) 70%, transparent);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+.drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: min(420px, 100%);
+  padding: 40px 24px;
+  border: 2px dashed var(--accent);
+  border-radius: calc(var(--radius) * 3);
+  background: var(--surface);
+  color: var(--accent);
+  text-align: center;
+}
+
+/* ------------------------------- maker ------------------------------ */
+.maker-code {
+  margin: 0;
+  max-height: 440px;
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: calc(var(--radius) * 2);
+  background: var(--default);
+  color: var(--foreground);
+  font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ------------------------------ welcome ----------------------------- */
 .welcome {
   width: 100%;

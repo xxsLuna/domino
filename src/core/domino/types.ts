@@ -1,12 +1,14 @@
 /**
  * .domino v1 — our own INI-like format with a tiny condition script.
  *
- *   [meta]   name, logo, home
+ *   [meta]   name, logo, home, description
  *   [auth]   required, login_endpoint, token_key, skip_if_logged_in
  *   [api]    base_url, allow (comma-separated path patterns)
  *   [ui]     theme, primary, style (soft|sharp), radius, density (comfortable|compact),
  *            success/warning/danger (step colors)
  *   [script] when <cond> -> <command>   /   on <event> -> <command>
+ *   [guide]  free text for the agent: what the service is, what each API
+ *            returns/expects, which screens and behaviors the app needs
  */
 
 export interface AuthSection {
@@ -56,11 +58,15 @@ export interface DominoFile {
     name: string
     logo?: string
     home: string
+    /** One-line summary of what the app is for. */
+    description?: string
   }
   auth: AuthSection
   api: ApiSection
   ui: UiSection
   script: ScriptRule[]
+  /** Author's instructions for the agent ([guide] section, verbatim). */
+  guide?: string
   /** Stable id for session/token storage. */
   id: string
   /** Any keys in sections we don't explicitly model (forward compat). */

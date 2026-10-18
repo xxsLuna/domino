@@ -1,7 +1,18 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, protocol, net, safeStorage, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  protocol,
+  net,
+  safeStorage,
+  shell
+} from 'electron'
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
+import type { NetEvent, NetRequest } from '@core/net'
+import { checkForUpdate, installUpdate, RELEASES_URL } from './updater'
 
 // domino:// scheme must be registered before app ready.
 protocol.registerSchemesAsPrivileged([
@@ -128,6 +139,58 @@ if (!gotLock) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return res.text()
     })
+
+    /* ---------------- outbound HTTP (LLM providers, app APIs) ---------------- */
+    // The renderer's fetch is bound by browser CORS, and some providers never
+    // answer preflights (opencode zen) — so the renderer sends its requests
+    // here (see @core/net) and the main process streams the response back.
+    ipcMain.on('net:fetch', async (event, id: string, url: string, req: NetRequest) => {
+      const send = (msg: NetEvent): void => {
+        if (!event.sender.isDestroyed()) event.sender.send('net:event', id, msg)
+      }
+      try {
+        if (!/^https?:\/\//i.test(url)) throw new Error(`unsupported URL: ${url}`)
+        const res = await net.fetch(url, {
+          method: req.method,
+          headers: req.headers,
+          body: req.body
+        })
+        send({
+          type: 'head',
+          status: res.status,
+          statusText: res.statusText,
+          headers: [...res.headers]
+        })
+        if (res.body) {
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            const text = decoder.decode(value, { stream: true })
+            if (text) send({ type: 'chunk', text })
+          }
+          const tail = decoder.decode()
+          if (tail) send({ type: 'chunk', text: tail })
+        }
+        send({ type: 'end' })
+      } catch (err) {
+        send({ type: 'error', message: (err as Error).message })
+      }
+    })
+
+    /* ---------------------------- self-update ---------------------------- */
+    // The renderer only triggers; the release URL and asset stay in this process.
+    ipcMain.handle('update:check', () => checkForUpdate())
+    ipcMain.on('update:install', (event) => {
+      const send = (channel: string, payload: unknown): void => {
+        if (!event.sender.isDestroyed()) event.sender.send(channel, payload)
+      }
+      installUpdate((p) => send('update:progress', p)).catch((err: Error) =>
+        send('update:error', err.message)
+      )
+    })
+    ipcMain.on('update:open-releases', () => void shell.openExternal(RELEASES_URL))
 
     /* ---------------- secure KV store (BYOK keys, tokens) ---------------- */
     const securePath = (): string => join(app.getPath('userData'), 'secure-store.json')
