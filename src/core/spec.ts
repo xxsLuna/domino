@@ -32,11 +32,27 @@ export interface PageSpec {
   layout: CardNode[]
 }
 
+/**
+ * App-level primary navigation. The runtime renders it the way native apps
+ * do: a sidebar on desktop, an icon rail on tablets, a bottom tab bar on
+ * phones. Selecting an item sends `ACTION navigate` to the agent.
+ */
+export interface NavItem {
+  id: string
+  label: string
+  /** Icon name from the runtime icon set (see prompt) or an emoji. */
+  icon?: string
+  /** Small counter/label shown next to the item (e.g. unread count). */
+  badge?: string | number
+}
+
 export interface UiSpec {
   version: 1
   /** Current page id. */
   page: string
   pages: PageSpec[]
+  /** Primary navigation; omit to keep the previous screen's, `[]` to hide it. */
+  nav?: NavItem[]
 }
 
 /** An interaction captured from a rendered component, sent to the agent. */
@@ -64,10 +80,26 @@ export const pageSpecSchema = z.object({
   layout: z.array(cardNodeSchema)
 })
 
+const navItemSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  icon: z.string().optional(),
+  badge: z.union([z.string(), z.number()]).optional()
+})
+
+/** Nav items are decorative: drop malformed/half-streamed ones instead of rejecting the spec. */
+const navSchema = z.array(z.unknown()).transform((items) =>
+  items.flatMap((item) => {
+    const parsed = navItemSchema.safeParse(item)
+    return parsed.success ? [parsed.data] : []
+  })
+)
+
 export const uiSpecSchema = z.object({
   version: z.literal(1),
   page: z.string().min(1),
-  pages: z.array(pageSpecSchema).min(1)
+  pages: z.array(pageSpecSchema).min(1),
+  nav: navSchema.optional()
 })
 
 /**

@@ -1,51 +1,143 @@
 /**
  * Best-effort parsing of *incomplete* JSON — the heart of progressive
- * streaming render: after every tool-call argument delta we try to salvage
- * a coherent object out of whatever prefix the model has emitted so far.
+ * streaming render: after tool-call argument deltas we salvage a coherent
+ * object out of whatever prefix the model has emitted so far.
+ *
+ * Single pass: a small state machine walks the prefix once, remembers the
+ * last position where the text can be cut and closed, then parses at most
+ * twice. (Chopping a character at a time and re-parsing was O(n²) per delta,
+ * which showed up as jank on phones while long specs streamed in.)
  */
 
-/** Close open strings/brackets so the text becomes structurally balanced. */
-function closeStructure(text: string): string {
-  const stack: string[] = []
-  let inString = false
-  let escaped = false
-  for (const ch of text) {
-    if (inString) {
-      if (escaped) escaped = false
-      else if (ch === '\\') escaped = true
-      else if (ch === '"') inString = false
-      continue
-    }
-    if (ch === '"') inString = true
-    else if (ch === '{') stack.push('}')
-    else if (ch === '[') stack.push(']')
-    else if (ch === '}' || ch === ']') stack.pop()
+interface Frame {
+  arr: boolean
+  /** What the container expects next. */
+  state: 'key' | 'colon' | 'value' | 'comma'
+}
+
+const SCALAR = /^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)$/
+const isSpace = (ch: string): boolean => ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t'
+const isDelimiter = (ch: string): boolean => ch === ',' || ch === '}' || ch === ']' || isSpace(ch)
+
+function tryParse<T>(text: string): T | null {
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return null
   }
-  let out = text
-  if (inString && !escaped) out += '"'
-  else if (inString && escaped) out += '"'
-  for (let i = stack.length - 1; i >= 0; i--) out += stack[i]
-  return out
 }
 
 /**
- * Parse a prefix of JSON. Returns the value once the prefix is coherent,
- * otherwise null. Chops at most `maxChop` trailing characters — enough to
- * drop a dangling `:`/`,`/partial literal.
+ * Parse a prefix of JSON. Unterminated containers are closed, a value string
+ * still being written is kept (so text appears as it streams), and dangling
+ * keys/commas are dropped. Returns null until the prefix holds a value.
  */
-export function parsePartialJson<T>(text: string, maxChop = 200): T | null {
-  if (!text.trim()) return null
-  const limit = Math.min(maxChop, text.length)
-  for (let chop = 0; chop <= limit; chop++) {
-    const slice = text.slice(0, text.length - chop)
-    if (!slice.trim()) break
-    try {
-      return JSON.parse(closeStructure(slice)) as T
-    } catch {
-      /* chop a trailing character and retry */
+export function parsePartialJson<T>(text: string): T | null {
+  const start = text.search(/\S/)
+  if (start < 0) return null
+  if (text[start] !== '{' && text[start] !== '[') return tryParse<T>(text)
+
+  const stack: Frame[] = []
+  const closers = (): string => {
+    let s = ''
+    for (let k = stack.length - 1; k >= 0; k--) s += stack[k].arr ? ']' : '}'
+    return s
+  }
+  let safePos = -1
+  let safeClose = ''
+  const markSafe = (pos: number): void => {
+    safePos = pos
+    safeClose = closers()
+  }
+
+  let inString = false
+  let isKey = false
+  let escaped = false
+  let i = start
+  const n = text.length
+
+  scan: for (; i < n; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') {
+        inString = false
+        const top = stack[stack.length - 1]
+        if (isKey) top.state = 'colon'
+        else {
+          top.state = 'comma'
+          markSafe(i + 1)
+        }
+      }
+      continue
+    }
+    if (isSpace(ch)) continue
+
+    const top = stack[stack.length - 1]
+    if (!top) {
+      if (safePos >= 0) break // root value already closed
+      stack.push({ arr: ch === '[', state: ch === '[' ? 'value' : 'key' })
+      markSafe(i + 1)
+      continue
+    }
+
+    const close = (): void => {
+      stack.pop()
+      const parent = stack[stack.length - 1]
+      if (parent) parent.state = 'comma'
+      markSafe(i + 1)
+    }
+
+    switch (top.state) {
+      case 'key':
+        if (ch === '"') {
+          inString = true
+          isKey = true
+        } else if (ch === '}') close()
+        else break scan
+        continue
+      case 'colon':
+        if (ch !== ':') break scan
+        top.state = 'value'
+        continue
+      case 'comma':
+        if (ch === ',') top.state = top.arr ? 'value' : 'key'
+        else if (ch === (top.arr ? ']' : '}')) close()
+        else break scan
+        continue
+      case 'value': {
+        if (ch === '"') {
+          inString = true
+          isKey = false
+        } else if (ch === '{' || ch === '[') {
+          top.state = 'comma'
+          stack.push({ arr: ch === '[', state: ch === '[' ? 'value' : 'key' })
+          markSafe(i + 1)
+        } else if (ch === ']' && top.arr) close()
+        else {
+          let j = i
+          while (j < n && !isDelimiter(text[j])) j++
+          if (!SCALAR.test(text.slice(i, j))) break scan
+          top.state = 'comma'
+          markSafe(j)
+          i = j - 1
+        }
+        continue
+      }
     }
   }
-  return null
+
+  // A value string still streaming: keep what has arrived so far.
+  if (inString && !isKey) {
+    let end = n
+    if (escaped) end -= 1
+    const tail = /\\u[0-9a-fA-F]{0,3}$/.exec(text.slice(Math.max(0, end - 6), end))
+    if (tail) end -= tail[0].length
+    const value = tryParse<T>(text.slice(0, end) + '"' + closers())
+    if (value !== null) return value
+  }
+  return safePos >= 0 ? tryParse<T>(text.slice(0, safePos) + safeClose) : null
 }
 
 /**

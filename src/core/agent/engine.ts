@@ -18,6 +18,13 @@ export type AgentUpdate =
   | { type: 'error'; message: string }
   | { type: 'done' }
 
+/**
+ * Minimum gap between progressive previews. Deltas arrive every few ms; parsing
+ * and re-rendering the whole screen for each one wastes frames on phones while
+ * adding nothing a person can see. The final spec is always delivered.
+ */
+const PREVIEW_INTERVAL_MS = 80
+
 export interface AgentTurnOptions {
   adapter: LLMAdapter
   system: string
@@ -42,6 +49,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
 
       const stream = opts.adapter.chat({ messages, tools: agentTools })
       let finalSpecYielded = false
+      let lastPreviewAt = 0
 
       for await (const delta of stream) {
         switch (delta.type) {
@@ -63,10 +71,14 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             const tc = toolCalls.get(delta.id)
             if (tc) {
               tc.args += delta.argsDelta
-              if (tc.name === 'render_ui') {
+              const now = Date.now()
+              if (tc.name === 'render_ui' && now - lastPreviewAt >= PREVIEW_INTERVAL_MS) {
                 const partial = extractPartialSpec(tc.args)
                 const spec = partial ? tryValidateUiSpec(partial) : null
-                if (spec) yield { type: 'spec', spec, final: false }
+                if (spec) {
+                  lastPreviewAt = now
+                  yield { type: 'spec', spec, final: false }
+                }
               }
             }
             break

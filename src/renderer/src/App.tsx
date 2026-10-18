@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Spinner } from '@heroui/react'
 import { loadLlmConfig, pushRecent } from '@core/session/prefs'
+import { Alert } from '@core/ui/components'
 import type { LLMConfig } from '@core/llm'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from './loadDomino'
 import { getStorage } from './platform'
@@ -52,8 +54,8 @@ export function App(): React.JSX.Element {
 
   if (!config) {
     return (
-      <div className="boot-state">
-        <span className="spinner" />
+      <div className="boot-state" role="status">
+        <Spinner />
         <p>불러오는 중…</p>
       </div>
     )
@@ -70,7 +72,16 @@ export function App(): React.JSX.Element {
         />
       ) : (
         <>
-          {loadError ? <pre className="error-box top">{loadError}</pre> : null}
+          {loadError ? (
+            <div className="mx-auto w-full max-w-[760px] px-4 pt-4">
+              <Alert
+                variant="danger"
+                title="domino를 열 수 없습니다"
+                message={loadError}
+                onClose={() => setLoadError(null)}
+              />
+            </div>
+          ) : null}
           <Welcome
             onLoaded={(result) => {
               setLoaded(result)

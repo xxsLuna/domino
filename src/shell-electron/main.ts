@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, net, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, protocol, net, safeStorage, shell } from 'electron'
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
@@ -21,6 +21,11 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
+    // Narrow enough to exercise the phone layout, never so small it breaks.
+    minWidth: 360,
+    minHeight: 480,
+    // Matches HeroUI's --background so resizing never flashes the wrong color.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0b0d' : '#f4f4f4',
     show: false,
     autoHideMenuBar: true,
     webPreferences: {

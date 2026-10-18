@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
+import { Button, Dropdown, Label, Skeleton, Spinner, Tooltip } from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
 import { buildSystemPrompt } from '@core/agent/prompt'
 import { resolveEndpoint } from '@core/agent/api'
@@ -6,16 +15,16 @@ import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
 import { createAdapter, type ChatMessage, type LLMConfig } from '@core/llm'
 import { hashContext, SessionStore } from '@core/session/session'
-import {
-  extractToken,
-  getToken,
-  setToken
-} from '@core/session/prefs'
+import { clearToken, extractToken, getToken, setToken } from '@core/session/prefs'
+import { BottomNav, SideNav } from '@core/ui/AppNav'
 import { CardGrid } from '@core/ui/CardGrid'
-import type { ActionEvent, UiSpec } from '@core/spec'
+import { streamView } from '@core/ui/streaming'
+import { Alert } from '@core/ui/components'
+import { Icon } from '@core/ui/icons'
+import { themeVars } from '@core/ui/theme'
+import type { ActionEvent, NavItem, UiSpec } from '@core/spec'
 import type { LoadedDomino } from '../loadDomino'
 import { getStorage } from '../platform'
-import { useSystemTheme } from '../useSystemTheme'
 
 interface RuntimeProps {
   loaded: LoadedDomino
@@ -24,12 +33,14 @@ interface RuntimeProps {
   onOpenSettings: () => void
 }
 
-export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps): React.JSX.Element {
+export function Runtime({
+  loaded,
+  config,
+  onHome,
+  onOpenSettings
+}: RuntimeProps): React.JSX.Element {
   const { domino } = loaded
   const storage = getStorage()
-  const systemTheme = useSystemTheme()
-  // theme = auto follows the OS color scheme; explicit light/dark wins over it.
-  const theme = domino.ui.theme === 'auto' ? systemTheme : domino.ui.theme
 
   const sessionRef = useRef(new SessionStore())
   const historyRef = useRef<ChatMessage[]>([])
@@ -38,6 +49,8 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
   const loggedInRef = useRef(false)
   // Token kept in a ref so API calls inside async turns see fresh values.
   const sessionTokenRef = useRef<string | null>(null)
+  // Last navigation the agent gave us; screens that omit `nav` keep it.
+  const navRef = useRef<NavItem[]>([])
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
   const [previewSpec, setPreviewSpec] = useState<UiSpec | null>(null)
@@ -47,26 +60,59 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
   const [canBack, setCanBack] = useState(false)
   const [canForward, setCanForward] = useState(false)
   const [pageName, setPageName] = useState('')
-  // "app" renders like a real website; "inspect" reveals per-component cards.
+  const [nav, setNav] = useState<NavItem[]>([])
+  const [activeNav, setActiveNav] = useState<string | null>(null)
+  // "app" renders like a real app; "inspect" reveals per-component cards.
   const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
 
   const session = sessionRef.current
+
+  // Overlays (menus, dialogs) portal to <body>, so the domino theme tokens
+  // go on the root element where HeroUI declares its own.
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    const vars = themeVars(domino.ui)
+    for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v)
+    root.dataset.density = domino.ui.density
+    return () => {
+      for (const k of Object.keys(vars)) root.style.removeProperty(k)
+      delete root.dataset.density
+    }
+  }, [domino])
 
   const syncNav = useCallback(() => {
     setCanBack(session.canBack)
     setCanForward(session.canForward)
   }, [session])
 
+  /** Apply a spec's navigation: explicit `nav` wins, login screens never show it. */
+  const applyNav = useCallback((spec: UiSpec) => {
+    let items = navRef.current
+    if (spec.nav !== undefined) items = spec.nav
+    else if (spec.page === 'login') items = []
+    navRef.current = items
+    setNav(items)
+    if (items.some((i) => i.id === spec.page)) setActiveNav(spec.page)
+  }, [])
+
+  const showSpec = useCallback(
+    (spec: UiSpec) => {
+      setCurrentSpec(spec)
+      setPreviewSpec(null)
+      setPageName(spec.pages.find((p) => p.id === spec.page)?.name ?? spec.page)
+      applyNav(spec)
+    },
+    [applyNav]
+  )
+
   const finalizeSpec = useCallback(
     (spec: UiSpec, cacheKey: string | null) => {
       session.push(spec)
       if (cacheKey) session.cacheSet(cacheKey, spec)
-      setCurrentSpec(spec)
-      setPreviewSpec(null)
-      setPageName(spec.pages.find((p) => p.id === spec.page)?.name ?? spec.page)
+      showSpec(spec)
       syncNav()
     },
-    [session, syncNav]
+    [session, showSpec, syncNav]
   )
 
   const apiRuntime = useCallback(
@@ -103,7 +149,9 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
                 finalizeSpec(update.spec, cacheKeyRef.current)
                 setStatus('')
               } else {
-                setPreviewSpec(update.spec)
+                // Previews are interruptible: typing/scrolling stays responsive
+                // while the screen assembles, and stale previews get skipped.
+                startTransition(() => setPreviewSpec(update.spec))
               }
               break
             case 'text':
@@ -164,6 +212,24 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
   }, [])
 
   /* ------------------------- back / forward keys ------------------------- */
+  const goBack = useCallback(() => {
+    const snap = session.back()
+    if (snap) {
+      turnSeq.current++ // cancel any streaming turn
+      showSpec(snap.spec)
+      syncNav()
+    }
+  }, [session, showSpec, syncNav])
+
+  const goForward = useCallback(() => {
+    const snap = session.forward()
+    if (snap) {
+      turnSeq.current++
+      showSpec(snap.spec)
+      syncNav()
+    }
+  }, [session, showSpec, syncNav])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!(e.metaKey || e.ctrlKey)) return
@@ -177,30 +243,7 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const goBack = useCallback(() => {
-    const snap = session.back()
-    if (snap) {
-      turnSeq.current++ // cancel any streaming turn
-      setCurrentSpec(snap.spec)
-      setPreviewSpec(null)
-      setPageName(snap.spec.pages.find((p) => p.id === snap.spec.page)?.name ?? '')
-      syncNav()
-    }
-  }, [session, syncNav])
-
-  const goForward = useCallback(() => {
-    const snap = session.forward()
-    if (snap) {
-      turnSeq.current++
-      setCurrentSpec(snap.spec)
-      setPreviewSpec(null)
-      setPageName(snap.spec.pages.find((p) => p.id === snap.spec.page)?.name ?? '')
-      syncNav()
-    }
-  }, [session, syncNav])
+  }, [goBack, goForward])
 
   /* ----------------------------- interactions ---------------------------- */
 
@@ -257,7 +300,7 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
         setError(`로그인 요청 실패: ${(err as Error).message}`)
       }
     },
-    [config, domino, runTurn, storage]
+    [domino, runTurn, storage]
   )
 
   const handleEvent = useCallback(
@@ -268,6 +311,40 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
         void handleLogin(e.data ?? {})
         return
       }
+
+      // Sign-out convention: the runtime owns the token, so it clears it itself.
+      if (e.event === 'click' && e.nodeId === 'logout' && loggedInRef.current) {
+        void (async () => {
+          await clearToken(storage, domino.id)
+          sessionTokenRef.current = null
+          loggedInRef.current = false
+          navRef.current = []
+          historyRef.current.push({
+            role: 'user',
+            content: 'ACTION click from Button/logout → SIGNED OUT (token cleared)'
+          })
+          const target = resolveInitialPage(domino, false)
+          await runTurn(
+            `The user signed out. Render the "${target}" page.`,
+            `signed-out::${target}`
+          )
+        })()
+        return
+      }
+
+      // Pages the agent already delivered switch instantly, like a real app.
+      const target = e.event === 'navigate' ? String(e.data?.page ?? e.nodeId) : null
+      if (
+        target &&
+        currentSpec &&
+        target !== currentSpec.page &&
+        currentSpec.pages.some((p) => p.id === target)
+      ) {
+        turnSeq.current++
+        finalizeSpec({ ...currentSpec, page: target }, null)
+        return
+      }
+      if (target && navRef.current.some((i) => i.id === target)) setActiveNav(target)
 
       historyRef.current.push({
         role: 'user',
@@ -289,124 +366,227 @@ export function Runtime({ loaded, config, onHome, onOpenSettings }: RuntimeProps
         cacheKey
       )
     },
-    [currentSpec, domino, finalizeSpec, handleLogin, runTurn, session]
+    [currentSpec, domino, finalizeSpec, handleLogin, runTurn, session, storage]
+  )
+
+  const handleNav = useCallback(
+    (item: NavItem): void => {
+      if (streaming && activeNav === item.id) return
+      handleEvent({
+        pageId: currentSpec?.page ?? '',
+        nodeId: item.id,
+        nodeName: 'nav',
+        event: 'navigate',
+        data: { page: item.id }
+      })
+    },
+    [activeNav, currentSpec, handleEvent, streaming]
   )
 
   /* -------------------------------- render -------------------------------- */
-  const shown = previewSpec ?? currentSpec
+  const view = useMemo(
+    () => (previewSpec ? streamView(currentSpec, previewSpec) : null),
+    [currentSpec, previewSpec]
+  )
+  const shown = view?.spec ?? currentSpec
+  const shownPageId = shown?.page
+  // A new screen starts at the top, like navigating in any app.
+  const bodyRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 })
+  }, [shownPageId])
   const needsKey = !config.apiKey && !/localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
+  const shownPage = shown ? (shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]) : null
+  // A screen still streaming already knows its name and navigation.
+  const title = (previewSpec && shownPage?.name) || pageName
+  const navItems = previewSpec?.nav?.length ? previewSpec.nav : nav
+  const hasNav = navItems.length > 0
+
+  const menuAction = (key: React.Key): void => {
+    if (key === 'forward') goForward()
+    else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
+    else if (key === 'settings') onOpenSettings()
+    else if (key === 'home') onHome()
+  }
 
   return (
-    <div
-      className="runtime"
-      data-theme={theme}
-      data-style={domino.ui.style}
-      data-density={domino.ui.density}
-      style={themeVars(domino.ui)}
-    >
-      <header className="toolbar">
-        <div className="toolbar-left">
-          <button className="icon-btn" onClick={onHome} title="홈으로" disabled={streaming}>
-            ⌂
-          </button>
-          <button className="icon-btn" onClick={goBack} title="이전 페이지 (⌘[)" disabled={!canBack}>
-            ←
-          </button>
-          <button
-            className="icon-btn"
-            onClick={goForward}
-            title="다음 페이지 (⌘])"
-            disabled={!canForward}
-          >
-            →
-          </button>
-          <span className="app-badge">
-            {domino.meta.logo ? (
-              <img
-                src={domino.meta.logo}
-                alt=""
-                className="app-logo"
-                onError={(e) => {
-                  ;(e.target as HTMLImageElement).style.display = 'none'
-                }}
-              />
-            ) : (
-              <span className="app-initial">{domino.meta.name.slice(0, 1).toUpperCase()}</span>
-            )}
-            <span className="app-name">{domino.meta.name}</span>
-          </span>
-          <span className="page-pill">{pageName || '—'}</span>
+    <div className="runtime" data-density={domino.ui.density} data-style={domino.ui.style}>
+      <header className="app-bar">
+        <BarButton label="이전 화면 (⌘[)" icon="back" onPress={goBack} isDisabled={!canBack} />
+        <BarButton
+          label="다음 화면 (⌘])"
+          icon="arrow-right"
+          onPress={goForward}
+          isDisabled={!canForward}
+          className="hide-phone"
+        />
+        <div className="app-bar-title">
+          {domino.meta.logo ? (
+            <img
+              src={domino.meta.logo}
+              alt=""
+              className="app-logo"
+              onError={(e) => {
+                ;(e.target as HTMLImageElement).style.display = 'none'
+              }}
+            />
+          ) : (
+            <span className="app-initial">{domino.meta.name.slice(0, 1).toUpperCase()}</span>
+          )}
+          <span className="app-name hide-phone">{domino.meta.name}</span>
+          {title ? (
+            <>
+              <span className="crumb-sep hide-phone">/</span>
+              <span className="page-name">{title}</span>
+            </>
+          ) : null}
         </div>
-        <div className="toolbar-right">
+        <div className="app-bar-actions">
           {streaming ? (
-            <span className="status-pill busy">
-              <span className="spinner small" /> {status || '생성 중…'}
+            <span
+              className="flex items-center gap-2 text-xs text-muted"
+              role="status"
+              aria-live="polite"
+            >
+              <Spinner size="sm" />
+              <span className="status-text hide-phone">{status || '생성 중…'}</span>
             </span>
-          ) : status ? (
-            <span className="status-pill">{status}</span>
           ) : null}
           {needsKey ? (
-            <button className="ghost-btn warn" onClick={onOpenSettings}>
-              BYOK 미설정
-            </button>
+            <Button size="sm" variant="outline" className="text-warning" onPress={onOpenSettings}>
+              <Icon name="key" />
+              <span className="hide-phone">BYOK 미설정</span>
+            </Button>
           ) : null}
-          <button
-            className={`icon-btn${chrome === 'inspect' ? ' active' : ''}`}
-            onClick={() => setChrome(chrome === 'app' ? 'inspect' : 'app')}
-            title={chrome === 'app' ? '구조 보기 (컴포넌트 카드)' : '앱처럼 보기'}
-          >
-            ▦
-          </button>
-          <button className="icon-btn" onClick={onOpenSettings} title="설정">
-            ⚙
-          </button>
+          <BarButton
+            label={chrome === 'app' ? '구조 보기 (컴포넌트 카드)' : '앱처럼 보기'}
+            icon="layers"
+            onPress={() => setChrome(chrome === 'app' ? 'inspect' : 'app')}
+            active={chrome === 'inspect'}
+            className="hide-phone"
+          />
+          <BarButton label="설정" icon="settings" onPress={onOpenSettings} className="hide-phone" />
+          <BarButton label="domino 닫기" icon="close" onPress={onHome} className="hide-phone" />
+          <Dropdown>
+            <Button isIconOnly variant="ghost" size="sm" aria-label="메뉴" className="phone-only">
+              <Icon name="more" size={18} />
+            </Button>
+            <Dropdown.Popover placement="bottom end">
+              <Dropdown.Menu
+                aria-label="Runtime menu"
+                onAction={menuAction}
+                disabledKeys={canForward ? [] : ['forward']}
+              >
+                <Dropdown.Item id="forward" textValue="다음 화면">
+                  <Icon name="arrow-right" />
+                  <Label>다음 화면</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="inspect" textValue="구조 보기">
+                  <Icon name="layers" />
+                  <Label>{chrome === 'app' ? '구조 보기' : '앱처럼 보기'}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="settings" textValue="설정">
+                  <Icon name="settings" />
+                  <Label>설정</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="home" textValue="domino 닫기">
+                  <Icon name="close" />
+                  <Label>domino 닫기</Label>
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
         </div>
       </header>
 
-      {error ? (
-        <div className="error-banner">
-          <span>{error}</span>
-          <button className="ghost-btn" onClick={() => setError(null)}>
-            닫기
-          </button>
-        </div>
-      ) : null}
-
-      <main className="runtime-body">
-        {shown ? (
-          <CardGrid
-            page={shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]}
-            spec={shown}
-            onEvent={handleEvent}
-            streaming={Boolean(previewSpec)}
-            chrome={chrome}
-          />
-        ) : (
-          <div className="center-state">
-            <span className="spinner" />
-            <p>{error ? '오류가 발생했습니다' : '앱을 구성하는 중…'}</p>
-            {streaming ? <p className="muted">{status}</p> : null}
-          </div>
-        )}
-      </main>
+      <div className="runtime-main">
+        {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
+        <main className="runtime-body" ref={bodyRef}>
+          {streaming ? <div className="stream-bar" aria-hidden /> : null}
+          {error ? (
+            <div className="runtime-banner">
+              <Alert
+                variant="danger"
+                title="화면을 만들지 못했습니다"
+                message={error}
+                onClose={() => setError(null)}
+              />
+            </div>
+          ) : null}
+          {shown && shownPage ? (
+            <CardGrid
+              page={shownPage}
+              spec={shown}
+              onEvent={handleEvent}
+              streaming={Boolean(previewSpec)}
+              pending={view?.pending}
+              hidden={view?.hidden}
+              chrome={chrome}
+              density={domino.ui.density}
+            />
+          ) : error ? null : (
+            <LoadingScreen />
+          )}
+        </main>
+      </div>
+      {hasNav ? <BottomNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
     </div>
   )
 }
 
-/** Map [ui] section values onto the runtime's CSS custom properties. */
-function themeVars(ui: DominoFile['ui']): Record<string, string> {
-  const vars: Record<string, string> = {}
-  if (ui.primary) vars['--primary'] = ui.primary
-  if (ui.success) vars['--ok'] = ui.success
-  if (ui.warning) vars['--warn'] = ui.warning
-  if (ui.danger) vars['--danger'] = ui.danger
-  const radius = ui.radius ?? (ui.style === 'sharp' ? 0 : undefined)
-  if (radius !== undefined) {
-    vars['--radius'] = `${radius}px`
-    // Inner controls track the card corners so the whole UI reads as one style.
-    vars['--radius-sm'] = `${Math.min(radius, 6)}px`
-  }
-  return vars
+function BarButton({
+  label,
+  icon,
+  onPress,
+  isDisabled,
+  active,
+  className
+}: {
+  label: string
+  icon: string
+  onPress: () => void
+  isDisabled?: boolean
+  active?: boolean
+  className?: string
+}): React.JSX.Element {
+  return (
+    <Tooltip delay={600}>
+      <Button
+        isIconOnly
+        size="sm"
+        variant={active ? 'secondary' : 'ghost'}
+        aria-label={label}
+        onPress={onPress}
+        isDisabled={isDisabled}
+        className={className}
+      >
+        <Icon name={icon} size={18} />
+      </Button>
+      <Tooltip.Content>{label}</Tooltip.Content>
+    </Tooltip>
+  )
+}
+
+/** First-render placeholder shaped like a typical app screen. */
+function LoadingScreen(): React.JSX.Element {
+  return (
+    <div
+      className="mx-auto flex max-w-[1360px] flex-col gap-4 p-4 sm:p-6"
+      aria-busy="true"
+      aria-label="앱을 구성하는 중"
+    >
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-7 w-56 rounded-lg" />
+        <Skeleton className="h-4 w-80 max-w-full rounded-lg" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-28 rounded-3xl" />
+        ))}
+      </div>
+      <Skeleton className="h-72 rounded-3xl" />
+    </div>
+  )
 }
 
 function resolveInitialPage(domino: DominoFile, loggedIn: boolean): string {
