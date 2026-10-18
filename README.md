@@ -323,7 +323,7 @@ npx cap open android    # open in Android Studio, then run on device/emulator
 ```
 
 CI signs release APKs with the key stored in the repository secrets `ANDROID_KEYSTORE_BASE64`,
-`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`, and checks the
+`ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_PASSWORD` (key alias `domino`), and checks the
 signing certificate against the SHA-256 fingerprint in `build.yml`. Without those secrets it
 publishes a debug-signed APK. Keep a backup of the keystore — Android only installs updates
 signed with the same key.

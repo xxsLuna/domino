@@ -77,6 +77,8 @@ jobs:
     env:
       # SHA-256 of the release signing certificate (public); release APKs must match it.
       ANDROID_CERT_SHA256: 950e63ed12f4764f94627aeacfa936444f368e9e4cdf9e92273dfd5d9c1b5cb4
+      # Not a secret: as one, GitHub would mask the word everywhere in the logs.
+      DOMINO_KEY_ALIAS: domino
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -94,7 +96,6 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           DOMINO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          DOMINO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           DOMINO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
@@ -104,9 +105,16 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
             export DOMINO_KEYSTORE="$RUNNER_TEMP/release.keystore"
             ./gradlew --no-daemon assembleRelease
+            ls -l app/build/outputs/apk/release/
             APK=app/build/outputs/apk/release/app-release.apk
             APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
-            DIGEST=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+            if ! CERTS=$("$APKSIGNER" verify --print-certs "$APK" 2>&1); then
+              echo "$CERTS"
+              echo "::error::apksigner could not verify the release APK"
+              exit 1
+            fi
+            echo "$CERTS"
+            DIGEST=$(echo "$CERTS" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
             echo "APK signing certificate SHA-256: $DIGEST"
             if [ "$DIGEST" != "$ANDROID_CERT_SHA256" ]; then
               echo "::error::release APK is not signed with the domino release key"
