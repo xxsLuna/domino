@@ -7,7 +7,7 @@ import {
   useRef,
   useState
 } from 'react'
-import { Button, Dropdown, Label, Skeleton, Spinner, Tooltip } from '@heroui/react'
+import { Button, Dropdown, Header, Label, Skeleton, Spinner, Tooltip } from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
 import { buildSystemPrompt } from '@core/agent/prompt'
 import { resolveEndpoint } from '@core/agent/api'
@@ -23,8 +23,15 @@ import { streamView } from '@core/ui/streaming'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
-import { isSignOutEvent, withKnownPages, type ActionEvent, type NavItem, type UiSpec } from '@core/spec'
+import {
+  isSignOutEvent,
+  withKnownPages,
+  type ActionEvent,
+  type NavItem,
+  type UiSpec
+} from '@core/spec'
 import type { LoadedDomino } from '../loadDomino'
+import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
 
 interface RuntimeProps {
@@ -251,6 +258,12 @@ export function Runtime({
     return () => window.removeEventListener('keydown', onKey)
   }, [goBack, goForward])
 
+  // Android back / browser back: earlier screen first, then close the domino.
+  useBackHandler(true, () => {
+    if (session.canBack) goBack()
+    else onHome()
+  })
+
   /* ----------------------------- interactions ---------------------------- */
 
   const handleLogin = useCallback(
@@ -259,11 +272,14 @@ export function Runtime({
       setStatus('로그인 중…')
       setError(null)
       try {
-        const res = await httpFetch(resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(data)
-        })
+        const res = await httpFetch(
+          resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl),
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(data)
+          }
+        )
         let body: unknown = null
         const text = await res.text()
         try {
@@ -400,27 +416,53 @@ export function Runtime({
   const shownPageId = shown?.page
   // A new screen starts at the top, like navigating in any app.
   const bodyRef = useRef<HTMLElement>(null)
+  const [scrolled, setScrolled] = useState<'up' | 'down'>('up')
+  const lastScroll = useRef(0)
   useLayoutEffect(() => {
     bodyRef.current?.scrollTo({ top: 0 })
+    lastScroll.current = 0
+    setScrolled('up')
   }, [shownPageId])
+  // Hide the floating runtime button while reading down; bring it back on scroll up.
+  const onBodyScroll = (e: React.UIEvent<HTMLElement>): void => {
+    const y = e.currentTarget.scrollTop
+    const delta = y - lastScroll.current
+    if (Math.abs(delta) < 8) return
+    lastScroll.current = y
+    setScrolled(delta > 0 && y > 48 ? 'down' : 'up')
+  }
   // A same-origin base URL ("/zen/…") goes through the dev proxy, which may add the key.
-  const needsKey =
-    !config.apiKey && !/^\/|localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
+  const needsKey = !config.apiKey && !/^\/|localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
   const shownPage = shown ? (shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]) : null
   // A screen still streaming already knows its name and navigation.
   const title = (previewSpec && shownPage?.name) || pageName
   const navItems = previewSpec?.nav?.length ? previewSpec.nav : nav
   const hasNav = navItems.length > 0
 
+  // The floating action button sits above the bottom tab bar when there is one.
+  useEffect(() => {
+    const root = document.documentElement
+    root.style.setProperty('--bottom-nav-h', hasNav ? '64px' : '0px')
+    return () => {
+      root.style.removeProperty('--bottom-nav-h')
+    }
+  }, [hasNav])
+
   const menuAction = (key: React.Key): void => {
-    if (key === 'forward') goForward()
+    if (key === 'back') goBack()
+    else if (key === 'forward') goForward()
     else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
     else if (key === 'settings') onOpenSettings()
     else if (key === 'home') onHome()
   }
 
   return (
-    <div className="runtime" data-density={domino.ui.density} data-style={domino.ui.style}>
+    <div
+      className="runtime"
+      data-density={domino.ui.density}
+      data-style={domino.ui.style}
+      data-scrolled={scrolled}
+    >
       <header className="app-bar">
         <BarButton label="이전 화면 (⌘[)" icon="back" onPress={goBack} isDisabled={!canBack} />
         <BarButton
@@ -477,41 +519,56 @@ export function Runtime({
           />
           <BarButton label="설정" icon="settings" onPress={onOpenSettings} className="hide-phone" />
           <BarButton label="domino 닫기" icon="close" onPress={onHome} className="hide-phone" />
-          <Dropdown>
-            <Button isIconOnly variant="ghost" size="sm" aria-label="메뉴" className="phone-only">
-              <Icon name="more" size={18} />
-            </Button>
-            <Dropdown.Popover placement="bottom end">
-              <Dropdown.Menu
-                aria-label="Runtime menu"
-                onAction={menuAction}
-                disabledKeys={canForward ? [] : ['forward']}
-              >
+        </div>
+      </header>
+
+      {/* Phones: the runtime controls shrink to one floating button. */}
+      <div className="runtime-pill phone-only">
+        <Dropdown>
+          <Button isIconOnly variant="secondary" aria-label="Domino UI 메뉴">
+            {streaming ? <Spinner size="sm" /> : <Icon name="more" size={18} />}
+          </Button>
+          <Dropdown.Popover placement="bottom end">
+            <Dropdown.Menu
+              aria-label="Runtime menu"
+              onAction={menuAction}
+              disabledKeys={[...(canBack ? [] : ['back']), ...(canForward ? [] : ['forward'])]}
+            >
+              <Dropdown.Section>
+                <Header className="px-2 pb-1 text-xs text-muted">
+                  {domino.meta.name}
+                  {title ? ` · ${title}` : ''}
+                  {streaming ? ` · ${status || '생성 중…'}` : ''}
+                </Header>
+                <Dropdown.Item id="back" textValue="이전 화면">
+                  <Icon name="back" />
+                  <Label>이전 화면</Label>
+                </Dropdown.Item>
                 <Dropdown.Item id="forward" textValue="다음 화면">
                   <Icon name="arrow-right" />
                   <Label>다음 화면</Label>
                 </Dropdown.Item>
-                <Dropdown.Item id="inspect" textValue="구조 보기">
-                  <Icon name="layers" />
-                  <Label>{chrome === 'app' ? '구조 보기' : '앱처럼 보기'}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item id="settings" textValue="설정">
-                  <Icon name="settings" />
-                  <Label>설정</Label>
-                </Dropdown.Item>
-                <Dropdown.Item id="home" textValue="domino 닫기">
-                  <Icon name="close" />
-                  <Label>domino 닫기</Label>
-                </Dropdown.Item>
-              </Dropdown.Menu>
-            </Dropdown.Popover>
-          </Dropdown>
-        </div>
-      </header>
+              </Dropdown.Section>
+              <Dropdown.Item id="inspect" textValue="구조 보기">
+                <Icon name="layers" />
+                <Label>{chrome === 'app' ? '구조 보기' : '앱처럼 보기'}</Label>
+              </Dropdown.Item>
+              <Dropdown.Item id="settings" textValue="설정">
+                <Icon name={needsKey ? 'key' : 'settings'} />
+                <Label>{needsKey ? '설정 (BYOK 미설정)' : '설정'}</Label>
+              </Dropdown.Item>
+              <Dropdown.Item id="home" textValue="domino 닫기">
+                <Icon name="close" />
+                <Label>domino 닫기</Label>
+              </Dropdown.Item>
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
+      </div>
 
       <div className="runtime-main">
         {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
-        <main className="runtime-body" ref={bodyRef}>
+        <main className="runtime-body" ref={bodyRef} onScroll={onBodyScroll}>
           {streaming ? <div className="stream-bar" aria-hidden /> : null}
           {error ? (
             <div className="runtime-banner">

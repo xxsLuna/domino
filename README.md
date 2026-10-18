@@ -1,12 +1,12 @@
 <div align="center">
 
-# domino
+# Domino UI
 
 **English** · [简体中文](README.zh-CN.md)
 
 **Open a `.domino` file. An LLM builds the app — live.**
 
-A cross-platform runtime where plain-text *domino* definitions (DOM + agent) are turned
+**Domino UI** is a cross-platform runtime where plain-text *domino* definitions (DOM + agent) are turned
 into working, interactive UIs by your own LLM API key. No hand-written screens, no
 boilerplate — the definition describes the app, and the agent renders it in real time.
 
@@ -120,10 +120,10 @@ Grab the latest build for your OS from the
 
 | Platform | Artifact |
 |----------|----------|
-| macOS (Apple silicon) | `domino-<version>-arm64.dmg`, `domino-<version>-arm64-mac.zip` |
-| Windows | `domino-<version>-win-x64.exe` (NSIS installer) |
-| Linux | `domino-<version>.AppImage`, `domino_<version>_amd64.deb` |
-| Android | `domino-<version>-android.apk` |
+| macOS (Apple silicon) | `domino-ui-<version>-arm64-mac.dmg`, `domino-ui-<version>-arm64-mac.zip` |
+| Windows | `domino-ui-<version>-win-x64.exe` (NSIS installer) |
+| Linux | `domino-ui-<version>.AppImage`, `domino-ui_<version>_amd64.deb` |
+| Android | `domino-ui-<version>-android.apk` |
 
 ## Quick start
 

@@ -24,10 +24,28 @@
   }
 }
 
+:root {
+  --sat: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --sab: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --sal: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --sar: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+}
+
+/* Edge to edge: the app paints behind the status bar; content starts below it. */
 .app {
   height: 100%;
   display: flex;
   flex-direction: column;
+  padding: var(--sat) var(--sar) 0 var(--sal);
+  background: var(--background);
+}
+@media (min-width: 640px) {
+  .app:has(> .runtime) {
+    background: var(--surface);
+  }
+}
+.app:has(> .update-banner) {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--background);
 }
 
 .boot-state,
@@ -59,8 +77,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 56px;
-  padding: env(safe-area-inset-top) 12px 0;
+  min-height: 48px;
+  padding: 0 10px;
   background: var(--surface);
   border-bottom: 1px solid var(--separator);
   position: relative;
@@ -135,6 +153,36 @@
   scrollbar-gutter: stable;
 }
 
+/* Phones: no bar — a small floating button opens the runtime menu and
+   slides away while scrolling down, so the app owns the whole screen. */
+.runtime-pill {
+  position: fixed;
+  top: calc(var(--sat) + 10px);
+  right: calc(var(--sar) + 10px);
+  z-index: 30;
+  transition:
+    transform 0.2s ease,
+    opacity 0.2s ease;
+}
+.runtime-pill .button {
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  box-shadow: var(--overlay-shadow);
+  backdrop-filter: blur(8px);
+}
+.runtime[data-scrolled='down'] .runtime-pill {
+  transform: translateY(calc(-100% - 12px - var(--sat)));
+  opacity: 0;
+}
+@media (max-width: 639px) {
+  .app-bar {
+    display: none;
+  }
+  /* Keep the first row clear of the floating button. */
+  .card-grid[data-bp='sm'] > .grid-cell[data-top-right] {
+    padding-right: 48px;
+  }
+}
+
 /* Indeterminate top progress while the agent renders the next screen. */
 .stream-bar {
   position: sticky;
@@ -197,9 +245,11 @@
     background-color 0.15s,
     color 0.15s;
 }
-.nav-item:hover {
-  background: var(--default);
-  color: var(--foreground);
+@media (hover: hover) {
+  .nav-item:hover {
+    background: var(--default);
+    color: var(--foreground);
+  }
 }
 .nav-item:focus-visible {
   outline: 2px solid var(--focus);
@@ -277,7 +327,7 @@
     display: flex;
     background: var(--surface);
     border-top: 1px solid var(--separator);
-    padding: 4px 4px env(safe-area-inset-bottom);
+    padding: 4px 4px var(--sab);
     z-index: 10;
   }
   .bottom-nav .nav-item {
@@ -341,7 +391,60 @@
 }
 .card-grid[data-bp='sm'] {
   gap: 12px;
-  padding: 16px 16px 24px;
+  /* bottom room for the floating action button */
+  padding: 16px 16px 96px;
+}
+.runtime:not(:has(.bottom-nav)) .card-grid {
+  padding-bottom: calc(24px + var(--sab));
+}
+.runtime:not(:has(.bottom-nav)) .card-grid[data-bp='sm'] {
+  padding-bottom: calc(96px + var(--sab));
+}
+
+/* Floating action button (a page's primary action on phones). */
+.fab-slot {
+  position: fixed;
+  right: calc(16px + var(--sar));
+  bottom: calc(16px + var(--sab) + var(--bottom-nav-h, 0px));
+  z-index: 25;
+}
+.fab-slot .button {
+  min-height: 52px;
+  padding-inline: 20px;
+  border-radius: 18px;
+  box-shadow: var(--overlay-shadow), 0 6px 16px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+
+/* Phone forms: actions stay reachable at the bottom while filling in. */
+.form-actions-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0 -20px -20px;
+  padding: 12px 20px calc(12px + var(--sab));
+  background: var(--surface);
+  border-top: 1px solid var(--separator);
+  border-radius: 0 0 min(32px, var(--radius-3xl)) min(32px, var(--radius-3xl));
+}
+
+/* Touch screens: 44px targets (Material/HIG minimum). */
+@media (pointer: coarse) {
+  .button:not(.button--sm):not(.button--icon-only) {
+    min-height: 44px;
+  }
+  .button--icon-only:not(.button--sm) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .input,
+  .select__trigger,
+  .search-field__group,
+  .input-group {
+    min-height: 44px;
+  }
+  .tabs__tab {
+    min-height: 40px;
+  }
 }
 .runtime[data-density='compact'] .card-grid {
   gap: 12px;
@@ -440,7 +543,7 @@
   align-items: center;
   gap: 10px;
   min-height: 44px;
-  padding: calc(env(safe-area-inset-top) + 6px) 14px 6px;
+  padding: 6px 14px;
   background: var(--accent-soft);
   color: var(--accent-soft-foreground);
   font-size: 13px;
@@ -502,7 +605,7 @@
   width: 100%;
   max-width: 760px;
   margin: 0 auto;
-  padding: calc(48px + env(safe-area-inset-top)) 20px 40px;
+  padding: 48px 20px calc(40px + var(--sab));
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -510,7 +613,7 @@
 }
 @media (max-width: 639px) {
   .welcome {
-    padding-top: calc(24px + env(safe-area-inset-top));
+    padding-top: 20px;
     padding-inline: 16px;
   }
 }

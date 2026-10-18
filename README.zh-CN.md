@@ -1,12 +1,12 @@
 <div align="center">
 
-# domino
+# Domino UI
 
 [English](README.md) · **简体中文**
 
 **打开一个 `.domino` 文件，LLM 即时为你构建整个应用。**
 
-一个跨平台运行时：纯文本的 *domino* 定义（DOM + 智能体）会被你自己的 LLM API Key
+**Domino UI** 是一个跨平台运行时：纯文本的 *domino* 定义（DOM + 智能体）会被你自己的 LLM API Key
 实时转换成可交互的应用界面。无需手写页面、无需模板 —— 定义描述应用，智能体负责渲染。
 
 [![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
@@ -110,10 +110,10 @@ Release —— 想发布新版本就提升版本号）：
 
 | 平台 | 产物 |
 |------|------|
-| macOS（Apple 芯片） | `domino-<版本号>-arm64.dmg`、`domino-<版本号>-arm64-mac.zip` |
-| Windows | `domino-<版本号>-win-x64.exe`（NSIS 安装包） |
-| Linux | `domino-<版本号>.AppImage`、`domino_<版本号>_amd64.deb` |
-| Android | `domino-<版本号>-android.apk` |
+| macOS（Apple 芯片） | `domino-ui-<版本号>-arm64-mac.dmg`、`domino-ui-<版本号>-arm64-mac.zip` |
+| Windows | `domino-ui-<版本号>-win-x64.exe`（NSIS 安装包） |
+| Linux | `domino-ui-<版本号>.AppImage`、`domino-ui_<版本号>_amd64.deb` |
+| Android | `domino-ui-<版本号>-android.apk` |
 
 ## 快速开始
 

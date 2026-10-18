@@ -1,6 +1,6 @@
 {
   "appId": "ui.domino.runtime",
-  "appName": "domino",
+  "appName": "Domino UI",
   "webDir": "dist-web",
   "server": {
     "androidScheme": "https"
@@ -8,6 +8,10 @@
   "plugins": {
     "CapacitorHttp": {
       "enabled": true
+    },
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
     }
   }
 }

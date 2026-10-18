@@ -1,3 +1,4 @@
+import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core'
 import { bridgedFetch, setHttpFetch, type NetTransport } from '@core/net'
 import type { KeyValueStorage } from '@core/session/prefs'
 
@@ -49,6 +50,21 @@ declare global {
 
 export function isElectron(): boolean {
   return Boolean(window.dominoBridge)
+}
+
+/** Android/iOS shell (Capacitor), as opposed to a browser or Electron. */
+export function isNativeMobile(): boolean {
+  return Capacitor.isNativePlatform()
+}
+
+/** Status/navigation bar icons readable on the current theme (edge-to-edge). */
+export function syncSystemBars(theme: 'light' | 'dark'): void {
+  if (!isNativeMobile()) return
+  void SystemBars.setStyle({
+    style: theme === 'dark' ? SystemBarsStyle.Dark : SystemBarsStyle.Light
+  }).catch(() => {
+    /* older shells without SystemBars: keep the default */
+  })
 }
 
 /** On desktop, outbound HTTP runs in the main process — free of browser CORS. */

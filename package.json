@@ -1,6 +1,6 @@
 {
   "name": "domino",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "domino: open .domino files and let an LLM generate the app UI in real time",
   "author": {
     "name": "Luna",
@@ -10,7 +10,7 @@
   "private": true,
   "build": {
     "appId": "ui.domino.runtime",
-    "productName": "domino",
+    "productName": "Domino UI",
     "directories": {
       "output": "release"
     },
@@ -22,7 +22,8 @@
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "artifactName": "domino-ui-${version}-${arch}-mac.${ext}"
     },
     "win": {
       "target": [
@@ -37,7 +38,13 @@
       "category": "Utility"
     },
     "nsis": {
-      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+      "artifactName": "domino-ui-${version}-win-${arch}.${ext}"
+    },
+    "appImage": {
+      "artifactName": "domino-ui-${version}.${ext}"
+    },
+    "deb": {
+      "artifactName": "domino-ui_${version}_${arch}.${ext}"
     }
   },
   "scripts": {
@@ -54,6 +61,7 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
     "@capacitor/cli": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@gravity-ui/icons": "^2.23.0",

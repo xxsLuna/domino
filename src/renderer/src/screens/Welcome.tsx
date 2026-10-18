@@ -13,7 +13,11 @@ interface WelcomeProps {
   onOpenMaker: () => void
 }
 
-export function Welcome({ onLoaded, onOpenSettings, onOpenMaker }: WelcomeProps): React.JSX.Element {
+export function Welcome({
+  onLoaded,
+  onOpenSettings,
+  onOpenMaker
+}: WelcomeProps): React.JSX.Element {
   const storage = getStorage()
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
@@ -69,7 +73,7 @@ export function Welcome({ onLoaded, onOpenSettings, onOpenMaker }: WelcomeProps)
             <DominoMark />
           </span>
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">domino</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Domino UI</h1>
             <p className="text-sm text-muted">
               .domino 파일로 열리는, LLM이 실시간 만드는 앱 런타임
             </p>
@@ -90,7 +94,7 @@ export function Welcome({ onLoaded, onOpenSettings, onOpenMaker }: WelcomeProps)
         </Card.Header>
         <Card.Content className="flex flex-col gap-3">
           <form
-            className="flex flex-col gap-2 sm:flex-row"
+            className="flex gap-2"
             onSubmit={(e) => {
               e.preventDefault()
               openUrl()
@@ -111,8 +115,9 @@ export function Welcome({ onLoaded, onOpenSettings, onOpenMaker }: WelcomeProps)
                 <InputGroup.Input placeholder="domino://app.example.com/crm.domino 또는 https://…/app.domino" />
               </InputGroup>
             </TextField>
-            <Button type="submit" isDisabled={busy || !url.trim()}>
-              열기
+            <Button type="submit" isDisabled={busy || !url.trim()} aria-label="열기">
+              <Icon name="arrow-right" className="phone-only" />
+              <span className="hide-phone">열기</span>
             </Button>
           </form>
           <div className="flex flex-wrap gap-2">
@@ -162,15 +167,17 @@ export function Welcome({ onLoaded, onOpenSettings, onOpenMaker }: WelcomeProps)
 
       <Card>
         <Card.Content className="flex flex-col gap-4 sm:flex-row sm:items-center">
-          <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-accent-soft text-accent-soft-foreground">
-            <Icon name="lightbulb" size={22} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="font-semibold">domino maker</p>
-            <p className="text-sm text-muted">
-              만들고 싶은 앱을 자연어로 설명하면, 부족한 정보를 물어본 뒤 .domino 파일을 만들어
-              드립니다.
-            </p>
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-accent-soft text-accent-soft-foreground">
+              <Icon name="lightbulb" size={22} />
+            </span>
+            <div className="min-w-0">
+              <p className="font-semibold">domino maker</p>
+              <p className="text-sm text-muted">
+                만들고 싶은 앱을 자연어로 설명하면, 부족한 정보를 물어본 뒤 .domino 파일을 만들어
+                드립니다.
+              </p>
+            </div>
           </div>
           <Button onPress={onOpenMaker} isDisabled={busy}>
             <Icon name="plus" />

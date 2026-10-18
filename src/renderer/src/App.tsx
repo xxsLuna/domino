@@ -5,7 +5,8 @@ import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import type { LLMConfig } from '@core/llm'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from './loadDomino'
-import { getStorage } from './platform'
+import { useBackHandler } from './backStack'
+import { getStorage, syncSystemBars } from './platform'
 import { useFileDrop } from './useFileDrop'
 import { useSystemTheme } from './useSystemTheme'
 import { Maker } from './screens/Maker'
@@ -33,7 +34,13 @@ export function App(): React.JSX.Element {
     loaded && loaded.domino.ui.theme !== 'auto' ? loaded.domino.ui.theme : systemTheme
   useEffect(() => {
     document.documentElement.dataset.theme = effectiveTheme
+    syncSystemBars(effectiveTheme)
   }, [effectiveTheme])
+
+  // Android back / browser back: settings closes first, then the maker.
+  // (The runtime registers its own handler for its screen history.)
+  useBackHandler(makerOpen && !loaded, () => setMakerOpen(false))
+  useBackHandler(settingsOpen, () => setSettingsOpen(false))
 
   const show = useCallback((result: LoadedDomino) => {
     setLoaded(result)

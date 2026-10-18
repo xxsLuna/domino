@@ -126,7 +126,7 @@ jobs:
             ./gradlew --no-daemon assembleDebug
             APK=app/build/outputs/apk/debug/app-debug.apk
           fi
-          cp "$APK" "../release/domino-$VERSION-android.apk"
+          cp "$APK" "../release/domino-ui-$VERSION-android.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: domino-android

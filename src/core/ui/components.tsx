@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import {
   Children,
   createContext,
@@ -158,7 +159,8 @@ export function PageHeader({
   icon,
   badge,
   badgeVariant,
-  children
+  children,
+  childNodes
 }: NodeProps & {
   title?: string
   description?: string
@@ -167,7 +169,17 @@ export function PageHeader({
   badgeVariant?: string
 }) {
   const { bp } = useLayout()
-  const hasActions = Children.count(children) > 0
+  const actions = Children.toArray(children)
+  // Phones: the page's primary action floats above the tab bar (Material FAB);
+  // the rest stay as compact buttons under the title.
+  const fabIndex =
+    bp === 'sm'
+      ? (childNodes ?? []).findIndex(
+          (n) => n.name === 'Button' && ['primary', undefined].includes(n.props?.variant as string)
+        )
+      : -1
+  const fab = fabIndex >= 0 ? actions[fabIndex] : null
+  const inline = fab ? actions.filter((_, i) => i !== fabIndex) : actions
   return (
     <header className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-1">
       <div className="flex min-w-0 items-center gap-3">
@@ -188,13 +200,14 @@ export function PageHeader({
           {description ? <p className="mt-0.5 text-sm text-muted">{text(description)}</p> : null}
         </div>
       </div>
-      {hasActions ? (
-        <div
-          className={`flex flex-wrap items-center gap-2 ${bp === 'sm' ? 'w-full [&>*]:flex-1' : ''}`}
-        >
-          {children}
+      {inline.length ? (
+        <div className={`flex flex-wrap items-center gap-2 ${bp === 'sm' ? 'w-full' : ''}`}>
+          {inline}
         </div>
       ) : null}
+      {fab && typeof document !== 'undefined'
+        ? createPortal(<div className="fab-slot">{fab}</div>, document.body)
+        : null}
     </header>
   )
 }
@@ -476,6 +489,8 @@ export function Form({
   nodeName
 }: NodeProps & { title?: string; description?: string; columns?: number; submitText?: string }) {
   const runtime = useRuntime()
+  // Only a form that owns its card gets the sticky phone action bar (it bleeds to the card edge).
+  const ownsCard = !useContext(SurfaceContext)
   const { bp } = useLayout()
   const size = useSize()
   const kids = Children.toArray(children)
@@ -526,7 +541,7 @@ export function Form({
         <div
           className={
             bp === 'sm'
-              ? 'flex flex-col-reverse gap-2 [&>*]:w-full'
+              ? `flex gap-2 ${buttons.length > 2 ? 'flex-col-reverse [&>*]:w-full' : '[&>*]:flex-1'} ${ownsCard ? 'form-actions-sticky' : ''}`
               : 'flex flex-wrap items-center justify-end gap-2'
           }
         >
@@ -1114,52 +1129,67 @@ export function Table({
     )
   }
 
-  // Phones: each row becomes a card — first column as the title, the rest as label/value lines.
+  // Phones: a native list — first column as the title, the other text columns as
+  // one subtitle line, the last column (amount, date…) and any status chip at the end.
   if (bp === 'sm') {
+    const isChip = (v: unknown): boolean =>
+      !!v && typeof v === 'object' && !Array.isArray(v) && ('text' in v || 'label' in v)
+    const last = cols.length - 1
     return (
-      <div className="flex flex-col gap-2">
+      <Surface className="p-4">
         {header}
-        {body.map((row, i) => {
-          const cells = rowCells(row, cols)
-          const content = (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate font-medium text-foreground">
-                  <Cell value={cells[0]} />
+        <ul className="-mx-1 flex flex-col divide-y divide-separator">
+          {body.map((row, i) => {
+            const cells = rowCells(row, cols)
+            const chipAt = cells.findIndex((c, j) => j > 0 && isChip(c))
+            const valueAt = last > 0 && last !== chipAt ? last : -1
+            const sub = cells
+              .flatMap((c, j) => (j > 0 && j !== chipAt && j !== valueAt ? [cellText(c)] : []))
+              .filter((v) => v !== null && v !== undefined && v !== '')
+              .map(String)
+              .join(' · ')
+            const inner = (
+              <>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-[15px] font-medium text-foreground">
+                    <Cell value={cells[0]} />
+                  </span>
+                  {sub ? <span className="truncate text-xs text-muted">{sub}</span> : null}
                 </span>
+                {valueAt >= 0 || chipAt >= 0 ? (
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    {valueAt >= 0 ? (
+                      <span className="text-sm font-medium tabular-nums text-foreground">
+                        <Cell value={cells[valueAt]} />
+                      </span>
+                    ) : null}
+                    {chipAt >= 0 ? <Cell value={cells[chipAt]} /> : null}
+                  </span>
+                ) : null}
                 {interactive ? (
                   <Icon name="chevron-right" size={16} className="shrink-0 text-muted" />
                 ) : null}
-              </div>
-              <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                {cols.slice(1).map((c, j) => (
-                  <div key={j} className="contents">
-                    <dt className="text-muted">{c.label}</dt>
-                    <dd className="min-w-0 truncate text-right text-foreground">
-                      <Cell value={cells[j + 1]} />
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </>
-          )
-          const cls = 'block w-full rounded-2xl bg-surface p-4 text-left shadow-surface'
-          return interactive ? (
-            <button
-              key={i}
-              type="button"
-              className={`${cls} cursor-pointer transition-colors hover:bg-surface-hover`}
-              onClick={() => select(i)}
-            >
-              {content}
-            </button>
-          ) : (
-            <div key={i} className={cls}>
-              {content}
-            </div>
-          )
-        })}
-      </div>
+              </>
+            )
+            const cls = 'flex min-h-14 w-full items-center gap-3 px-1 py-2.5 text-left'
+            return (
+              <li key={i}>
+                {interactive ? (
+                  <button
+                    type="button"
+                    className={`${cls} cursor-pointer rounded-xl transition-colors active:bg-default`}
+                    onClick={() => select(i)}
+                  >
+                    {inner}
+                  </button>
+                ) : (
+                  <div className={cls}>{inner}</div>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      </Surface>
     )
   }
 

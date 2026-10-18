@@ -72,6 +72,12 @@ export function CardGrid({
     [page.layout, hidden]
   )
   const placed = useMemo(() => placeNodes(nodes, bp), [nodes, bp])
+  // Last cell of the first row: on phones it makes room for the floating menu button.
+  const topRight = useMemo(() => {
+    const y = placed[0]?.node.grid?.y
+    const end = placed.findIndex((p, i) => i > 0 && (y === undefined || p.node.grid?.y !== y))
+    return (end === -1 ? placed.length : end) - 1
+  }, [placed])
 
   return (
     <RuntimeContext.Provider value={runtime}>
@@ -83,8 +89,9 @@ export function CardGrid({
           data-chrome={chrome}
           data-streaming={streaming ? 'true' : undefined}
         >
-          {placed.map(({ node, index, placement }) => (
+          {placed.map(({ node, index, placement }, i) => (
             <GridCell
+              topRight={i === topRight}
               key={node.id ?? `${node.name}-${index}`}
               node={node}
               signature={node === pending ? `pending:${node.name}` : signatureOf(node)}
@@ -134,6 +141,7 @@ interface GridCellProps {
   chrome: 'app' | 'inspect'
   /** Still streaming: show a placeholder instead of rendering partial props. */
   pending?: boolean
+  topRight?: boolean
 }
 
 const GridCell = memo(
@@ -142,7 +150,8 @@ const GridCell = memo(
     signature,
     placement,
     chrome,
-    pending
+    pending,
+    topRight
   }: GridCellProps): React.JSX.Element {
     const style: React.CSSProperties = {
       gridColumn: placement.column,
@@ -164,7 +173,12 @@ const GridCell = memo(
     if (chrome === 'app') {
       return (
         <CellContext.Provider value={cell}>
-          <div className="grid-cell" style={style} data-node={node.name}>
+          <div
+            className="grid-cell"
+            style={style}
+            data-node={node.name}
+            data-top-right={topRight || undefined}
+          >
             {body}
           </div>
         </CellContext.Provider>
@@ -190,6 +204,7 @@ const GridCell = memo(
   (a, b) =>
     a.signature === b.signature &&
     a.pending === b.pending &&
+    a.topRight === b.topRight &&
     a.chrome === b.chrome &&
     a.placement.column === b.placement.column &&
     a.placement.row === b.placement.row &&

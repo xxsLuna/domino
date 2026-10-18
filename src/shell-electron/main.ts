@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  Menu,
   nativeTheme,
   protocol,
   net,
@@ -13,6 +14,12 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import type { NetEvent, NetRequest } from '@core/net'
 import { checkForUpdate, installUpdate, RELEASES_URL } from './updater'
+
+/** What people see: dock/taskbar, installers, the macOS app menu. */
+const DISPLAY_NAME = 'Domino UI'
+// The internal name stays "domino" — it names the data folder and the keychain
+// entry that encrypts saved API keys, so renaming it would lose them.
+app.setName('domino')
 
 // domino:// scheme must be registered before app ready.
 protocol.registerSchemesAsPrivileged([
@@ -102,6 +109,33 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     await registerDominoProtocol()
+
+    app.setAboutPanelOptions({
+      applicationName: DISPLAY_NAME,
+      applicationVersion: app.getVersion()
+    })
+    if (process.platform === 'darwin') {
+      // The default menu labels items with the internal name; spell out the display name.
+      Menu.setApplicationMenu(
+        Menu.buildFromTemplate([
+          {
+            label: DISPLAY_NAME,
+            submenu: [
+              { role: 'about', label: `About ${DISPLAY_NAME}` },
+              { type: 'separator' },
+              { role: 'hide', label: `Hide ${DISPLAY_NAME}` },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit', label: `Quit ${DISPLAY_NAME}` }
+            ]
+          },
+          { role: 'editMenu' },
+          { role: 'viewMenu' },
+          { role: 'windowMenu' }
+        ])
+      )
+    }
 
     // Open *.domino file via double click / "open with" (macOS).
     app.on('open-file', (event, filePath) => {
