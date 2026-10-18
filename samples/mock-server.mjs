@@ -17,14 +17,14 @@ const CHUNK_MS = Number(process.env.CHUNK_MS ?? 12)
 const stats = { llm: 0, login: 0, leads: 0 }
 
 const LEADS = [
-  { name: 'Ana Ruiz', title: 'Head of Ops', company: 'Northwind', stage: 'Qualified', owner: 'Luna Kim', value: '$12,400', email: 'ana@northwind.test', score: 82 },
-  { name: 'Ken Sato', title: 'CTO', company: 'Acme Co', stage: 'Proposal', owner: 'Jae Park', value: '$8,900', email: 'ken@acme.test', score: 74 },
-  { name: 'Lena Berg', title: 'Founder', company: 'Polaris', stage: 'New', owner: 'Luna Kim', value: '$3,200', email: 'lena@polaris.test', score: 41 },
-  { name: 'Mo Chen', title: 'VP Sales', company: 'Fabrikam', stage: 'Qualified', owner: 'Sam Lee', value: '$15,750', email: 'mo@fabrikam.test', score: 88 },
-  { name: 'Priya Nair', title: 'Procurement Lead', company: 'Litware', stage: 'Won', owner: 'Jae Park', value: '$22,000', email: 'priya@litware.test', score: 95 },
-  { name: 'Tom Weber', title: 'IT Manager', company: 'Contoso', stage: 'Proposal', owner: 'Sam Lee', value: '$6,300', email: 'tom@contoso.test', score: 63 },
-  { name: 'Sofia Rossi', title: 'COO', company: 'Tailspin', stage: 'New', owner: 'Luna Kim', value: '$4,800', email: 'sofia@tailspin.test', score: 37 },
-  { name: 'Diego Alvarez', title: 'Director', company: 'Woodgrove', stage: 'Lost', owner: 'Jae Park', value: '$9,100', email: 'diego@woodgrove.test', score: 22 }
+  { id: 'lead-1', name: 'Ana Ruiz', title: 'Head of Ops', company: 'Northwind', stage: 'Qualified', owner: 'Luna Kim', value: '$12,400', email: 'ana@northwind.test', score: 82 },
+  { id: 'lead-2', name: 'Ken Sato', title: 'CTO', company: 'Acme Co', stage: 'Proposal', owner: 'Jae Park', value: '$8,900', email: 'ken@acme.test', score: 74 },
+  { id: 'lead-3', name: 'Lena Berg', title: 'Founder', company: 'Polaris', stage: 'New', owner: 'Luna Kim', value: '$3,200', email: 'lena@polaris.test', score: 41 },
+  { id: 'lead-4', name: 'Mo Chen', title: 'VP Sales', company: 'Fabrikam', stage: 'Qualified', owner: 'Sam Lee', value: '$15,750', email: 'mo@fabrikam.test', score: 88 },
+  { id: 'lead-5', name: 'Priya Nair', title: 'Procurement Lead', company: 'Litware', stage: 'Won', owner: 'Jae Park', value: '$22,000', email: 'priya@litware.test', score: 95 },
+  { id: 'lead-6', name: 'Tom Weber', title: 'IT Manager', company: 'Contoso', stage: 'Proposal', owner: 'Sam Lee', value: '$6,300', email: 'tom@contoso.test', score: 63 },
+  { id: 'lead-7', name: 'Sofia Rossi', title: 'COO', company: 'Tailspin', stage: 'New', owner: 'Luna Kim', value: '$4,800', email: 'sofia@tailspin.test', score: 37 },
+  { id: 'lead-8', name: 'Diego Alvarez', title: 'Director', company: 'Woodgrove', stage: 'Lost', owner: 'Jae Park', value: '$9,100', email: 'diego@woodgrove.test', score: 22 }
 ]
 
 const cors = {
@@ -523,7 +523,32 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === '/leads' && req.method === 'GET') {
     stats.leads++
-    return json(res, 200, { leads: LEADS.map(({ name, company, stage, value, owner }) => ({ name, company, stage, value, owner })) })
+    return json(res, 200, { leads: LEADS.map(({ id, name, company, stage, value, owner }) => ({ id, name, company, stage, value, owner })) })
+  }
+
+  // Detail/create/profile endpoints so a real model has data for every CRM screen.
+  const leadMatch = url.pathname.match(/^\/leads\/([\w-]+)$/)
+  if (leadMatch && req.method === 'GET') {
+    const lead = LEADS.find((l) => l.id === leadMatch[1])
+    return lead ? json(res, 200, { lead }) : json(res, 404, { error: 'lead not found' })
+  }
+
+  if (url.pathname === '/leads' && req.method === 'POST') {
+    let raw = ''
+    for await (const chunk of req) raw += chunk
+    try {
+      const body = JSON.parse(raw || '{}')
+      if (!body.name || !body.company) return json(res, 422, { error: 'name and company are required' })
+      const lead = { stage: 'New', owner: 'Luna Kim', value: '$0', score: 50, ...body, id: `lead-${LEADS.length + 1}` }
+      LEADS.push(lead)
+      return json(res, 201, { lead })
+    } catch {
+      return json(res, 400, { error: 'bad json' })
+    }
+  }
+
+  if (url.pathname === '/me' && req.method === 'GET') {
+    return json(res, 200, { name: 'Luna Kim', email: 'luna@example.test', role: 'Sales lead', plan: 'Team', notifications: { email: true, weeklyDigest: false } })
   }
 
   if (url.pathname === '/v1/chat/completions' && req.method === 'POST') {

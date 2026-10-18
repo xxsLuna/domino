@@ -1,7 +1,8 @@
 import type { ChatMessage, LLMAdapter, ToolCall } from '../llm/types'
-import { tryValidateUiSpec, type UiSpec } from '../spec'
+import { describeUiSpecProblem, tryValidateUiSpec as validate, type UiSpec } from '../spec'
+import { withRegistryNames } from '../ui/registry'
 import { executeApi, type ApiResult, type ApiRuntime } from './api'
-import { extractPartialSpec } from './partialJson'
+import { extractPartialSpec, parsePartialJson } from './partialJson'
 import { agentTools } from './tools'
 
 /**
@@ -41,6 +42,12 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
     ...opts.history.filter((m) => m.role !== 'system')
   ]
 
+  // One corrective round when render_ui arrives unusable or not at all.
+  let retriesLeft = 1
+  // A turn should end on a screen (or a page switch); otherwise say so.
+  let rendered = false
+  let reported = false
+
   try {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       let text = ''
@@ -48,7 +55,6 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
       const order: string[] = []
 
       const stream = opts.adapter.chat({ messages, tools: agentTools })
-      let finalSpecYielded = false
       let lastPreviewAt = 0
 
       for await (const delta of stream) {
@@ -86,6 +92,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           case 'tool_call_end':
             break
           case 'error':
+            reported = true
             yield { type: 'error', message: delta.message }
             break
           case 'done':
@@ -95,31 +102,50 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
 
       const completed = order.map((id) => toolCalls.get(id)!).filter(Boolean)
 
-      // Record assistant turn in history.
+      // Record assistant turn in history (an empty reply would be an invalid message).
       const assistantMsg: ChatMessage = { role: 'assistant', content: text }
       if (completed.length) {
         assistantMsg.toolCalls = completed.map((tc) => ({ ...tc }))
       }
-      messages.push(assistantMsg)
+      if (text || completed.length) messages.push(assistantMsg)
 
       if (!completed.length) {
         // Text-only reply: look for a fenced UiSpec as a fallback.
         const spec = specFromFencedJson(text)
-        if (spec) yield { type: 'spec', spec, final: true }
+        if (spec) {
+          rendered = true
+          yield { type: 'spec', spec, final: true }
+          break
+        }
+        // Empty or chatty reply (seen with real models): ask once for the screen.
+        if (!reported && retriesLeft > 0 && iteration < maxIterations - 1) {
+          retriesLeft--
+          messages.push({
+            role: 'user',
+            content: 'No screen was rendered. Call render_ui now with the screen for the request above.'
+          })
+          continue
+        }
         break
       }
 
       let sawRender = false
+      let failedRender = false
       for (const tc of completed) {
         if (tc.name === 'render_ui') {
-          const parsed = safeParseArgs(tc.args)
-          const spec = parsed ? tryValidateUiSpec(parsed.spec ?? parsed) : null
+          const { spec: raw } = specFromArgs(tc.args)
+          const spec = raw === null ? null : tryValidateUiSpec(raw)
           if (spec) {
             sawRender = true
+            rendered = true
             yield { type: 'spec', spec, final: true }
-            finalSpecYielded = true
+            // Models copy their own earlier calls: a stringified spec, a missing
+            // "version" or props-before-grid in history repeats on every later
+            // turn. Keep the validated spec, in contract key order, there instead.
+            const recorded = assistantMsg.toolCalls?.find((c) => c.id === tc.id)
+            if (recorded) recorded.args = JSON.stringify({ spec })
           } else {
-            yield { type: 'error', message: 'render_ui received an invalid UiSpec' }
+            failedRender = true
           }
           messages.push({
             role: 'tool',
@@ -128,7 +154,13 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             content: JSON.stringify(
               spec
                 ? { ok: true }
-                : { ok: false, error: 'invalid UiSpec — check version/page/pages structure' }
+                : {
+                    ok: false,
+                    error:
+                      raw === null
+                        ? 'render_ui arguments are not valid JSON. Send {"spec": {...}} with spec as a JSON object.'
+                        : `invalid UiSpec — ${describeUiSpecProblem(raw)}. Call render_ui again with the corrected spec.`
+                  }
             )
           })
         } else if (tc.name === 'call_api') {
@@ -148,6 +180,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         } else if (tc.name === 'navigate') {
           const parsed = safeParseArgs(tc.args)
           const page = String(parsed?.page ?? '')
+          rendered = true
           yield { type: 'navigated', page }
           messages.push({
             role: 'tool',
@@ -167,12 +200,20 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
 
       // Only continue if the model asked for something that benefits from a
       // second round (API results to render with, or a page switch).
-      const shouldContinue = completed.some(
-        (tc) => (tc.name === 'call_api' || tc.name === 'navigate') && iteration < maxIterations - 1
-      )
-      void sawRender
-      void finalSpecYielded
+      const canContinue = iteration < maxIterations - 1
+      const retry = failedRender && !sawRender && retriesLeft > 0 && canContinue
+      if (failedRender && !sawRender && !retry) {
+        reported = true
+        yield { type: 'error', message: 'render_ui received an invalid UiSpec' }
+      }
+      if (retry) retriesLeft--
+      const shouldContinue =
+        canContinue &&
+        (retry || completed.some((tc) => tc.name === 'call_api' || tc.name === 'navigate'))
       if (!shouldContinue) break
+    }
+    if (!rendered && !reported) {
+      yield { type: 'error', message: 'The model ended its turn without rendering a screen.' }
     }
   } catch (err) {
     yield { type: 'error', message: (err as Error).message }
@@ -183,6 +224,12 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
   yield { type: 'done' }
 }
 
+/** Validate model output and settle component names on the registry's spelling. */
+function tryValidateUiSpec(input: unknown): UiSpec | null {
+  const spec = validate(input)
+  return spec && withRegistryNames(spec)
+}
+
 function safeParseArgs(args: string): Record<string, any> | null {
   try {
     const parsed = JSON.parse(args)
@@ -190,6 +237,33 @@ function safeParseArgs(args: string): Record<string, any> | null {
   } catch {
     return null
   }
+}
+
+/** JSON.parse, falling back to salvaging a truncated or over-closed object. */
+function parseLoose(text: string): { value: Record<string, unknown>; salvaged: boolean } | null {
+  try {
+    const value = JSON.parse(text)
+    return value && typeof value === 'object' ? { value, salvaged: false } : null
+  } catch {
+    const value = parsePartialJson<Record<string, unknown>>(text)
+    return value && typeof value === 'object' ? { value, salvaged: true } : null
+  }
+}
+
+/**
+ * The spec out of render_ui arguments. Some models send `spec` as a JSON
+ * *string* (often with a bracket too many or too few) or skip the wrapper;
+ * accept all of it. `repaired` says the arguments weren't clean JSON objects.
+ */
+export function specFromArgs(args: string): { spec: unknown; repaired: boolean } {
+  const outer = parseLoose(args)
+  if (!outer) return { spec: null, repaired: false }
+  const value = 'spec' in outer.value ? outer.value.spec : outer.value
+  if (typeof value === 'string') {
+    const inner = parseLoose(value)
+    return { spec: inner ? inner.value : null, repaired: true }
+  }
+  return { spec: value ?? null, repaired: outer.salvaged }
 }
 
 function specFromFencedJson(text: string): UiSpec | null {

@@ -64,12 +64,22 @@ export interface ActionEvent {
   data?: Record<string, unknown>
 }
 
+/**
+ * The sign-out convention is a Button with id "logout"; models write
+ * "set-logout", "account-sign-out", "signout"… — all mean the same.
+ */
+export function isSignOutEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
+  return e.event === 'click' && /(?:^|[-_.])(?:log-?out|sign-?out)(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
+}
+
 const cardNodeSchema: z.ZodType<CardNode> = z.lazy(() =>
+  // Key order matters: parsed specs go back into the conversation, and models
+  // copy the order they see there (grid before props streams placement first).
   z.object({
     name: z.string().min(1),
     id: z.string().optional(),
-    props: z.record(z.unknown()).optional(),
     grid: gridSchema.optional(),
+    props: z.record(z.unknown()).optional(),
     children: z.array(cardNodeSchema).optional()
   })
 )
@@ -98,20 +108,134 @@ const navSchema = z.array(z.unknown()).transform((items) =>
 export const uiSpecSchema = z.object({
   version: z.literal(1),
   page: z.string().min(1),
-  pages: z.array(pageSpecSchema).min(1),
-  nav: navSchema.optional()
+  nav: navSchema.optional(),
+  pages: z.array(pageSpecSchema).min(1)
 })
 
+/* ------------------------- normalizing model output ------------------------- */
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** 3, 3.4, "3" → 3; anything else → undefined. */
+function toInt(v: unknown): number | undefined {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
+  return typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : undefined
+}
+
+const clampInt = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+
 /**
- * Tolerant parse used for LLM output: unknown fields are stripped,
- * structural problems throw. Ensures `page` exists in `pages`.
+ * Models get the grid "almost" right: h: 0, x: 12, w: 13, "4", 2.5. Clamp into
+ * range instead of rejecting the screen. A grid without y or w (e.g. still
+ * streaming) is dropped so the node can't flash in a wrong spot.
+ */
+export function normalizeGrid(raw: unknown): GridPlacement | undefined {
+  if (!isRecord(raw)) return undefined
+  const y = toInt(raw.y)
+  const w = toInt(raw.w)
+  if (y === undefined || w === undefined) return undefined
+  const x = clampInt(toInt(raw.x) ?? 0, 0, 11)
+  return {
+    x,
+    y: clampInt(y, 0, 999),
+    w: clampInt(w, 1, 12 - x),
+    h: clampInt(toInt(raw.h) ?? 1, 1, 50)
+  }
+}
+
+const NODE_KEYS = new Set(['id', 'grid', 'props', 'children'])
+const NAME_KEYS = ['name', 'component', 'type'] as const
+
+/**
+ * One node, coerced: `component`/`type` stand in for a missing `name`, props
+ * written next to `name` (e.g. an Input's "type": "email") are folded into
+ * `props`, a numeric id becomes a string. Returns null for something that
+ * isn't a node at all.
+ */
+function normalizeNode(raw: unknown): CardNode | null {
+  if (!isRecord(raw)) return null
+  const nameKey = NAME_KEYS.find((k) => typeof raw[k] === 'string' && (raw[k] as string).trim() !== '')
+  if (!nameKey) return null
+  const node: CardNode = { name: (raw[nameKey] as string).trim() }
+  if (typeof raw.id === 'string' || typeof raw.id === 'number') node.id = String(raw.id)
+  const grid = normalizeGrid(raw.grid)
+  if (grid) node.grid = grid
+  const stray = Object.entries(raw).filter(([k]) => k !== nameKey && !NODE_KEYS.has(k))
+  const props = isRecord(raw.props) ? raw.props : undefined
+  if (props || stray.length) node.props = { ...Object.fromEntries(stray), ...props }
+  if (Array.isArray(raw.children)) node.children = normalizeNodes(raw.children)
+  return node
+}
+
+function normalizeNodes(raw: unknown): CardNode[] {
+  return Array.isArray(raw)
+    ? raw.flatMap((n) => {
+        const node = normalizeNode(n)
+        return node ? [node] : []
+      })
+    : []
+}
+
+/**
+ * Bring a model-written spec into contract shape before validation: fill in
+ * what has an obvious default (version, a page's name, an empty layout) and
+ * drop what can't be understood, so one odd node doesn't blank the screen.
+ */
+export function normalizeUiSpec(input: unknown): unknown {
+  if (!isRecord(input)) return input
+  const rawPages = Array.isArray(input.pages) ? input.pages : []
+  const page = typeof input.page === 'string' && input.page ? input.page : undefined
+  const pages = rawPages.flatMap((p): PageSpec[] => {
+    if (!isRecord(p)) return []
+    const id =
+      typeof p.id === 'string' || typeof p.id === 'number'
+        ? String(p.id)
+        : rawPages.length === 1
+          ? page
+          : undefined
+    if (!id) return []
+    const name = typeof p.name === 'string' && p.name ? p.name : typeof p.title === 'string' && p.title ? p.title : id
+    return [{ id, name, layout: normalizeNodes(p.layout) }]
+  })
+  // Nav items keyed by `page` or missing a label still say where they go.
+  const nav = Array.isArray(input.nav)
+    ? input.nav.map((item) => {
+        if (!isRecord(item)) return item
+        const id = item.id ?? item.page
+        const label = item.label ?? item.title ?? item.name ?? id
+        return { ...item, id: id === undefined ? id : String(id), label: label === undefined ? label : String(label) }
+      })
+    : input.nav
+  return {
+    ...input,
+    version: 1,
+    page: page ?? pages[0]?.id,
+    pages,
+    nav
+  }
+}
+
+/**
+ * Tolerant parse used for LLM output: the spec is normalized first (see
+ * normalizeUiSpec), then structural problems throw. Ensures `page` exists in `pages`.
  */
 export function validateUiSpec(input: unknown): UiSpec {
-  const spec = uiSpecSchema.parse(input) as UiSpec
+  const spec = uiSpecSchema.parse(normalizeUiSpec(input)) as UiSpec
   if (!spec.pages.some((p) => p.id === spec.page)) {
     spec.page = spec.pages[0].id
   }
   return spec
+}
+
+/** Why a spec fails validation, in a form the model can act on (null when valid). */
+export function describeUiSpecProblem(input: unknown): string | null {
+  const result = uiSpecSchema.safeParse(normalizeUiSpec(input))
+  if (result.success) return null
+  return result.error.issues
+    .slice(0, 3)
+    .map((i) => `${i.path.join('.') || 'spec'}: ${i.message}`)
+    .join('; ')
 }
 
 /** Best-effort parse for streaming deltas (returns null until coherent). */
@@ -121,6 +245,18 @@ export function tryValidateUiSpec(input: unknown): UiSpec | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Pages delivered in earlier turns stay available (newer versions win), so
+ * the model only has to send the page it is showing — re-sending every page
+ * each turn multiplied output (and latency) for no visible change.
+ */
+export function withKnownPages(next: UiSpec, prev: UiSpec | null): UiSpec {
+  if (!prev) return next
+  const ids = new Set(next.pages.map((p) => p.id))
+  const kept = prev.pages.filter((p) => !ids.has(p.id))
+  return kept.length ? { ...next, pages: [...next.pages, ...kept] } : next
 }
 
 export function findPage(spec: UiSpec, pageId: string): PageSpec | undefined {

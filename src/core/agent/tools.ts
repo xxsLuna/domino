@@ -1,5 +1,38 @@
 import type { ToolDef } from '../llm/types'
 
+/**
+ * Spelled out (rather than a bare `type: object`) so models emit the spec as a
+ * real object — with a free-form object some stringify it — and in the key
+ * order the progressive renderer wants: name, id, grid, then props/children.
+ */
+const gridParam = {
+  type: 'object',
+  description: '12-column desktop grid: x 0-11, y row index, w 1-12 (x + w <= 12), h >= 1',
+  properties: {
+    x: { type: 'integer' },
+    y: { type: 'integer' },
+    w: { type: 'integer' },
+    h: { type: 'integer' }
+  },
+  required: ['x', 'y', 'w', 'h']
+}
+
+const nodeParam = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', description: 'Component name from the registry' },
+    id: { type: 'string', description: 'Unique kebab-case id' },
+    grid: gridParam,
+    props: { type: 'object', description: 'Component props (see the registry)' },
+    children: {
+      type: 'array',
+      description: 'Child nodes — same shape, without grid',
+      items: { type: 'object' }
+    }
+  },
+  required: ['name', 'id']
+}
+
 export const renderUiTool: ToolDef = {
   name: 'render_ui',
   description:
@@ -9,8 +42,37 @@ export const renderUiTool: ToolDef = {
     properties: {
       spec: {
         type: 'object',
-        description:
-          'UiSpec: {version: 1, page: "<current page id>", pages: [{id, name, layout: [node...]}]}. node = {name, id, props?, grid?, children?}.',
+        description: 'The UiSpec object itself: {version, page, nav, pages}.',
+        properties: {
+          version: { type: 'integer', enum: [1] },
+          page: { type: 'string', description: 'Id of the page being shown' },
+          nav: {
+            type: 'array',
+            description: 'Primary navigation; [] on login/onboarding screens',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Target page id' },
+                label: { type: 'string' },
+                icon: { type: 'string' },
+                badge: { description: 'Count or short label' }
+              },
+              required: ['id', 'label']
+            }
+          },
+          pages: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                layout: { type: 'array', items: nodeParam }
+              },
+              required: ['id', 'name', 'layout']
+            }
+          }
+        },
         required: ['version', 'page', 'pages']
       }
     },

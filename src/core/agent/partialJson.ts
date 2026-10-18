@@ -153,6 +153,13 @@ export function extractPartialSpec(args: string): unknown | null {
       if (parsed !== null) return parsed
     }
   }
+  // Some models send the spec as a JSON *string* ("spec": "{\"version\"…):
+  // unescape what has arrived so far and parse that prefix instead.
+  if (/"spec"\s*:\s*"/.test(args)) {
+    const outer = parsePartialJson<{ spec?: unknown }>(args)
+    const inner = typeof outer?.spec === 'string' ? outer.spec : ''
+    return inner.trimStart().startsWith('{') ? parsePartialJson<unknown>(inner) : null
+  }
   // Fallback: the whole argument blob might be the spec itself — but only
   // claim it once it looks like a spec (otherwise `{` alone would parse as {}).
   const trimmed = args.trimStart()

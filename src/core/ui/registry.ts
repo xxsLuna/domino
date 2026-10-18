@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react'
+import type { CardNode, UiSpec } from '../spec'
 import {
   Accordion,
   Alert,
@@ -56,7 +57,7 @@ function def(
 
 export const COMPONENT_DEFS: ComponentDef[] = [
   // layout
-  def('PageHeader', 'layout', 'Page title row — start every page with it. Props: title, description, icon, badge, badgeVariant. Children: action Buttons (right-aligned, wrap on phones).', PageHeader),
+  def('PageHeader', 'layout', 'Page title row — start every page with it. Props: title, description, icon, badge, badgeVariant. Children: action Buttons — secondary ones first, the one primary last (right-aligned, wrap on phones).', PageHeader),
   def('Card', 'layout', 'Surface grouping related content. Props: title, description, icon. Children allowed (any components).', Card),
   def('Section', 'layout', 'Alias of Card. Props: title, description. Children allowed.', Card),
   def('Columns', 'layout', 'Side-by-side children inside a Card/Form (collapses to one column on phones). Props: cols (2|3|4). Children allowed.', Columns),
@@ -80,7 +81,7 @@ export const COMPONENT_DEFS: ComponentDef[] = [
   def('Radio', 'form', 'Single radio option (prefer RadioGroup). Props: label, name, value, defaultChecked.', Radio),
   def('Switch', 'form', 'On/off toggle for settings. Props: label, name, defaultChecked, description.', Switch),
   def('SearchField', 'form', 'Search box; Enter dispatches "search" {name, query}. Props: name, placeholder, value, label.', SearchField),
-  def('Button', 'form', 'Action button; dispatches "click" (inside a Form a primary Button submits). Props: text, variant (primary|secondary|tertiary|outline|ghost|danger), icon, size (sm|md|lg), fullWidth, confirm (question shown in a dialog before acting), disabled.', Button),
+  def('Button', 'form', 'Action button; dispatches "click". Inside a Form the primary Button submits it; a Button outside a Form never submits one. Props: text, variant (primary|secondary|tertiary|outline|ghost|danger; default primary), icon, size (sm|md|lg), fullWidth, confirm (question shown in a dialog before acting), disabled.', Button),
   // data
   def('Table', 'data', 'Data table (stacks into cards on phones). Props: title, columns (string[]), rows (array of arrays or objects keyed by column), rowAction (rows dispatch "select" with the row), emptyText. A cell may be {text, variant} to render a status chip.', Table),
   def('List', 'data', 'App-style list rows. Props: items (string[] or {id,title,description,icon,avatar,meta,badge,badgeVariant}[]), ordered. Items with an id dispatch "select".', List),
@@ -104,8 +105,70 @@ export const registry: Record<string, ComponentDef> = Object.fromEntries(
   COMPONENT_DEFS.map((d) => [d.name, d])
 )
 
+/** Names models borrow from other UI kits → the registered component. */
+const ALIASES: Record<string, string> = {
+  text: 'Paragraph',
+  title: 'Heading',
+  header: 'PageHeader',
+  textfield: 'Input',
+  textinput: 'Input',
+  dropdown: 'Select',
+  toggle: 'Switch',
+  datatable: 'Table',
+  container: 'Stack',
+  box: 'Stack',
+  group: 'Stack',
+  row: 'Stack',
+  grid: 'Columns',
+  kpi: 'StatCard',
+  metric: 'StatCard',
+  stat: 'StatCard',
+  banner: 'Alert',
+  callout: 'Alert',
+  progressbar: 'Progress',
+  tag: 'Badge',
+  separator: 'Divider',
+  breadcrumb: 'Breadcrumbs',
+  searchbar: 'SearchField',
+  search: 'SearchField'
+}
+
+const byKey = new Map(COMPONENT_DEFS.map((d) => [d.name.toLowerCase(), d]))
+
+/** Exact name first; then case/punctuation slips ("text-area") and common aliases. */
 export function getComponent(name: string): ComponentDef | undefined {
-  return registry[name]
+  if (registry[name]) return registry[name]
+  const key = String(name).toLowerCase().replace(/[^a-z]/g, '')
+  return byKey.get(key) ?? registry[ALIASES[key]]
 }
 
 export const componentNames: string[] = COMPONENT_DEFS.map((d) => d.name)
+
+function renameNodes(nodes: CardNode[]): CardNode[] {
+  let changed = false
+  const out = nodes.map((n) => {
+    const name = getComponent(n.name)?.name ?? n.name
+    const children = n.children && renameNodes(n.children)
+    if (name === n.name && children === n.children) return n
+    changed = true
+    return { ...n, name, ...(children ? { children } : {}) }
+  })
+  return changed ? out : nodes
+}
+
+/**
+ * Rewrite near-miss component names ("TextField", "page-header") to their
+ * registered names, so code that branches on `node.name` (Form buttons,
+ * layout rules) sees the same names the renderer resolves. Unchanged specs
+ * come back as the same object.
+ */
+export function withRegistryNames(spec: UiSpec): UiSpec {
+  let changed = false
+  const pages = spec.pages.map((p) => {
+    const layout = renameNodes(p.layout)
+    if (layout === p.layout) return p
+    changed = true
+    return { ...p, layout }
+  })
+  return changed ? { ...spec, pages } : spec
+}

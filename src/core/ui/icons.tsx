@@ -5,10 +5,14 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowRightFromSquare,
+  ArrowRightToSquare,
   ArrowRotateRight,
+  ArrowShapeTurnUpRight,
   ArrowUpFromLine,
+  ArrowUpRightFromSquare,
   Bars,
   Bell,
+  BookOpen,
   Bookmark,
   Box,
   Briefcase,
@@ -18,14 +22,17 @@ import {
   Car,
   ChartColumn,
   ChartLine,
+  ChartLineArrowUp,
   ChartPie,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  CircleDollar,
   CircleInfo,
   CirclePlus,
+  CircleQuestion,
   CircleXmark,
   Clock,
   Comment,
@@ -38,12 +45,14 @@ import {
   Eye,
   File,
   Flag,
+  FloppyDisk,
   Folder,
   Funnel,
   Gear,
   Gift,
   Globe,
   Handset,
+  Headphones,
   Heart,
   House,
   Key,
@@ -52,27 +61,37 @@ import {
   Link,
   ListUl,
   Lock,
+  LockOpen,
   Magnifier,
   MapPin,
+  Medal,
+  Megaphone,
   Moon,
   PaperPlane,
   Paperclip,
   Pencil,
+  Percent,
   Person,
+  PersonPlus,
   Persons,
   Picture,
+  Play,
   Plus,
+  Pulse,
   Receipt,
   Rocket,
   Server,
   Shield,
   ShoppingCart,
   Sliders,
+  Sparkles,
   Star,
   Sun,
   Tag,
+  Target,
   ThumbsUp,
   Thunderbolt,
+  Ticket,
   TrashBin,
   Tray,
   TriangleExclamation,
@@ -204,13 +223,102 @@ const ICONS: Record<string, IconComponent> = {
   send: PaperPlane,
   gift: Gift,
   car: Car,
-  archive: Archive
+  archive: Archive,
+  login: ArrowRightToSquare,
+  'user-plus': PersonPlus,
+  trending: ChartLineArrowUp,
+  dollar: CircleDollar,
+  revenue: CircleDollar,
+  target: Target,
+  goal: Target,
+  activity: Pulse,
+  percent: Percent,
+  sparkles: Sparkles,
+  help: CircleQuestion,
+  save: FloppyDisk,
+  unlock: LockOpen,
+  external: ArrowUpRightFromSquare,
+  share: ArrowShapeTurnUpRight,
+  trophy: Medal,
+  award: Medal,
+  megaphone: Megaphone,
+  campaign: Megaphone,
+  ticket: Ticket,
+  support: Headphones,
+  book: BookOpen,
+  play: Play
 }
 
 export const iconNames: string[] = Object.keys(ICONS)
 
+/** Spellings models borrow from lucide / material / heroicons → a name above. */
+const SYNONYMS: Record<string, string> = {
+  'log-in': 'login',
+  'sign-in': 'login',
+  signin: 'login',
+  'sign-out': 'logout',
+  signout: 'logout',
+  'person-add': 'user-plus',
+  'add-user': 'user-plus',
+  'trending-up': 'trending',
+  'dollar-sign': 'dollar',
+  money: 'dollar',
+  currency: 'dollar',
+  'credit-card': 'card',
+  credit: 'card',
+  'check-circle': 'success',
+  'x-circle': 'error',
+  'alert-circle': 'warning',
+  'alert-triangle': 'warning',
+  'help-circle': 'help',
+  question: 'help',
+  'external-link': 'external',
+  'more-horizontal': 'more',
+  'more-vertical': 'more',
+  'layout-dashboard': 'dashboard',
+  house: 'home',
+  cog: 'gear',
+  people: 'users',
+  person: 'user',
+  contacts: 'users',
+  contact: 'user',
+  building: 'briefcase',
+  company: 'briefcase',
+  note: 'file',
+  notes: 'file',
+  pipeline: 'filter',
+  funnel: 'filter',
+  pulse: 'activity',
+  medal: 'trophy',
+  headphones: 'support'
+}
+
+const PREFIX = /^(?:lucide|mdi|fa[srb]?|bi|ri|ion|icon|heroicons?)[-:]/
+const SUFFIX = /-(?:outline|outlined|filled|fill|solid|alt|sharp|rounded|round|o|\d+)$/
+
+/**
+ * Resolve an icon name the way a model might write it: "TrendingUp",
+ * "log_in", "trash-2", "mdi-account-outline", "calendar-days" (falls back to
+ * the family's base icon).
+ */
+function resolveIcon(name: string): IconComponent | undefined {
+  let key = name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(PREFIX, '')
+  for (let pass = 0; pass < 2; pass++) {
+    const hit = ICONS[key] ?? ICONS[SYNONYMS[key]]
+    if (hit) return hit
+    key = key.replace(SUFFIX, '')
+  }
+  const head = key.split('-')[0]
+  return ICONS[head] ?? ICONS[SYNONYMS[head]]
+}
+
 export function hasIcon(name: unknown): boolean {
-  return typeof name === 'string' && name.toLowerCase() in ICONS
+  return typeof name === 'string' && resolveIcon(name) !== undefined
 }
 
 /**
@@ -227,7 +335,7 @@ export function Icon({
   size?: number
 }) {
   if (typeof name !== 'string' || !name) return null
-  const Comp = ICONS[name.toLowerCase()]
+  const Comp = resolveIcon(name)
   if (Comp)
     return <Comp width={size} height={size} className={className} aria-hidden focusable={false} />
   // eslint-disable-next-line no-control-regex

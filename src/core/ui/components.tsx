@@ -2,6 +2,7 @@ import {
   Children,
   createContext,
   useContext,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -558,6 +559,15 @@ interface FieldProps {
   disabled?: boolean
 }
 
+/**
+ * The visible label, repeated as aria-label on the focusable element itself.
+ * Screen readers still name the control from its <Label> (aria-labelledby
+ * outranks aria-label; wrapped toggles read the same text), but DOM-heuristic
+ * readers such as LLM browser agents rank the placeholder — or a checkbox's
+ * value "on" — above an associated or wrapping <label>.
+ */
+const controlLabel = (label: unknown): string | undefined => (label ? text(label) : undefined)
+
 function FieldHelp({ description }: { description?: string }) {
   return (
     <>
@@ -613,10 +623,10 @@ export function Input({
           <InputGroup.Prefix>
             <Icon name={icon} size={16} className="text-muted" />
           </InputGroup.Prefix>
-          <InputGroup.Input placeholder={placeholder} />
+          <InputGroup.Input placeholder={placeholder} aria-label={controlLabel(label)} />
         </InputGroup>
       ) : (
-        <HInput placeholder={placeholder} />
+        <HInput placeholder={placeholder} aria-label={controlLabel(label)} />
       )}
       <FieldHelp description={description} />
     </TextField>
@@ -645,7 +655,11 @@ export function Textarea({
       fullWidth
     >
       {label ? <Label>{text(label)}</Label> : null}
-      <TextArea rows={Math.max(2, Math.min(20, Number(rows) || 4))} placeholder={placeholder} />
+      <TextArea
+        rows={Math.max(2, Math.min(20, Number(rows) || 4))}
+        placeholder={placeholder}
+        aria-label={controlLabel(label)}
+      />
       <FieldHelp description={description} />
     </TextField>
   )
@@ -698,7 +712,7 @@ export function Select({
       fullWidth
     >
       {label ? <Label>{text(label)}</Label> : null}
-      <HSelect.Trigger>
+      <HSelect.Trigger aria-label={controlLabel(label)}>
         <HSelect.Value />
         <HSelect.Indicator />
       </HSelect.Trigger>
@@ -735,7 +749,7 @@ export function Checkbox({
       defaultSelected={truthy(defaultChecked ?? checked)}
       isDisabled={truthy(disabled)}
       variant={variant}
-      aria-label={label ? undefined : text(name)}
+      aria-label={controlLabel(label) ?? text(name)}
       onChange={onChange}
     >
       <HCheckbox.Content>
@@ -751,7 +765,7 @@ export function Checkbox({
 
 function RadioOption({ option }: { option: Option }) {
   return (
-    <HRadio value={option.value}>
+    <HRadio value={option.value} aria-label={controlLabel(option.label)}>
       <HRadio.Content>
         <HRadio.Control>
           <HRadio.Indicator />
@@ -835,19 +849,27 @@ export function Switch({
   nodeName
 }: NodeProps & FieldProps & { defaultChecked?: boolean; checked?: boolean }) {
   const onChange = useChangeDispatch(nodeId, nodeName, name)
+  // The help text sits inside the <label>; name the switch by its label alone and
+  // announce the help as its description.
+  const descriptionId = useId()
   return (
     <HSwitch
       name={name}
       defaultSelected={truthy(defaultChecked ?? checked)}
       isDisabled={truthy(disabled)}
-      aria-label={label ? undefined : text(name)}
+      aria-label={controlLabel(label) ?? text(name)}
+      aria-describedby={description ? descriptionId : undefined}
       onChange={onChange}
       className="w-full"
     >
       <HSwitch.Content className="flex w-full items-center justify-between gap-4">
         <span className="flex min-w-0 flex-col">
           <span className="text-sm font-medium text-foreground">{text(label)}</span>
-          {description ? <span className="text-xs text-muted">{text(description)}</span> : null}
+          {description ? (
+            <span id={descriptionId} className="text-xs text-muted">
+              {text(description)}
+            </span>
+          ) : null}
         </span>
         <HSwitch.Control>
           <HSwitch.Thumb />
@@ -882,7 +904,10 @@ export function SearchField({
       {label ? <Label>{text(label)}</Label> : null}
       <HSearchField.Group>
         <HSearchField.SearchIcon />
-        <HSearchField.Input placeholder={placeholder ?? 'Search…'} />
+        <HSearchField.Input
+          placeholder={placeholder ?? 'Search…'}
+          aria-label={controlLabel(label)}
+        />
         <HSearchField.ClearButton />
       </HSearchField.Group>
     </HSearchField>

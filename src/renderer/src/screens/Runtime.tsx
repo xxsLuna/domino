@@ -22,7 +22,7 @@ import { streamView } from '@core/ui/streaming'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
-import type { ActionEvent, NavItem, UiSpec } from '@core/spec'
+import { isSignOutEvent, withKnownPages, type ActionEvent, type NavItem, type UiSpec } from '@core/spec'
 import type { LoadedDomino } from '../loadDomino'
 import { getStorage } from '../platform'
 
@@ -51,6 +51,8 @@ export function Runtime({
   const sessionTokenRef = useRef<string | null>(null)
   // Last navigation the agent gave us; screens that omit `nav` keep it.
   const navRef = useRef<NavItem[]>([])
+  /** Latest shown spec, including pages from earlier turns (see withKnownPages). */
+  const knownRef = useRef<UiSpec | null>(null)
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
   const [previewSpec, setPreviewSpec] = useState<UiSpec | null>(null)
@@ -97,6 +99,8 @@ export function Runtime({
 
   const showSpec = useCallback(
     (spec: UiSpec) => {
+      // Back/forward snapshots may predate pages delivered since; keep those too.
+      knownRef.current = withKnownPages(spec, knownRef.current)
       setCurrentSpec(spec)
       setPreviewSpec(null)
       setPageName(spec.pages.find((p) => p.id === spec.page)?.name ?? spec.page)
@@ -146,7 +150,7 @@ export function Runtime({
           switch (update.type) {
             case 'spec':
               if (update.final) {
-                finalizeSpec(update.spec, cacheKeyRef.current)
+                finalizeSpec(withKnownPages(update.spec, knownRef.current), cacheKeyRef.current)
                 setStatus('')
               } else {
                 // Previews are interruptible: typing/scrolling stays responsive
@@ -198,9 +202,10 @@ export function Runtime({
         return
       }
       if (cancelled) return
+      // "Logged in: no" on an app without sign-in nudges models into a login page.
+      const auth = domino.auth.required ? ` Logged in: ${loggedInRef.current ? 'yes' : 'no'}.` : ''
       await runTurn(
-        `INITIAL SCREEN. Logged in: ${loggedInRef.current ? 'yes' : 'no'}. ` +
-          `Show the "${target}" page following the screen patterns.`,
+        `INITIAL SCREEN.${auth} Show the "${target}" page following the screen patterns.`,
         cacheKey
       )
     })()
@@ -270,6 +275,7 @@ export function Runtime({
           await setToken(storage, domino.id, token)
           sessionTokenRef.current = token
           loggedInRef.current = true
+          knownRef.current = null // the signed-out pages (login) don't carry over
           historyRef.current.push({
             role: 'user',
             content: `ACTION submit from login/login data ${JSON.stringify(redact(data))}`
@@ -313,12 +319,13 @@ export function Runtime({
       }
 
       // Sign-out convention: the runtime owns the token, so it clears it itself.
-      if (e.event === 'click' && e.nodeId === 'logout' && loggedInRef.current) {
+      if (isSignOutEvent(e) && loggedInRef.current) {
         void (async () => {
           await clearToken(storage, domino.id)
           sessionTokenRef.current = null
           loggedInRef.current = false
           navRef.current = []
+          knownRef.current = null // signed-in pages must not outlive the session
           historyRef.current.push({
             role: 'user',
             content: 'ACTION click from Button/logout → SIGNED OUT (token cleared)'
@@ -395,7 +402,9 @@ export function Runtime({
   useLayoutEffect(() => {
     bodyRef.current?.scrollTo({ top: 0 })
   }, [shownPageId])
-  const needsKey = !config.apiKey && !/localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
+  // A same-origin base URL ("/zen/…") goes through the dev proxy, which may add the key.
+  const needsKey =
+    !config.apiKey && !/^\/|localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
   const shownPage = shown ? (shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]) : null
   // A screen still streaming already knows its name and navigation.
   const title = (previewSpec && shownPage?.name) || pageName
