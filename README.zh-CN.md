@@ -9,9 +9,9 @@
 一个跨平台运行时：纯文本的 *domino* 定义（DOM + 智能体）会被你自己的 LLM API Key
 实时转换成可交互的应用界面。无需手写页面、无需模板 —— 定义描述应用，智能体负责渲染。
 
-[![Build](https://github.com/xxsLuna/Dom-In-O-UI/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/Dom-In-O-UI/actions/workflows/build.yml)
-[![Release](https://img.shields.io/github/v/release/xxsLuna/Dom-In-O-UI?display_name=tag&sort=semver)](https://github.com/xxsLuna/Dom-In-O-UI/releases)
-[![Tests](https://img.shields.io/badge/tests-36%20passed-brightgreen)](https://github.com/xxsLuna/Dom-In-O-UI/actions/workflows/build.yml)
+[![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
+[![Tests](https://img.shields.io/badge/tests-37%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#下载)
 
 macOS · Windows · Linux · Android（Web 构建）
@@ -92,7 +92,7 @@ macOS · Windows · Linux · Android（Web 构建）
 
 ## 下载
 
-在 [**Releases**](https://github.com/xxsLuna/Dom-In-O-UI/releases) 页面获取对应系统的最新构建
+在 [**Releases**](https://github.com/xxsLuna/domino/releases) 页面获取对应系统的最新构建
 （每次推送到 `main`，CI 都会发布 macOS `.dmg`/`.zip`、Windows `.exe`、Linux `.AppImage`/`.deb`）：
 
 | 平台 | 产物 |
@@ -104,7 +104,7 @@ macOS · Windows · Linux · Android（Web 构建）
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/xxsLuna/Dom-In-O-UI/releases) 安装（或按下方说明从源码构建）。
+1. 从 [Releases](https://github.com/xxsLuna/domino/releases) 安装（或按下方说明从源码构建）。
 2. 启动 **domino**。欢迎页会显示最近打开的定义和 ⚙ 设置按钮。
 3. 打开设置面板，注册你的 LLM 提供商（API Key 只保存在本机）。
 4. 打开一个 `.domino` 文件 —— URL、`domino://` 链接、文件选择器或最近列表均可。

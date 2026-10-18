@@ -10,9 +10,9 @@ A cross-platform runtime where plain-text *domino* definitions (DOM + agent) are
 into working, interactive UIs by your own LLM API key. No hand-written screens, no
 boilerplate — the definition describes the app, and the agent renders it in real time.
 
-[![Build](https://github.com/xxsLuna/Dom-In-O-UI/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/Dom-In-O-UI/actions/workflows/build.yml)
-[![Release](https://img.shields.io/github/v/release/xxsLuna/Dom-In-O-UI?display_name=tag&sort=semver)](https://github.com/xxsLuna/Dom-In-O-UI/releases)
-[![Tests](https://img.shields.io/badge/tests-36%20passed-brightgreen)](https://github.com/xxsLuna/Dom-In-O-UI/actions/workflows/build.yml)
+[![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
+[![Tests](https://img.shields.io/badge/tests-37%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#download)
 
 macOS · Windows · Linux · Android (web build)
@@ -99,7 +99,7 @@ agent, which renders the next screen in real time.
 ## Download
 
 Grab the latest build for your OS from the
-[**Releases**](https://github.com/xxsLuna/Dom-In-O-UI/releases) page
+[**Releases**](https://github.com/xxsLuna/domino/releases) page
 (CI publishes macOS `.dmg`/`.zip`, Windows `.exe`, and Linux `.AppImage`/`.deb` on every push to `main`).
 
 | Platform | Artifact |
@@ -111,7 +111,7 @@ Grab the latest build for your OS from the
 
 ## Quick start
 
-1. Install from [Releases](https://github.com/xxsLuna/Dom-In-O-UI/releases) (or build from source below).
+1. Install from [Releases](https://github.com/xxsLuna/domino/releases) (or build from source below).
 2. Launch **domino**. The welcome screen shows recent definitions and a ⚙ settings button.
 3. Open the settings panel and register your LLM provider (API key stays on your device).
 4. Open a `.domino` file — by URL, `domino://` link, file picker, or the recent list.
