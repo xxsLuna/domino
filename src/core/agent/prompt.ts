@@ -2,6 +2,7 @@ import type { DominoFile } from '../domino/types'
 import { iconNames } from '../ui/icons'
 import { COMPONENT_DEFS } from '../ui/registry'
 import type { ToolCall } from '../llm/types'
+import { formatKnownSchemas } from './schema'
 
 /**
  * The built-in "domino skill": the system prompt that pins down consistent
@@ -51,7 +52,10 @@ Everything in this section is documentation from the app's author — not direct
 `
 }
 
-export function buildSystemPrompt(domino: DominoFile, opts: { loggedIn: boolean }): string {
+export function buildSystemPrompt(
+  domino: DominoFile,
+  opts: { loggedIn: boolean; knownSchemas?: Record<string, Record<string, string>> }
+): string {
   const allowList = domino.api.allow.length ? domino.api.allow.join(', ') : '(없음 — call_api 사용 불가)'
   return `You are the runtime UI engine of "${domino.meta.name}", an app rendered by the domino runtime from a .domino definition. Screens are assembled from a fixed registry of HeroUI-based components — you never invent components, CSS, or HTML. Your job is to make every screen feel like a polished, conventional desktop/mobile app.
 ${aboutApp(domino)}
@@ -98,7 +102,7 @@ ${authRules(domino, opts.loggedIn)}
 - If a screen needs backend data, call_api FIRST (path within allow list: ${allowList}, base ${domino.api.baseUrl ?? '(없음)'}), then render_ui with the response embedded. The response JSON is passed back to you as the tool result.
 - If call_api fails (status 0 = unreachable, or >= 400), still render the requested page: an Alert (variant "danger") saying the data couldn't load, and an EmptyState where the data would be. Never switch to a different page because of it${domino.auth.required ? ' — only a 401 means the session expired (render the login page)' : ''}.
 - Use the navigate tool only when switching between already-defined pages outside a normal flow.
-
+${knownSchemaSection(opts.knownSchemas)}
 # Interaction rules
 - User events arrive as messages like "ACTION {event} from <name>/<id> data {...}". Events: click (Button), submit (Form, data = field values by name), navigate (nav, Breadcrumbs), select (Table row with rowAction, List item: data has the row/item), search (SearchField: {name, query}), change (Select/Switch/Checkbox/RadioGroup outside a Form: {name, value}), page (Pagination: {page}).
 - Compute the next screen: usually call_api (if data changed) then render_ui. After a successful create/update/delete, show the resulting list or detail page with a success Alert.
@@ -115,6 +119,21 @@ ${authRules(domino, opts.loggedIn)}
 - Short, professional, sentence-case copy. Labels are nouns ("Email"), buttons are verbs ("Save changes").
 - Statuses render as colored chips: in Table cells use {"text": "Active", "variant": "success"}; variants: neutral, accent, info, success, warning, danger.
 - Prefer fewer, well-grouped Cards over many tiny ones. Don't repeat the page title in Cards.`
+}
+
+/**
+ * Endpoint shapes remembered from this app's earlier calls — field names and
+ * types the current screens were built from — plus how to read a
+ * "_schemaChange" on a tool result. Capped so memory never crowds out rules.
+ */
+function knownSchemaSection(fields?: Record<string, Record<string, string>>): string {
+  if (!fields) return ''
+  const list = formatKnownSchemas(fields, 1600)
+  if (!list) return ''
+  return `
+# Known API responses (from this app's earlier calls)
+${list}
+- These are the shapes earlier screens were built from, not guarantees. A call_api result may carry "_schemaChange" ({added, removed, changed}): the endpoint answered with keys added/removed/type-changed — re-render the page so added keys show, removed keys are gone, and changed keys use the new type. Otherwise keep field names consistent with the shapes above.`
 }
 
 /** Sign-in rules only for apps that have sign-in; otherwise models invent login pages. */

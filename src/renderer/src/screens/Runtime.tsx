@@ -11,6 +11,13 @@ import { Button, Dropdown, Header, Label, Skeleton, Spinner, Tooltip } from '@he
 import { runAgentTurn } from '@core/agent/engine'
 import { buildSystemPrompt } from '@core/agent/prompt'
 import { resolveEndpoint } from '@core/agent/api'
+import {
+  bookFields,
+  loadSchemaBook,
+  rememberSchema,
+  saveSchemaBook,
+  type SchemaBook
+} from '@core/agent/schema'
 import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
 import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
@@ -61,6 +68,9 @@ export function Runtime({
   const navRef = useRef<NavItem[]>([])
   /** Latest shown spec, including pages from earlier turns (see withKnownPages). */
   const knownRef = useRef<UiSpec | null>(null)
+  /** Persisted per-domino API memory: endpoint → key/type shape of its responses. */
+  const schemaBookRef = useRef<SchemaBook>({})
+  const schemaTimer = useRef<number | null>(null)
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
   const [previewSpec, setPreviewSpec] = useState<UiSpec | null>(null)
@@ -76,6 +86,28 @@ export function Runtime({
   const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
 
   const session = sessionRef.current
+
+  // Debounced: one round can remember several shapes and each save rewrites the
+  // whole book, so writes coalesce.
+  const scheduleSchemaSave = useCallback(() => {
+    if (schemaTimer.current !== null) window.clearTimeout(schemaTimer.current)
+    schemaTimer.current = window.setTimeout(() => {
+      schemaTimer.current = null
+      void saveSchemaBook(storage, domino.id, schemaBookRef.current)
+    }, 800)
+  }, [domino.id, storage])
+
+  // Don't drop a pending save when the screen unmounts mid-debounce.
+  useEffect(
+    () => () => {
+      if (schemaTimer.current !== null) {
+        window.clearTimeout(schemaTimer.current)
+        schemaTimer.current = null
+        void saveSchemaBook(storage, domino.id, schemaBookRef.current)
+      }
+    },
+    [domino.id, storage]
+  )
 
   // Overlays (menus, dialogs) portal to <body>, so the domino theme tokens
   // go on the root element where HeroUI declares its own.
@@ -118,7 +150,8 @@ export function Runtime({
   const showSpec = useCallback(
     (spec: UiSpec) => {
       // Back/forward snapshots may predate pages delivered since; keep those too.
-      knownRef.current = withKnownPages(spec, knownRef.current)
+      const known = withKnownPages(spec, knownRef.current)
+      knownRef.current = known
       setCurrentSpec(spec)
       setPreviewSpec(null)
       setPageName(spec.pages.find((p) => p.id === spec.page)?.name ?? spec.page)
@@ -156,19 +189,27 @@ export function Runtime({
 
       try {
         const adapter = createAdapter(config)
-        const system = buildSystemPrompt(domino, { loggedIn: loggedInRef.current })
+        // One snapshot per turn: the engine diffs responses against it, the
+        // prompt describes screens built from it.
+        const knownSchemas = bookFields(schemaBookRef.current)
+        const system = buildSystemPrompt(domino, {
+          loggedIn: loggedInRef.current,
+          knownSchemas
+        })
         historyRef.current.push({ role: 'user', content: prompt })
         for await (const update of runAgentTurn({
           adapter,
           system,
           history: historyRef.current,
-          api: apiRuntime()
+          api: apiRuntime(),
+          knownSchemas
         })) {
           if (turnSeq.current !== myTurn) return // superseded by a newer turn
           switch (update.type) {
             case 'spec':
               if (update.final) {
-                finalizeSpec(withKnownPages(update.spec, knownRef.current), cacheKeyRef.current)
+                const merged = withKnownPages(update.spec, knownRef.current)
+                finalizeSpec(merged, cacheKeyRef.current)
                 setStatus('')
               } else {
                 // Previews are interruptible: typing/scrolling stays responsive
@@ -181,6 +222,14 @@ export function Runtime({
               break
             case 'api_result':
               setStatus(`API ${update.result.status} · ${update.result.path}`)
+              if (update.schema) {
+                schemaBookRef.current = rememberSchema(
+                  schemaBookRef.current,
+                  update.endpoint,
+                  update.schema
+                )
+                scheduleSchemaSave()
+              }
               break
             case 'navigated':
               break
@@ -201,7 +250,7 @@ export function Runtime({
         }
       }
     },
-    [apiRuntime, config, domino, finalizeSpec]
+    [apiRuntime, config, domino, finalizeSpec, scheduleSchemaSave]
   )
 
   /* ------------------------------ boot flow ------------------------------ */
@@ -211,6 +260,9 @@ export function Runtime({
       const token = await getToken(storage, domino.id)
       sessionTokenRef.current = token
       loggedInRef.current = Boolean(token)
+
+      schemaBookRef.current = await loadSchemaBook(storage, domino.id)
+      if (cancelled) return
 
       const target = resolveInitialPage(domino, loggedInRef.current)
       const cacheKey = `init::${target}::auth:${loggedInRef.current}`
@@ -404,7 +456,16 @@ export function Runtime({
         cacheKey
       )
     },
-    [currentSpec, domino, finalizeSpec, handleLogin, interruptTurn, runTurn, session, storage]
+    [
+      currentSpec,
+      domino,
+      finalizeSpec,
+      handleLogin,
+      interruptTurn,
+      runTurn,
+      session,
+      storage
+    ]
   )
 
   const handleNav = useCallback(
@@ -546,7 +607,10 @@ export function Runtime({
             <Dropdown.Menu
               aria-label="Runtime menu"
               onAction={menuAction}
-              disabledKeys={[...(canBack ? [] : ['back']), ...(canForward ? [] : ['forward'])]}
+              disabledKeys={[
+                ...(canBack ? [] : ['back']),
+                ...(canForward ? [] : ['forward'])
+              ]}
             >
               <Dropdown.Section>
                 <Header className="px-2 pb-1 text-xs text-muted">

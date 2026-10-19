@@ -33,3 +33,25 @@ describe('buildSystemPrompt (untrusted author content)', () => {
     expect(prompt).not.toContain('a'.repeat(40_000))
   })
 })
+
+describe('buildSystemPrompt (known API responses)', () => {
+  const domino = parseDomino('[meta]\nname = X\n').domino!
+
+  it('lists remembered endpoint shapes and how to read _schemaChange', () => {
+    const prompt = buildSystemPrompt(domino, {
+      loggedIn: false,
+      knownSchemas: { 'GET /leads': { id: 'number', rows: 'array<object>' } }
+    })
+    expect(prompt).toContain('# Known API responses')
+    expect(prompt).toContain('- GET /leads → {id: number, rows: array<object>}')
+    expect(prompt).toContain('_schemaChange')
+    expect(prompt).toContain('added/removed/type-changed')
+  })
+
+  it('omits the section when nothing is remembered', () => {
+    expect(buildSystemPrompt(domino, { loggedIn: false })).not.toContain('# Known API responses')
+    expect(
+      buildSystemPrompt(domino, { loggedIn: false, knownSchemas: {} })
+    ).not.toContain('# Known API responses')
+  })
+})

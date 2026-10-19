@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { isAllowed, resolveEndpoint } from './api'
 import type { ChatMessage, ChatRequest, LLMAdapter, StreamDelta } from '../llm/types'
+import { setHttpFetch } from '../net'
 import { runAgentTurn, specFromArgs } from './engine'
 import { extractPartialSpec, parsePartialJson } from './partialJson'
 
@@ -266,5 +267,114 @@ describe('history after render_ui', () => {
     expect(Object.keys(spec)).toEqual(['version', 'page', 'pages'])
     expect(Object.keys(spec.pages[0].layout[0])).toEqual(['name', 'id', 'grid', 'props'])
     expect(spec.pages[0].layout[0].grid.h).toBe(1)
+  })
+})
+
+describe('call_api schema memory', () => {
+  const SPEC = '{"version": 1, "page": "p", "pages": [{"id": "p", "name": "P", "layout": [{"name": "Heading", "props": {"text": "Hi"}}]}]}'
+  const API = { allow: ['/leads'], baseUrl: 'https://api.example.com/v1', token: null }
+
+  /** call_api first, then render_ui — the two-iteration shape of a data screen. */
+  const twoRoundAdapter = (seen: ChatRequest[]): LLMAdapter => {
+    let round = 0
+    return {
+      async *chat(req: ChatRequest): AsyncIterable<StreamDelta> {
+        seen.push({ ...req, messages: [...req.messages] })
+        const id = `c${round}`
+        yield round++ === 0
+          ? { type: 'tool_call_start', id, name: 'call_api' }
+          : { type: 'tool_call_start', id, name: 'render_ui' }
+        yield {
+          type: 'tool_call_args',
+          id,
+          argsDelta:
+            round === 1
+              ? JSON.stringify({ path: '/leads', method: 'GET' })
+              : JSON.stringify({ spec: JSON.parse(SPEC) })
+        }
+        yield { type: 'tool_call_end', id }
+        yield { type: 'done' }
+      }
+    }
+  }
+
+  const serveJson = (status: number, body: unknown): void => {
+    setHttpFetch(async () => new Response(JSON.stringify(body), { status }))
+  }
+
+  const run = async (
+    knownSchemas?: Record<string, Record<string, string>>
+  ): Promise<{ updates: Awaited<ReturnType<typeof collect>>; seen: ChatRequest[] }> => {
+    const seen: ChatRequest[] = []
+    const history: ChatMessage[] = [{ role: 'user', content: 'show leads' }]
+    const updates = await collect(
+      runAgentTurn({
+        adapter: twoRoundAdapter(seen),
+        system: 's',
+        history,
+        api: API,
+        knownSchemas
+      })
+    )
+    return { updates, seen }
+  }
+
+  async function collect(
+    gen: AsyncGenerator<unknown, void, undefined>
+  ): Promise<Array<Record<string, any>>> {
+    const out: Array<Record<string, any>> = []
+    for await (const u of gen) out.push(u as Record<string, any>)
+    return out
+  }
+
+  afterEach(() => {
+    setHttpFetch((input, init) => globalThis.fetch(input, init))
+  })
+
+  it('attaches the response shape to api_result and the tool result', async () => {
+    serveJson(200, { id: 1, name: 'Lead' })
+    const { updates, seen } = await run()
+    const api = updates.find((u) => u.type === 'api_result')!
+    expect(api.schema).toEqual({ id: 'number', name: 'string' })
+    expect(api.schemaChanged).toBeUndefined()
+    const tool = seen[1].messages.find((m) => m.role === 'tool')!
+    expect(JSON.parse(tool!.content as string)).toEqual({
+      status: 200,
+      data: { id: 1, name: 'Lead' }
+    })
+  })
+
+  it('flags _schemaChange when the response has keys the memory lacks', async () => {
+    serveJson(200, { id: 1, name: 'Lead', email: 'x' })
+    const { updates, seen } = await run({ 'GET /leads': { id: 'number', legacy: 'boolean' } })
+    const api = updates.find((u) => u.type === 'api_result')!
+    expect(api.schemaChanged).toEqual({ added: ['name', 'email'], removed: ['legacy'], changed: [] })
+    const tool = seen[1].messages.find((m) => m.role === 'tool')!
+    const parsed = JSON.parse(tool!.content as string)
+    expect(parsed._schemaChange).toEqual({
+      added: ['name', 'email'],
+      removed: ['legacy'],
+      changed: []
+    })
+    expect(parsed.data.email).toBe('x')
+  })
+
+  it('stays quiet when the shape matches the memory', async () => {
+    serveJson(200, { id: 1, name: 'Lead' })
+    const { updates, seen } = await run({ 'GET /leads': { id: 'number', name: 'string' } })
+    const api = updates.find((u) => u.type === 'api_result')!
+    expect(api.schemaChanged).toBeUndefined()
+    const tool = seen[1].messages.find((m) => m.role === 'tool')!
+    expect(JSON.parse(tool!.content as string)).not.toHaveProperty('_schemaChange')
+  })
+
+  it('never records error responses as the endpoint shape', async () => {
+    serveJson(500, { error: 'boom' })
+    const { updates, seen } = await run({ 'GET /leads': { id: 'number' } })
+    const api = updates.find((u) => u.type === 'api_result')!
+    expect(api.schema).toBeUndefined()
+    expect(api.schemaChanged).toBeUndefined()
+    const tool = seen[1].messages.find((m) => m.role === 'tool')!
+    expect(JSON.parse(tool!.content as string)).not.toHaveProperty('_schemaChange')
   })
 })

@@ -3,6 +3,7 @@ import { describeUiSpecProblem, tryValidateUiSpec as validate, type UiSpec } fro
 import { withRegistryNames } from '../ui/registry'
 import { executeApi, type ApiResult, type ApiRuntime } from './api'
 import { extractPartialSpec, parsePartialJson } from './partialJson'
+import { describeApiSchema, diffApiSchema, endpointKey, hasSchemaChange, type SchemaDiff } from './schema'
 import { agentTools } from './tools'
 
 /**
@@ -14,7 +15,13 @@ import { agentTools } from './tools'
 export type AgentUpdate =
   | { type: 'spec'; spec: UiSpec; final: boolean }
   | { type: 'text'; text: string }
-  | { type: 'api_result'; result: ApiResult }
+  | {
+      type: 'api_result'
+      result: ApiResult
+      endpoint: string
+      schema?: Record<string, string>
+      schemaChanged?: SchemaDiff
+    }
   | { type: 'navigated'; page: string }
   | { type: 'error'; message: string }
   | { type: 'done' }
@@ -40,6 +47,8 @@ export interface AgentTurnOptions {
   history: ChatMessage[]
   api: ApiRuntime
   maxIterations?: number
+  /** Endpoint shapes (`METHOD /path` → type map) remembered from earlier turns. */
+  knownSchemas?: Record<string, Record<string, string>>
 }
 
 export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<AgentUpdate> {
@@ -181,20 +190,46 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           if (spec) yield { type: 'spec', spec, final: true }
         } else if (tc.name === 'call_api') {
           const parsed = safeParseArgs(tc.args)
+          const method = parsed?.method ? String(parsed.method) : undefined
           const result = await executeApi(opts.api, {
             path: String(parsed?.path ?? ''),
-            method: parsed?.method ? String(parsed.method) : undefined,
+            method,
             body: parsed?.body
           })
+          // 2xx JSON only: error bodies ({error: …}) are a different shape than
+          // the success payload — remembering them would fake schema changes.
+          const endpoint = endpointKey(method, result.path)
+          const schema =
+            result.status >= 200 &&
+            result.status < 300 &&
+            result.data !== null &&
+            typeof result.data === 'object'
+              ? describeApiSchema(result.data)
+              : null
+          const prev = schema ? opts.knownSchemas?.[endpoint] : undefined
+          const diff = schema && prev ? diffApiSchema(prev, schema) : null
+          const changed = diff && hasSchemaChange(diff) ? diff : null
           // Record before yielding so an already-executed (possibly non-idempotent)
           // call is never lost to an abandoned turn — the model would repeat it.
           messages.push({
             role: 'tool',
             toolCallId: tc.id,
             toolName: tc.name,
-            content: JSON.stringify({ status: result.status, data: result.data })
+            content: JSON.stringify({
+              status: result.status,
+              data: result.data,
+              // Keys added/removed/changed vs. what earlier screens were built
+              // on: the model re-renders so the cached layout catches up.
+              ...(changed ? { _schemaChange: changed } : {})
+            })
           })
-          yield { type: 'api_result', result }
+          yield {
+            type: 'api_result',
+            result,
+            endpoint,
+            schema: schema ?? undefined,
+            schemaChanged: changed ?? undefined
+          }
         } else if (tc.name === 'navigate') {
           const parsed = safeParseArgs(tc.args)
           const page = String(parsed?.page ?? '')
