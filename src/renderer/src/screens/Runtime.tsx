@@ -31,6 +31,7 @@ import {
   saveSchemaBook,
   type SchemaBook
 } from '@core/agent/schema'
+import { mergeKnownPage, pregenTargets } from '@core/agent/pregen'
 import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
 import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
@@ -90,6 +91,11 @@ export function Runtime({
   /** Endpoints whose responses the current turn's final spec is built from. */
   const turnDepsRef = useRef<ScreenDeps>({})
   const schemaTimer = useRef<number | null>(null)
+  /** Background pre-generation: bumped to cancel (user turn, unmount, logout). */
+  const pregenSeq = useRef(0)
+  const pregenScheduled = useRef(false)
+  /** Late-bound so the early finalize hook can reach the runner declared below. */
+  const pregenRunnerRef = useRef<((seq: number) => Promise<void>) | null>(null)
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
   const [previewSpec, setPreviewSpec] = useState<UiSpec | null>(null)
@@ -179,6 +185,21 @@ export function Runtime({
     if (items.some((i) => i.id === spec.page)) setActiveNav(spec.page)
   }, [])
 
+  /**
+   * Once per session, after the first screen settles: build the nav/script
+   * pages in the background (max 3, sequential) so tapping them switches
+   * instantly. Any user turn cancels it — a live request wins over prefetching.
+   */
+  const schedulePreGen = useCallback(() => {
+    if (pregenScheduled.current || needsApiKey(config)) return
+    pregenScheduled.current = true
+    const seq = pregenSeq.current
+    // Let the screen that just settled paint (and its turn wind down) first.
+    window.setTimeout(() => {
+      void pregenRunnerRef.current?.(seq)
+    }, 400)
+  }, [config])
+
   const showSpec = useCallback(
     (spec: UiSpec) => {
       // Back/forward snapshots may predate pages delivered since; keep those too.
@@ -200,8 +221,9 @@ export function Runtime({
       if (cacheKey) session.cacheSet(cacheKey, spec)
       showSpec(spec)
       syncNav()
+      schedulePreGen()
     },
-    [session, showSpec, syncNav]
+    [schedulePreGen, session, showSpec, syncNav]
   )
 
   const apiRuntime = useCallback(
@@ -216,6 +238,7 @@ export function Runtime({
   const runTurn = useCallback(
     async (prompt: string, cacheKey: string | null): Promise<void> => {
       const myTurn = ++turnSeq.current
+      pregenSeq.current++ // a live request outranks background building
       cacheKeyRef.current = cacheKey
       turnDepsRef.current = {}
       setStreaming(true)
@@ -298,6 +321,66 @@ export function Runtime({
     [apiRuntime, config, domino, finalizeSpec, scheduleSchemaSave]
   )
 
+  /* ------------------------- background pre-generation ------------------------- */
+
+  /** Build one page in an isolated scratch history — never the user's conversation. */
+  const pregenOne = useCallback(
+    async (pageId: string, seq: number): Promise<UiSpec | null> => {
+      const scratch: ChatMessage[] = [
+        {
+          role: 'user',
+          content: `INITIAL SCREEN. Show the "${pageId}" page following the screen patterns.`
+        }
+      ]
+      const knownSchemas = bookFields(schemaBookRef.current)
+      const system = buildSystemPrompt(domino, {
+        loggedIn: loggedInRef.current,
+        knownSchemas
+      })
+      try {
+        for await (const update of runAgentTurn({
+          adapter: createAdapter(config),
+          system,
+          history: scratch, // the engine splices history: sharing would corrupt it
+          api: apiRuntime(),
+          knownSchemas
+        })) {
+          if (pregenSeq.current !== seq) return null // cancelled: walk away silently
+          if (update.type === 'spec' && update.final) return update.spec
+          // previews and api_results are ignored: nothing on screen changes
+        }
+      } catch {
+        return null // a failed background build just becomes a live-generating tap
+      }
+      return null
+    },
+    [apiRuntime, config, domino]
+  )
+
+  const maybeRunPreGen = useCallback(
+    async (seq: number): Promise<void> => {
+      if (pregenSeq.current !== seq || needsApiKey(config)) return
+      const base = knownRef.current
+      if (!base) return
+      for (const pageId of pregenTargets(domino, base, loggedInRef.current)) {
+        if (pregenSeq.current !== seq) return
+        const built = await pregenOne(pageId, seq)
+        if (pregenSeq.current !== seq || !built || !knownRef.current) return
+        // Merge into what the runtime knows — no session.push (no back-stack
+        // pollution), no showSpec (the user's screen never flickers).
+        knownRef.current = mergeKnownPage(knownRef.current, built, pageId)
+        setCurrentSpec((prev) => (prev ? mergeKnownPage(prev, built, pageId) : prev))
+      }
+      // The view snapshot now carries the background pages too — reopening keeps them.
+      const known = knownRef.current
+      if (pregenSeq.current === seq && known) {
+        void screensRef.current?.saveView(loggedInRef.current, { page: known.page, known })
+      }
+    },
+    [config, domino, pregenOne]
+  )
+  pregenRunnerRef.current = maybeRunPreGen
+
   /* ------------------------------ boot flow ------------------------------ */
   useEffect(() => {
     let cancelled = false
@@ -344,6 +427,7 @@ export function Runtime({
     return () => {
       cancelled = true
       turnSeq.current++ // invalidate in-flight turns
+      pregenSeq.current++ // …and any background builds still running
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

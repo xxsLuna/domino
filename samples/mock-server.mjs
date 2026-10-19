@@ -368,6 +368,16 @@ function pickSpec(messages) {
   if (last.includes('Login attempt FAILED') || last.includes('AUTH FAILED')) return loginFailedSpec
   if (last.includes('INITIAL SCREEN') && last.includes('Logged in: no')) return loginSpec
   if (last.includes('Authentication SUCCEEDED')) return dashboardSpec()
+  // Initial/boot turns and background pre-generation name their page directly:
+  // `INITIAL SCREEN… Show the "X" page…` (no ACTION line to route on).
+  const asked = /INITIAL SCREEN[\s\S]*?Show the "([^"]+)" page/.exec(last)
+  if (asked) {
+    const target = asked[1]
+    if (target === 'main') return dashboardSpec()
+    if (target === 'leads') return leadsSpec()
+    if (target === 'settings') return settingsSpec()
+    return comingSoonSpec(target)
+  }
   // Live edit: re-render the named page (a real model would apply the change
   // too; the demo just proves the edit loop re-renders the same screen).
   const edited = /EDIT REQUEST \(page "([^"]+)"\)/.exec(last)
