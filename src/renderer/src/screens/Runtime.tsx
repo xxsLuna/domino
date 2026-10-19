@@ -13,6 +13,7 @@ import { buildSystemPrompt } from '@core/agent/prompt'
 import { resolveEndpoint } from '@core/agent/api'
 import {
   bookFields,
+  hashSchema,
   loadSchemaBook,
   rememberSchema,
   saveSchemaBook,
@@ -24,6 +25,7 @@ import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@c
 import { httpFetch, readTextCapped } from '@core/net'
 import { hashContext, SessionStore } from '@core/session/session'
 import { clearToken, extractToken, getToken, setToken } from '@core/session/prefs'
+import { ScreenStore, type ScreenDeps } from '@core/session/screenStore'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
 import { CardGrid } from '@core/ui/CardGrid'
 import { streamView } from '@core/ui/streaming'
@@ -31,6 +33,7 @@ import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
 import {
+  findPage,
   isSignOutEvent,
   withKnownPages,
   type ActionEvent,
@@ -70,6 +73,10 @@ export function Runtime({
   const knownRef = useRef<UiSpec | null>(null)
   /** Persisted per-domino API memory: endpoint → key/type shape of its responses. */
   const schemaBookRef = useRef<SchemaBook>({})
+  /** Persistent screen cache — specs from earlier sessions, with their API deps. */
+  const screensRef = useRef<ScreenStore | null>(null)
+  /** Endpoints whose responses the current turn's final spec is built from. */
+  const turnDepsRef = useRef<ScreenDeps>({})
   const schemaTimer = useRef<number | null>(null)
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
@@ -86,6 +93,15 @@ export function Runtime({
   const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
 
   const session = sessionRef.current
+
+  /** Current shape hash per endpoint — what persisted screens are validated against. */
+  const schemaHashes = useCallback((): Record<string, string> => {
+    const out: Record<string, string> = {}
+    for (const [endpoint, remembered] of Object.entries(schemaBookRef.current)) {
+      out[endpoint] = hashSchema(remembered.fields)
+    }
+    return out
+  }, [])
 
   // Debounced: one round can remember several shapes and each save rewrites the
   // whole book, so writes coalesce.
@@ -156,6 +172,8 @@ export function Runtime({
       setPreviewSpec(null)
       setPageName(spec.pages.find((p) => p.id === spec.page)?.name ?? spec.page)
       applyNav(spec)
+      // Remember where the user was: reopening restores this screen as-is.
+      void screensRef.current?.saveView(loggedInRef.current, { page: spec.page, known })
     },
     [applyNav]
   )
@@ -183,6 +201,7 @@ export function Runtime({
     async (prompt: string, cacheKey: string | null): Promise<void> => {
       const myTurn = ++turnSeq.current
       cacheKeyRef.current = cacheKey
+      turnDepsRef.current = {}
       setStreaming(true)
       setError(null)
       setStatus('생성 중…')
@@ -210,6 +229,15 @@ export function Runtime({
               if (update.final) {
                 const merged = withKnownPages(update.spec, knownRef.current)
                 finalizeSpec(merged, cacheKeyRef.current)
+                // Persist the screen (and which responses it was built from)
+                // so the next session restores it instead of regenerating.
+                if (cacheKeyRef.current) {
+                  void screensRef.current?.put(
+                    cacheKeyRef.current,
+                    merged,
+                    turnDepsRef.current
+                  )
+                }
                 setStatus('')
               } else {
                 // Previews are interruptible: typing/scrolling stays responsive
@@ -228,6 +256,7 @@ export function Runtime({
                   update.endpoint,
                   update.schema
                 )
+                turnDepsRef.current[update.endpoint] = hashSchema(update.schema)
                 scheduleSchemaSave()
               }
               break
@@ -262,13 +291,30 @@ export function Runtime({
       loggedInRef.current = Boolean(token)
 
       schemaBookRef.current = await loadSchemaBook(storage, domino.id)
+      const screens = await ScreenStore.open(storage, domino.id)
+      screensRef.current = screens
       if (cancelled) return
+
+      // Reopen lands exactly where the app was left — restored, not re-generated.
+      const view = await screens.loadView(loggedInRef.current)
+      if (cancelled) return
+      if (view && findPage(view.known, view.page)) {
+        finalizeSpec({ ...view.known, page: view.page }, null)
+        return
+      }
 
       const target = resolveInitialPage(domino, loggedInRef.current)
       const cacheKey = `init::${target}::auth:${loggedInRef.current}`
       const cached = session.cacheGet(cacheKey)
       if (cached && !cancelled) {
         finalizeSpec(cached, cacheKey)
+        return
+      }
+      // A screen an earlier session persisted — same deps check as events.
+      const stored = screens.get(cacheKey, schemaHashes())
+      if (stored && !cancelled) {
+        session.cacheSet(cacheKey, stored.spec)
+        finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
         return
       }
       if (cancelled) return
@@ -451,6 +497,14 @@ export function Runtime({
         finalizeSpec(cached, cacheKey)
         return
       }
+      // Persisted across restarts — but only while every endpoint it embeds
+      // still answers with the shape the screen was built on.
+      const stored = screensRef.current?.get(cacheKey, schemaHashes())
+      if (stored) {
+        session.cacheSet(cacheKey, stored.spec)
+        finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
+        return
+      }
       void runTurn(
         `The user acted on the current screen (see ACTION above). Compute and render the next screen.`,
         cacheKey
@@ -463,6 +517,7 @@ export function Runtime({
       handleLogin,
       interruptTurn,
       runTurn,
+      schemaHashes,
       session,
       storage
     ]
