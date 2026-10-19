@@ -2,6 +2,7 @@ import { httpFetch } from '../net'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
+import { LLM_TIMEOUT_MS } from './types'
 
 /**
  * Anthropic Messages API streaming adapter (tool use via content blocks).
@@ -77,7 +78,8 @@ export function createAnthropicAdapter(config: LLMConfig): LLMAdapter {
                 }))
               }
             : {})
-        })
+        }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS)
       })
       if (!res.ok) throw new Error(`LLM request failed: ${await readError(res)}`)
 

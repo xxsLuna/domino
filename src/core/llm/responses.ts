@@ -2,6 +2,7 @@ import { httpFetch } from '../net'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
+import { LLM_TIMEOUT_MS } from './types'
 
 /**
  * OpenAI Responses API streaming adapter (POST <base>/responses).
@@ -59,7 +60,7 @@ export function createResponsesAdapter(config: LLMConfig): LLMAdapter {
         headers: {
           'content-type': 'application/json',
           ...routingHeaders(baseUrl),
-          authorization: `Bearer ${config.apiKey ?? ''}`
+          ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {})
         },
         body: JSON.stringify({
           model: config.model,
@@ -76,7 +77,8 @@ export function createResponsesAdapter(config: LLMConfig): LLMAdapter {
                 }))
               }
             : {})
-        })
+        }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS)
       })
       if (!res.ok) throw new Error(`LLM request failed: ${await readError(res)}`)
 

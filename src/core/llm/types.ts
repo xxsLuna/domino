@@ -12,6 +12,13 @@
  */
 export type ProviderId = 'chat_completions' | 'responses' | 'anthropic'
 
+/**
+ * Hard ceiling for one streamed LLM request. Normal turns finish in seconds;
+ * past this the provider (or the network) is hung, and the turn must fail
+ * instead of spinning forever.
+ */
+export const LLM_TIMEOUT_MS = 300_000
+
 export interface LLMConfig {
   provider: ProviderId
   /** BYOK key — never logged, never sent anywhere but the provider itself. */
@@ -20,6 +27,26 @@ export interface LLMConfig {
   baseUrl?: string
   model: string
   temperature?: number
+}
+
+/**
+ * Whether a BYOK key must still be entered for this config.
+ *
+ * A same-origin base URL (leading `/`) goes through the dev proxy, which may
+ * inject the key itself — otherwise parse the URL and match loopback hosts by
+ * *hostname*, never by substring (an unanchored `localhost` test also matched
+ * `https://localhost.evil.com` and `https://evil.com/?x=localhost`).
+ */
+export function needsApiKey(config: Pick<LLMConfig, 'apiKey' | 'baseUrl'>): boolean {
+  if (config.apiKey) return false
+  const raw = config.baseUrl ?? ''
+  if (raw.startsWith('/')) return false // dev proxy injects the key
+  try {
+    const h = new URL(raw).hostname
+    return h !== 'localhost' && h !== '127.0.0.1' && h !== '[::1]'
+  } catch {
+    return true // not parseable as absolute URL and not a proxy path
+  }
 }
 
 export interface ToolCall {

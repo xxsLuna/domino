@@ -2,6 +2,7 @@ import { httpFetch } from '../net'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta, ToolCall } from './types'
+import { LLM_TIMEOUT_MS } from './types'
 
 /**
  * OpenAI chat-completions streaming adapter.
@@ -58,7 +59,8 @@ export function createOpenAIAdapter(config: LLMConfig): LLMAdapter {
           ...routingHeaders(baseUrl),
           ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {})
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS)
       })
       if (!res.ok) throw new Error(`LLM request failed: ${await readError(res)}`)
 
