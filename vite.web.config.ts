@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
@@ -14,6 +15,21 @@ import { resolve } from 'node:path'
 const appVersion: string = JSON.parse(
   readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
 ).version
+
+// Commit the build/dev-server runs from, so a footer line can trace the
+// running app back to its code. Evaluated when this config loads.
+function gitHash(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: __dirname,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+      .toString()
+      .trim()
+  } catch {
+    return 'unknown' // built outside a git checkout (tarball, some CI)
+  }
+}
 
 // Stable per-conversation id some providers (opencode zen) require for routing.
 const SESSION_ID = '1f0e3a24-6c9d-4b7e-9a21-7d4f5e8b0c32'
@@ -96,7 +112,7 @@ export default defineConfig(({ mode }) => {
     root: resolve(__dirname, 'src/renderer'),
     base: './',
     plugins: [react(), tailwindcss(), zenCsrfGate()],
-    define: { __APP_VERSION__: JSON.stringify(appVersion) },
+    define: { __APP_VERSION__: JSON.stringify(appVersion), __GIT_HASH__: JSON.stringify(gitHash()) },
     resolve: {
       alias: {
         '@core': resolve(__dirname, 'src/core'),

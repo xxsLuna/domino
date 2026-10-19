@@ -7,6 +7,15 @@ import { DEMO_DOMINO_TEXT } from '../demoDomino'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from '../loadDomino'
 import { getStorage } from '../platform'
 
+declare const __APP_VERSION__: string
+declare const __GIT_HASH__: string
+
+// A release identifies its version and the commit it was cut from; a dev
+// build only needs the commit — the version is whatever the tree is headed to.
+const buildInfo = import.meta.env.DEV
+  ? __GIT_HASH__
+  : `v${__APP_VERSION__} · ${__GIT_HASH__}`
+
 interface WelcomeProps {
   onLoaded: (loaded: LoadedDomino) => void
   onOpenSettings: () => void
@@ -246,6 +255,11 @@ export function Welcome({
         데스크톱에서는 <code className="rounded bg-default px-1">.domino</code> 파일을 바로 열거나{' '}
         <code className="rounded bg-default px-1">domino://</code> 링크를 클릭해 실행할 수 있습니다.
         파일을 창에 끌어다 놓아도 열립니다. 설정에서 LLM Provider(BYOK)를 등록하세요.
+        <p className="mt-2">
+          <code className="rounded bg-default px-1" aria-label="빌드 정보">
+            {buildInfo}
+          </code>
+        </p>
       </footer>
     </div>
   )
