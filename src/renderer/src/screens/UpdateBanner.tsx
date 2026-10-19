@@ -46,10 +46,10 @@ function mobileSource(): UpdateSource | null {
       }
     },
     install(_onProgress, onError) {
-      if (apkUrl) window.open(apkUrl, '_blank')
+      if (apkUrl) window.open(apkUrl, '_blank', 'noopener')
       else onError('no APK in the release')
     },
-    openReleases: () => window.open(RELEASES_URL, '_blank')
+    openReleases: () => window.open(RELEASES_URL, '_blank', 'noopener')
   }
 }
 
