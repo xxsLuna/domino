@@ -96,6 +96,7 @@ describe('routingHeaders', () => {
     expect(a['x-opencode-session']).toMatch(/\S{8,}/)
     expect(routingHeaders('https://opencode.ai/zen/v1')).toEqual(a)
     expect(routingHeaders('https://api.openai.com/v1')).toEqual({})
-    expect(routingHeaders('/zen/v1')).toEqual({})
+    // proxy-relative bases carry the marker the vite /zen CSRF gate requires
+    expect(routingHeaders('/zen/v1')).toEqual({ 'x-domino-client': 'domino-web' })
   })
 })

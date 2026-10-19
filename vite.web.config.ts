@@ -1,7 +1,8 @@
-import { defineConfig, loadEnv, type ProxyOptions } from 'vite'
+import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { readFileSync } from 'node:fs'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
 
 /**
@@ -40,13 +41,61 @@ function zenProxy(apiKey: string | undefined): ProxyOptions {
   }
 }
 
+/**
+ * CSRF gate for the key-injecting /zen proxy. Runs before the proxy middleware
+ * (configureServer registrations are installed ahead of Vite's internals), so
+ * a rejected request never reaches the proxyReq hook and never gets the key:
+ *
+ * - OPTIONS is denied outright — a cross-origin page must preflight for the
+ *   custom header, so killing preflights cuts off every cors-mode attempt.
+ * - An Origin header that doesn't match this server's own host is denied
+ *   (plain cross-site form/fetch requests that carry no custom header).
+ * - Otherwise the app's x-domino-client marker header must be present; it is
+ *   not CORS-safelisted, so a browser can only send it same-origin.
+ */
+const CLIENT_HEADER = 'x-domino-client'
+const CLIENT_VALUE = 'domino-web'
+
+function zenCsrfGate(): Plugin {
+  const middleware = (req: IncomingMessage, res: ServerResponse, next: () => void): void => {
+    if (!req.url?.startsWith('/zen')) return next()
+    const deny = (why: string): void => {
+      res.statusCode = 403
+      res.setHeader('content-type', 'text/plain; charset=utf-8')
+      res.end(`zen proxy: ${why}`)
+    }
+    if (req.method === 'OPTIONS') return deny('preflight is not allowed')
+    const origin = req.headers.origin
+    if (origin) {
+      let originHost = ''
+      try {
+        originHost = new URL(origin).host
+      } catch {
+        originHost = ''
+      }
+      if (!originHost || originHost !== req.headers.host) return deny('cross-origin blocked')
+    }
+    if (req.headers[CLIENT_HEADER] !== CLIENT_VALUE) return deny('missing client header')
+    next()
+  }
+  return {
+    name: 'zen-csrf-gate',
+    configureServer(server) {
+      server.middlewares.use(middleware)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware)
+    }
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const { DOMINO_ZEN_API_KEY } = loadEnv(mode, __dirname, 'DOMINO_')
   const proxy = { '/zen': zenProxy(DOMINO_ZEN_API_KEY) }
   return {
     root: resolve(__dirname, 'src/renderer'),
     base: './',
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), zenCsrfGate()],
     define: { __APP_VERSION__: JSON.stringify(appVersion) },
     resolve: {
       alias: {

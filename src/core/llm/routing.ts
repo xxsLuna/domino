@@ -11,6 +11,11 @@ const RUN_SESSION =
     : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
 
 export function routingHeaders(baseUrl: string): Record<string, string> {
+  // A relative base ("/zen/…") only ever runs in front of a proxy that injects
+  // an API key (dev/preview). The marker header lets that proxy tell requests
+  // from this app's own page apart from cross-site ones — browsers cannot send
+  // a custom header cross-origin without a preflight, which the proxy rejects.
+  if (baseUrl.startsWith('/')) return { 'x-domino-client': 'domino-web' }
   let host = ''
   try {
     host = new URL(baseUrl, 'http://localhost').hostname
