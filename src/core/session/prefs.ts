@@ -42,14 +42,35 @@ export function defaultLlmConfig(): LLMConfig {
 }
 
 export async function loadLlmConfig(storage: KeyValueStorage): Promise<LLMConfig> {
-  const raw = await storage.get(KEYS.llm)
-  if (!raw) return defaultLlmConfig()
+  const defaults = defaultLlmConfig()
+  let raw: string | null
   try {
-    const parsed = JSON.parse(raw) as LLMConfig
-    if (!parsed || !parsed.provider || !PROVIDER_META[parsed.provider]) return defaultLlmConfig()
-    return { ...defaultLlmConfig(), ...parsed }
+    raw = await storage.get(KEYS.llm)
   } catch {
-    return defaultLlmConfig()
+    return defaults // storage unavailable: boot with defaults instead of failing
+  }
+  if (!raw) return defaults
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return defaults
+  }
+  if (!parsed || typeof parsed !== 'object') return defaults
+  const p = parsed as Record<string, unknown>
+  // Object.hasOwn: `provider: "constructor"` is truthy on Object.prototype and
+  // would otherwise pass a plain membership check, crashing createAdapter later.
+  if (typeof p.provider !== 'string' || !Object.hasOwn(PROVIDER_META, p.provider)) {
+    return defaults
+  }
+  return {
+    provider: p.provider as ProviderId,
+    baseUrl: typeof p.baseUrl === 'string' ? p.baseUrl : defaults.baseUrl,
+    model: typeof p.model === 'string' ? p.model : defaults.model,
+    apiKey: typeof p.apiKey === 'string' ? p.apiKey : defaults.apiKey,
+    ...(typeof p.temperature === 'number' && Number.isFinite(p.temperature)
+      ? { temperature: p.temperature }
+      : {})
   }
 }
 

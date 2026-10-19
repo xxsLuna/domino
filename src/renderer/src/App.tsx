@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Spinner } from '@heroui/react'
-import { loadLlmConfig, pushRecent, type DominoSource } from '@core/session/prefs'
+import { defaultLlmConfig, loadLlmConfig, pushRecent, type DominoSource } from '@core/session/prefs'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import type { LLMConfig } from '@core/llm'
@@ -73,12 +73,15 @@ export function App(): React.JSX.Element {
     const path = window.dominoBridge?.pathForFile?.(file)
     void (async () => {
       await openSource(path ? { type: 'file', path } : { type: 'text', text: await file.text() })
-    })()
+    })().catch((err) => setLoadError((err as Error).message))
   })
 
   // Boot: BYOK config + OS-level *.domino open requests (double click / open-with).
   useEffect(() => {
-    void loadLlmConfig(storage).then(setConfig)
+    void loadLlmConfig(storage)
+      .then(setConfig)
+      // Boot must never hang on the spinner: fall back to defaults instead.
+      .catch(() => setConfig(defaultLlmConfig()))
     const bridge = window.dominoBridge
     if (!bridge || openFileRegistered) return
     openFileRegistered = true

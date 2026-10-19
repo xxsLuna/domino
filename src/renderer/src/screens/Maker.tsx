@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Button, Card, Chip, Label, Spinner, TextArea, TextField, Tooltip } from '@heroui/react'
-import { createAdapter, type ChatMessage, type LLMConfig } from '@core/llm'
+import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
 import { formatAnswers, runMakerTurn, type MakerQuestion, type MakerStep } from '@core/maker/maker'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
@@ -47,33 +47,43 @@ export function Maker({
   const history = useRef<ChatMessage[]>([])
   const run = useRef(0)
 
-  const needsKey = !config.apiKey && !/localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
+  const needsKey = needsApiKey(config)
 
   const step = async (userMessage: string): Promise<void> => {
     const mine = ++run.current
     setError(null)
     setPhase({ kind: 'working' })
     history.current.push({ role: 'user', content: userMessage })
-    const result = await runMakerTurn({
-      adapter: createAdapter(config),
-      history: history.current,
-      onProgress: (p) => {
-        if (run.current === mine && p.draft) setPhase({ kind: 'working', draft: p.draft })
+    // Without this catch a network/provider failure leaves the UI wedged on
+    // "working" and the rejection goes unhandled.
+    try {
+      const result = await runMakerTurn({
+        adapter: createAdapter(config),
+        history: history.current,
+        onProgress: (p) => {
+          if (run.current === mine && p.draft) setPhase({ kind: 'working', draft: p.draft })
+        }
+      })
+      if (run.current !== mine) return
+      if (result.type === 'questions') {
+        setAnswers({})
+        setPhase({ kind: 'questions', step: result })
+      } else if (result.type === 'domino') {
+        setRefine('')
+        setPhase({ kind: 'result', step: result })
+      } else {
+        setError(result.message)
+        setPhase(
+          history.current.some((m) => m.role === 'assistant')
+            ? { kind: 'failed' }
+            : { kind: 'compose' }
+        )
       }
-    })
-    if (run.current !== mine) return
-    if (result.type === 'questions') {
-      setAnswers({})
-      setPhase({ kind: 'questions', step: result })
-    } else if (result.type === 'domino') {
-      setRefine('')
-      setPhase({ kind: 'result', step: result })
-    } else {
-      setError(result.message)
+    } catch (err) {
+      if (run.current !== mine) return
+      setError((err as Error).message)
       setPhase(
-        history.current.some((m) => m.role === 'assistant')
-          ? { kind: 'failed' }
-          : { kind: 'compose' }
+        history.current.some((m) => m.role === 'assistant') ? { kind: 'failed' } : { kind: 'compose' }
       )
     }
   }
@@ -107,9 +117,13 @@ export function Maker({
   }
 
   const copy = async (content: string): Promise<void> => {
-    await navigator.clipboard.writeText(content)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setError('클립보드에 복사하지 못했습니다 (권한을 확인해 주세요)')
+    }
   }
 
   return (

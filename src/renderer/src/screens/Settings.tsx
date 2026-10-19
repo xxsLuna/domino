@@ -24,6 +24,7 @@ interface SettingsProps {
 export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX.Element {
   const [draft, setDraft] = useState<LLMConfig>({ ...config })
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [showKey, setShowKey] = useState(false)
   const meta = PROVIDER_META[draft.provider]
 
@@ -44,9 +45,15 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
   }
 
   const save = async (): Promise<void> => {
-    await saveLlmConfig(getStorage(), draft)
-    onSaved(draft)
-    setSaved(true)
+    setSaveError(null)
+    try {
+      await saveLlmConfig(getStorage(), draft)
+      onSaved(draft)
+      setSaved(true)
+    } catch (err) {
+      // e.g. a corrupt secure store refuses to be overwritten
+      setSaveError(`설정을 저장하지 못했습니다: ${(err as Error).message}`)
+    }
   }
 
   return (
@@ -139,6 +146,11 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               기본값 복원
             </Button>
             <div className="flex items-center gap-3">
+              {saveError ? (
+                <span className="text-sm text-danger" role="alert">
+                  {saveError}
+                </span>
+              ) : null}
               {saved ? (
                 <span className="flex items-center gap-1 text-sm text-success" role="status">
                   <Icon name="check" /> 저장됨

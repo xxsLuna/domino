@@ -26,7 +26,10 @@ export function Welcome({
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    void loadRecents(storage).then(setRecents)
+    // A storage failure just means no recents list — never a crash.
+    void loadRecents(storage)
+      .then(setRecents)
+      .catch(() => {})
   }, [storage])
 
   const open = async (source: DominoSource): Promise<void> => {
@@ -51,8 +54,13 @@ export function Welcome({
   }
 
   const openFile = async (file: File): Promise<void> => {
-    const text = await file.text()
-    await open({ type: 'text', text })
+    // file.text() runs outside open()'s own try/catch — guard it here too.
+    try {
+      const text = await file.text()
+      await open({ type: 'text', text })
+    } catch (err) {
+      setError((err as Error).message)
+    }
   }
 
   const reopen = (entry: RecentEntry): void => {
@@ -62,7 +70,7 @@ export function Welcome({
         return
       }
       await open(entry.source)
-    })()
+    })().catch((err) => setError((err as Error).message))
   }
 
   return (
