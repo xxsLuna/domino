@@ -10,7 +10,7 @@ import {
   shell
 } from 'electron'
 import { join } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import type { NetEvent, NetRequest } from '@core/net'
 import { checkForUpdate, installUpdate, RELEASES_URL } from './updater'
@@ -20,6 +20,64 @@ const DISPLAY_NAME = 'Domino UI'
 // The internal name stays "domino" — it names the data folder and the keychain
 // entry that encrypts saved API keys, so renaming it would lose them.
 app.setName('domino')
+
+/* --------------------------- app-origin boundary --------------------------- */
+// The preload bridge (local files, BYOK keys, HTTP, self-update) is granted to
+// this window's pages. These helpers define "our own page" for the navigation
+// guard and the IPC sender checks — nothing else may reach the bridge.
+const DEV_ORIGIN_URL = process.env['ELECTRON_RENDERER_URL'] ?? null
+// Trailing slash so `.../renderer-evil/` can't match the prefix. Compared
+// case-insensitively: Chromium canonicalizes the drive letter of file URLs
+// differently from Node's pathToFileURL.
+const RENDERER_DIR_PREFIX = DEV_ORIGIN_URL
+  ? null
+  : `${pathToFileURL(join(__dirname, '../renderer')).href.replace(/\/$/, '')}/`.toLowerCase()
+
+function isAppUrl(url: string): boolean {
+  if (DEV_ORIGIN_URL) {
+    try {
+      return new URL(url).origin === new URL(DEV_ORIGIN_URL).origin
+    } catch {
+      return false
+    }
+  }
+  if (!RENDERER_DIR_PREFIX) return false
+  try {
+    const target = new URL(url)
+    return target.protocol === 'file:' && target.href.toLowerCase().startsWith(RENDERER_DIR_PREFIX)
+  } catch {
+    return false
+  }
+}
+
+/** Only pages served from the app's own origin may invoke privileged IPC. */
+function trustedSender(sender: Electron.WebContents): boolean {
+  try {
+    return isAppUrl(sender.getURL())
+  } catch {
+    return false
+  }
+}
+
+/** Only these schemes may be handed to the OS (blocks file:, smb:, custom handlers). */
+const EXTERNAL_PROTOCOLS = new Set(['https:', 'http:', 'mailto:', 'tel:'])
+
+/** Hosts reachable over cleartext http — the local mock/demo server only. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+/** Parse a renderer-supplied fetch URL; https everywhere, http only on loopback. */
+function parseRemoteUrl(raw: unknown): URL {
+  if (typeof raw !== 'string') throw new Error('invalid URL')
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    throw new Error(`invalid URL: ${raw}`)
+  }
+  if (u.protocol === 'https:') return u
+  if (u.protocol === 'http:' && LOOPBACK_HOSTS.has(u.hostname)) return u
+  throw new Error('only https URLs are allowed (http is limited to localhost)')
+}
 
 // domino:// scheme must be registered before app ready.
 protocol.registerSchemesAsPrivileged([
@@ -56,8 +114,21 @@ function createWindow(): void {
 
   win.on('ready-to-show', () => win.show())
 
+  // A top-frame navigation away from the app origin would hand the privileged
+  // bridge to whatever loads next (window.open is covered below, but plain
+  // links, window.location and server redirects are not).
+  const guardNavigation = (event: { preventDefault(): void }, url: string): void => {
+    if (!isAppUrl(url)) event.preventDefault()
+  }
+  win.webContents.on('will-navigate', guardNavigation)
+  win.webContents.on('will-redirect', guardNavigation)
+
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    try {
+      if (EXTERNAL_PROTOCOLS.has(new URL(url).protocol)) void shell.openExternal(url)
+    } catch {
+      /* malformed url — drop it */
+    }
     return { action: 'deny' }
   })
 
@@ -163,32 +234,84 @@ if (!gotLock) {
       })
     }
 
-    ipcMain.handle('domino:read-file', async (_e, filePath: string) => {
-      if (!filePath.endsWith('.domino')) throw new Error('Not a .domino file')
+    /** Invoke-style handlers: reject anything that isn't our own page. */
+    const requireTrusted = (sender: Electron.WebContents): void => {
+      if (!trustedSender(sender)) throw new Error('untrusted IPC sender')
+    }
+
+    ipcMain.handle('domino:read-file', async (e, filePath: unknown) => {
+      requireTrusted(e.sender)
+      if (typeof filePath !== 'string' || !/\.domino$/i.test(filePath)) {
+        throw new Error('Not a .domino file')
+      }
       return readFile(filePath, 'utf-8')
     })
 
-    ipcMain.handle('domino:read-file-url', async (_e, fileUrl: string) => {
-      const res = await net.fetch(fileUrl)
+    ipcMain.handle('domino:read-file-url', async (e, fileUrl: unknown) => {
+      requireTrusted(e.sender)
+      const url = parseRemoteUrl(fileUrl)
+      const res = await net.fetch(url.href, { signal: AbortSignal.timeout(30_000) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return res.text()
+      const text = await res.text()
+      return text.length > 8_000_000 ? `${text.slice(0, 8_000_000)}\n…[truncated]` : text
     })
 
     /* ---------------- outbound HTTP (LLM providers, app APIs) ---------------- */
     // The renderer's fetch is bound by browser CORS, and some providers never
     // answer preflights (opencode zen) — so the renderer sends its requests
     // here (see @core/net) and the main process streams the response back.
+    const HEAD_TIMEOUT_MS = 30_000
+    const MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+    const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+    /** In-flight fetches by request id, so the renderer can cancel them. */
+    const pendingFetches = new Map<string, AbortController>()
+
+    ipcMain.on('net:cancel', (_event, id: unknown) => {
+      if (typeof id === 'string') pendingFetches.get(id)?.abort()
+    })
+
     ipcMain.on('net:fetch', async (event, id: string, url: string, req: NetRequest) => {
       const send = (msg: NetEvent): void => {
         if (!event.sender.isDestroyed()) event.sender.send('net:event', id, msg)
       }
+      if (!trustedSender(event.sender)) {
+        send({ type: 'error', message: 'untrusted IPC sender' })
+        return
+      }
+      const controller = new AbortController()
+      if (typeof id === 'string') pendingFetches.set(id, controller)
       try {
-        if (!/^https?:\/\//i.test(url)) throw new Error(`unsupported URL: ${url}`)
-        const res = await net.fetch(url, {
-          method: req.method,
-          headers: req.headers,
-          body: req.body
+        const target = parseRemoteUrl(url)
+        const method = String(req?.method ?? 'GET').toUpperCase()
+        if (!ALLOWED_METHODS.has(method)) throw new Error(`unsupported method: ${method}`)
+        // Headers must be plain [name, value] pairs of strings.
+        const headers: Array<[string, string]> = Array.isArray(req?.headers)
+          ? req.headers.filter(
+              (h): h is [string, string] =>
+                Array.isArray(h) && h.length === 2 && h.every((v) => typeof v === 'string')
+            )
+          : []
+        // Wait for response headers only — a streaming body may legitimately
+        // run for minutes, but a server that never answers must not hang.
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const headDeadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('timed out waiting for response')), HEAD_TIMEOUT_MS)
+          timer.unref?.()
         })
+        let res: Response
+        try {
+          res = await Promise.race([
+            net.fetch(target.href, {
+              method,
+              headers,
+              body: req?.body,
+              signal: controller.signal
+            }),
+            headDeadline
+          ])
+        } finally {
+          if (timer) clearTimeout(timer)
+        }
         send({
           type: 'head',
           status: res.status,
@@ -198,9 +321,15 @@ if (!gotLock) {
         if (res.body) {
           const reader = res.body.getReader()
           const decoder = new TextDecoder()
+          let received = 0
           for (;;) {
             const { done, value } = await reader.read()
             if (done) break
+            received += value.byteLength
+            if (received > MAX_RESPONSE_BYTES) {
+              await reader.cancel().catch(() => {})
+              throw new Error('response exceeded the size limit')
+            }
             const text = decoder.decode(value, { stream: true })
             if (text) send({ type: 'chunk', text })
           }
@@ -210,13 +339,19 @@ if (!gotLock) {
         send({ type: 'end' })
       } catch (err) {
         send({ type: 'error', message: (err as Error).message })
+      } finally {
+        if (typeof id === 'string') pendingFetches.delete(id)
       }
     })
 
     /* ---------------------------- self-update ---------------------------- */
     // The renderer only triggers; the release URL and asset stay in this process.
-    ipcMain.handle('update:check', () => checkForUpdate())
+    ipcMain.handle('update:check', (e) => {
+      requireTrusted(e.sender)
+      return checkForUpdate()
+    })
     ipcMain.on('update:install', (event) => {
+      if (!trustedSender(event.sender)) return
       const send = (channel: string, payload: unknown): void => {
         if (!event.sender.isDestroyed()) event.sender.send(channel, payload)
       }
@@ -224,51 +359,101 @@ if (!gotLock) {
         send('update:error', err.message)
       )
     })
-    ipcMain.on('update:open-releases', () => void shell.openExternal(RELEASES_URL))
+    ipcMain.on('update:open-releases', (event) => {
+      if (trustedSender(event.sender)) void shell.openExternal(RELEASES_URL)
+    })
 
     /* ---------------- secure KV store (BYOK keys, tokens) ---------------- */
     const securePath = (): string => join(app.getPath('userData'), 'secure-store.json')
 
-    async function readSecureStore(): Promise<Record<string, string>> {
+    type StoreRead =
+      | { ok: true; data: Record<string, string> }
+      | { ok: false; error: string }
+
+    async function readSecureStore(): Promise<StoreRead> {
+      let raw: string
       try {
-        return JSON.parse(await readFile(securePath(), 'utf-8')) as Record<string, string>
-      } catch {
-        return {}
+        raw = await readFile(securePath(), 'utf-8')
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, data: {} }
+        throw err
       }
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return { ok: true, data: parsed as Record<string, string> }
+        }
+      } catch {
+        /* fall through to the corrupt verdict */
+      }
+      return { ok: false, error: 'secure store is corrupt' }
     }
 
     async function writeSecureStore(data: Record<string, string>): Promise<void> {
-      await writeFile(securePath(), JSON.stringify(data, null, 2), 'utf-8')
+      const dest = securePath()
+      // Write to a temp file first so a crash can never leave a half-written
+      // store behind; mode 0600 keeps BYOK keys readable by this user only.
+      const tmp = `${dest}.${process.pid}.tmp`
+      await writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 })
+      await rename(tmp, dest)
     }
 
-    ipcMain.handle('secure:get', async (_e, key: string) => {
-      const all = await readSecureStore()
-      const stored = all[key]
-      if (stored === undefined) return null
-      if (stored.startsWith('plain:')) return stored.slice(6)
-      if (!safeStorage.isEncryptionAvailable()) return stored
-      try {
-        return safeStorage.decryptString(Buffer.from(stored, 'base64'))
-      } catch {
-        return null
-      }
-    })
+    // Reads and read-modify-writes run one at a time so concurrent IPC calls
+    // can't lose each other's updates.
+    let storeQueue: Promise<unknown> = Promise.resolve()
+    function queueStoreOp<T>(op: () => Promise<T>): Promise<T> {
+      const run = storeQueue.then(op, op)
+      storeQueue = run.catch(() => {})
+      return run
+    }
 
-    ipcMain.handle('secure:set', async (_e, key: string, value: string) => {
-      const all = await readSecureStore()
-      if (safeStorage.isEncryptionAvailable()) {
-        all[key] = safeStorage.encryptString(value).toString('base64')
-      } else {
-        all[key] = `plain:${value}`
-      }
-      await writeSecureStore(all)
-    })
+    /** Read the store for a mutating op; never write over a corrupt file. */
+    async function readStoreForWrite(): Promise<Record<string, string>> {
+      const read = await readSecureStore()
+      if (!read.ok) throw new Error('secure store is corrupt — refusing to overwrite it')
+      return read.data
+    }
 
-    ipcMain.handle('secure:remove', async (_e, key: string) => {
-      const all = await readSecureStore()
-      delete all[key]
-      await writeSecureStore(all)
-    })
+    ipcMain.handle('secure:get', (_e, key: unknown) =>
+      queueStoreOp(async () => {
+        if (typeof key !== 'string') return null
+        const read = await readSecureStore()
+        if (!read.ok) return null
+        const stored = read.data[key]
+        if (stored === undefined) return null
+        if (stored.startsWith('plain:')) return stored.slice(6)
+        if (!safeStorage.isEncryptionAvailable()) return stored
+        try {
+          return safeStorage.decryptString(Buffer.from(stored, 'base64'))
+        } catch {
+          return null
+        }
+      })
+    )
+
+    ipcMain.handle('secure:set', (_e, key: unknown, value: unknown) =>
+      queueStoreOp(async () => {
+        if (typeof key !== 'string' || typeof value !== 'string') {
+          throw new Error('invalid secure store arguments')
+        }
+        const all = await readStoreForWrite()
+        if (safeStorage.isEncryptionAvailable()) {
+          all[key] = safeStorage.encryptString(value).toString('base64')
+        } else {
+          all[key] = `plain:${value}`
+        }
+        await writeSecureStore(all)
+      })
+    )
+
+    ipcMain.handle('secure:remove', (_e, key: unknown) =>
+      queueStoreOp(async () => {
+        if (typeof key !== 'string') throw new Error('invalid secure store key')
+        const all = await readStoreForWrite()
+        delete all[key]
+        await writeSecureStore(all)
+      })
+    )
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

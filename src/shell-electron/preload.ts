@@ -63,6 +63,11 @@ const bridge: DominoBridge = {
     }
     ipcRenderer.on('net:event', listener)
     ipcRenderer.send('net:fetch', id, url, req)
+    // Returned so bridgedFetch can stop the remote fetch when the caller aborts.
+    return () => {
+      ipcRenderer.removeListener('net:event', listener)
+      ipcRenderer.send('net:cancel', id)
+    }
   }
 }
 
