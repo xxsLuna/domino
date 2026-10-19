@@ -530,7 +530,9 @@ export function Form({
       <div className={twoCol ? 'grid grid-cols-2 gap-x-4 gap-y-4' : 'flex flex-col gap-4'}>
         {fields.map((field, i) => (
           <div
-            key={i}
+            // Stable key: positional keys let React reuse an uncontrolled input
+            // across field changes, so typed values stick to the wrong field.
+            key={fieldSpecs[i]?.id ?? i}
             className={twoCol && FULL_ROW.has(fieldSpecs[i]?.name ?? '') ? 'col-span-2' : 'min-w-0'}
           >
             {field}
@@ -1038,6 +1040,10 @@ export function Button({
 
 /* ---------------------------------- Data ---------------------------------- */
 
+/** Rows/items per List/Table render: a hostile or broken spec carrying tens of
+ *  thousands of entries must not freeze the renderer (a note shows the cut). */
+const MAX_LIST_ROWS = 200
+
 interface Column {
   key: string
   label: string
@@ -1110,7 +1116,8 @@ export function Table({
   const runtime = useRuntime()
   const { bp } = useLayout()
   const nested = useContext(SurfaceContext)
-  const body = Array.isArray(rows) ? rows : []
+  const totalRows = Array.isArray(rows) ? rows.length : 0
+  const body = Array.isArray(rows) ? rows.slice(0, MAX_LIST_ROWS) : []
   const cols = toColumns(columns, body)
   const interactive = truthy(rowAction)
   const select = (index: number): void => {
@@ -1118,7 +1125,16 @@ export function Table({
     const row = Object.fromEntries(cols.map((c, i) => [c.label || c.key, cellText(cells[i])]))
     runtime.dispatch({ event: 'select', nodeId, nodeName, data: { index, row } })
   }
-  const header = title ? <h3 className="px-1 pb-3 text-base font-semibold">{text(title)}</h3> : null
+  const header = (
+    <>
+      {title ? <h3 className="px-1 pb-3 text-base font-semibold">{text(title)}</h3> : null}
+      {totalRows > body.length ? (
+        <p className="px-1 pb-2 text-xs text-muted">
+          렌더링 상한으로 처음 {body.length}행만 표시합니다 (전체 {totalRows}행)
+        </p>
+      ) : null}
+    </>
+  )
 
   if (body.length === 0) {
     return (
@@ -1281,19 +1297,27 @@ export function List({
   nodeName
 }: NodeProps & { items?: unknown; ordered?: boolean }) {
   const runtime = useRuntime()
-  const list = toListItems(items)
+  const total = Array.isArray(items) ? items.length : 0
+  const list = toListItems(Array.isArray(items) ? items.slice(0, MAX_LIST_ROWS) : items)
   const rich = list.some((i) => i.description || i.icon || i.avatar || i.badge || i.meta || i.id)
 
   if (!rich) {
     const Tag = truthy(ordered) ? 'ol' : 'ul'
     return (
-      <Tag
-        className={`flex flex-col gap-1.5 pl-5 text-[15px] ${truthy(ordered) ? 'list-decimal' : 'list-disc'}`}
-      >
-        {list.map((item, i) => (
-          <li key={i}>{item.title}</li>
-        ))}
-      </Tag>
+      <>
+        <Tag
+          className={`flex flex-col gap-1.5 pl-5 text-[15px] ${truthy(ordered) ? 'list-decimal' : 'list-disc'}`}
+        >
+          {list.map((item, i) => (
+            <li key={i}>{item.title}</li>
+          ))}
+        </Tag>
+        {total > list.length ? (
+          <p className="pl-5 text-xs text-muted">
+            렌더링 상한으로 처음 {list.length}개만 표시합니다 (전체 {total}개)
+          </p>
+        ) : null}
+      </>
     )
   }
 
@@ -1355,7 +1379,16 @@ export function List({
       })}
     </ul>
   )
-  return <Surface className="p-3">{rows}</Surface>
+  return (
+    <Surface className="p-3">
+      {rows}
+      {total > list.length ? (
+        <p className="px-2 pt-2 text-xs text-muted">
+          렌더링 상한으로 처음 {list.length}개만 표시합니다 (전체 {total}개)
+        </p>
+      ) : null}
+    </Surface>
+  )
 }
 
 function initials(name: string): string {

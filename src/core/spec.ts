@@ -148,12 +148,19 @@ const NODE_KEYS = new Set(['id', 'grid', 'props', 'children'])
 const NAME_KEYS = ['name', 'component', 'type'] as const
 
 /**
+ * Children past this depth are dropped: real screens nest a handful of levels,
+ * while runaway nesting (or a hostile payload) must not blow the stack in
+ * normalize → zod → renderer recursion.
+ */
+export const MAX_NODE_DEPTH = 32
+
+/**
  * One node, coerced: `component`/`type` stand in for a missing `name`, props
  * written next to `name` (e.g. an Input's "type": "email") are folded into
  * `props`, a numeric id becomes a string. Returns null for something that
  * isn't a node at all.
  */
-function normalizeNode(raw: unknown): CardNode | null {
+function normalizeNode(raw: unknown, depth: number): CardNode | null {
   if (!isRecord(raw)) return null
   const nameKey = NAME_KEYS.find((k) => typeof raw[k] === 'string' && (raw[k] as string).trim() !== '')
   if (!nameKey) return null
@@ -164,14 +171,16 @@ function normalizeNode(raw: unknown): CardNode | null {
   const stray = Object.entries(raw).filter(([k]) => k !== nameKey && !NODE_KEYS.has(k))
   const props = isRecord(raw.props) ? raw.props : undefined
   if (props || stray.length) node.props = { ...Object.fromEntries(stray), ...props }
-  if (Array.isArray(raw.children)) node.children = normalizeNodes(raw.children)
+  if (Array.isArray(raw.children) && depth < MAX_NODE_DEPTH) {
+    node.children = normalizeNodes(raw.children, depth + 1)
+  }
   return node
 }
 
-function normalizeNodes(raw: unknown): CardNode[] {
+function normalizeNodes(raw: unknown, depth: number): CardNode[] {
   return Array.isArray(raw)
     ? raw.flatMap((n) => {
-        const node = normalizeNode(n)
+        const node = normalizeNode(n, depth)
         return node ? [node] : []
       })
     : []
@@ -196,7 +205,7 @@ export function normalizeUiSpec(input: unknown): unknown {
           : undefined
     if (!id) return []
     const name = typeof p.name === 'string' && p.name ? p.name : typeof p.title === 'string' && p.title ? p.title : id
-    return [{ id, name, layout: normalizeNodes(p.layout) }]
+    return [{ id, name, layout: normalizeNodes(p.layout, 0) }]
   })
   // Nav items keyed by `page` or missing a label still say where they go.
   const nav = Array.isArray(input.nav)
@@ -264,9 +273,16 @@ export function findPage(spec: UiSpec, pageId: string): PageSpec | undefined {
 }
 
 export function* iterateNodes(nodes: CardNode[]): Generator<CardNode> {
-  for (const node of nodes) {
+  // Iterative (explicit stack): a recursive generator over a caller-supplied
+  // tree would reintroduce the unbounded stack depth normalizeNode caps.
+  const stack: CardNode[] = []
+  for (let i = nodes.length - 1; i >= 0; i--) stack.push(nodes[i])
+  while (stack.length) {
+    const node = stack.pop()!
     yield node
-    if (node.children) yield* iterateNodes(node.children)
+    if (node.children) {
+      for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
+    }
   }
 }
 

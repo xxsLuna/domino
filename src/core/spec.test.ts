@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   describeUiSpecProblem,
   isSignOutEvent,
+  iterateNodes,
   normalizeGrid,
   tryValidateUiSpec,
   validateUiSpec,
@@ -117,5 +118,32 @@ describe('isSignOutEvent', () => {
     expect(isSignOutEvent({ event: 'click', nodeId: 'logout-history' })).toBe(false)
     expect(isSignOutEvent({ event: 'click', nodeId: 'catalog' })).toBe(false)
     expect(isSignOutEvent({ event: 'submit', nodeId: 'logout' })).toBe(false)
+  })
+})
+
+describe('runaway nesting', () => {
+  it('drops children past the depth cap instead of recursing forever', () => {
+    let node: unknown = { name: 'Paragraph' }
+    for (let i = 0; i < 200; i++) node = { name: 'Card', children: [node] }
+    const spec = validateUiSpec(page([node]))
+    let depth = 0
+    let cur = spec.pages[0].layout[0]
+    while (cur.children?.length) {
+      cur = cur.children[0]
+      depth++
+    }
+    expect(depth).toBe(32)
+    // Iterative walk visits every surviving node without blowing the stack.
+    expect([...iterateNodes(spec.pages[0].layout)].length).toBeGreaterThan(0)
+  })
+
+  it('iterateNodes keeps pre-order, child-by-child sequence', () => {
+    const spec = validateUiSpec(
+      page([
+        { name: 'Card', id: 'a', children: [{ name: 'Paragraph', id: 'a1' }, { name: 'Button', id: 'a2' }] },
+        { name: 'Card', id: 'b' }
+      ])
+    )
+    expect([...iterateNodes(spec.pages[0].layout)].map((n) => n.id)).toEqual(['a', 'a1', 'a2', 'b'])
   })
 })
