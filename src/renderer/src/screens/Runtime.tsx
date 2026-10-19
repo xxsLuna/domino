@@ -13,8 +13,8 @@ import { buildSystemPrompt } from '@core/agent/prompt'
 import { resolveEndpoint } from '@core/agent/api'
 import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
-import { createAdapter, type ChatMessage, type LLMConfig } from '@core/llm'
-import { httpFetch } from '@core/net'
+import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
+import { httpFetch, readTextCapped } from '@core/net'
 import { hashContext, SessionStore } from '@core/session/session'
 import { clearToken, extractToken, getToken, setToken } from '@core/session/prefs'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
@@ -94,6 +94,16 @@ export function Runtime({
     setCanBack(session.canBack)
     setCanForward(session.canForward)
   }, [session])
+
+  // Bumping turnSeq orphans the in-flight turn's finally guard, which then
+  // skips its cleanup — so every invalidation site clears the streaming UI
+  // here too, or the spinner sticks and the handleNav guard blocks taps.
+  const interruptTurn = useCallback(() => {
+    turnSeq.current++
+    setStreaming(false)
+    setPreviewSpec(null)
+    setStatus('')
+  }, [])
 
   /** Apply a spec's navigation: explicit `nav` wins, login screens never show it. */
   const applyNav = useCallback((spec: UiSpec) => {
@@ -228,20 +238,20 @@ export function Runtime({
   const goBack = useCallback(() => {
     const snap = session.back()
     if (snap) {
-      turnSeq.current++ // cancel any streaming turn
+      interruptTurn() // cancel any streaming turn
       showSpec(snap.spec)
       syncNav()
     }
-  }, [session, showSpec, syncNav])
+  }, [interruptTurn, session, showSpec, syncNav])
 
   const goForward = useCallback(() => {
     const snap = session.forward()
     if (snap) {
-      turnSeq.current++
+      interruptTurn()
       showSpec(snap.spec)
       syncNav()
     }
-  }, [session, showSpec, syncNav])
+  }, [interruptTurn, session, showSpec, syncNav])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -266,22 +276,26 @@ export function Runtime({
 
   /* ----------------------------- interactions ---------------------------- */
 
+  // Login responses are small JSON; cap the read so a hostile or broken
+  // endpoint can't stream an unbounded body into memory.
   const handleLogin = useCallback(
     async (data: Record<string, unknown>): Promise<void> => {
       setStreaming(true)
       setStatus('로그인 중…')
       setError(null)
       try {
-        const res = await httpFetch(
-          resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl),
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(data)
-          }
-        )
+        const loginUrl = resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl)
+        if (!loginUrl) {
+          throw new Error('로그인 엔드포인트를 확인할 수 없습니다 ([api] base_url을 확인해 주세요)')
+        }
+        const res = await httpFetch(loginUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(data),
+          signal: AbortSignal.timeout(30_000)
+        })
         let body: unknown = null
-        const text = await res.text()
+        const text = await readTextCapped(res, 256_000)
         try {
           body = text ? JSON.parse(text) : null
         } catch {
@@ -364,7 +378,7 @@ export function Runtime({
         target !== currentSpec.page &&
         currentSpec.pages.some((p) => p.id === target)
       ) {
-        turnSeq.current++
+        interruptTurn()
         finalizeSpec({ ...currentSpec, page: target }, null)
         return
       }
@@ -390,7 +404,7 @@ export function Runtime({
         cacheKey
       )
     },
-    [currentSpec, domino, finalizeSpec, handleLogin, runTurn, session, storage]
+    [currentSpec, domino, finalizeSpec, handleLogin, interruptTurn, runTurn, session, storage]
   )
 
   const handleNav = useCallback(
@@ -432,7 +446,7 @@ export function Runtime({
     setScrolled(delta > 0 && y > 48 ? 'down' : 'up')
   }
   // A same-origin base URL ("/zen/…") goes through the dev proxy, which may add the key.
-  const needsKey = !config.apiKey && !/^\/|localhost|127\.0\.0\.1/.test(config.baseUrl ?? '')
+  const needsKey = needsApiKey(config)
   const shownPage = shown ? (shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]) : null
   // A screen still streaming already knows its name and navigation.
   const title = (previewSpec && shownPage?.name) || pageName
@@ -664,10 +678,24 @@ function resolveInitialPage(domino: DominoFile, loggedIn: boolean): string {
   return domino.meta.home
 }
 
-function redact(data: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(data)) {
-    out[k] = /pass|secret|token|key/i.test(k) ? '••••••' : v
+// Deep: form data nests (data.user.password) and secret keys come in more
+// spellings than the top level alone (pwd, pin, credential…). Depth-capped so
+// a pathological payload can't blow the stack; over-redacting is safe.
+const REDACT_KEY = /pass|pwd|secret|token|key|pin|credential|auth/i
+
+function redactValue(v: unknown, depth: number): unknown {
+  if (depth > 6) return '…'
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, depth + 1))
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = REDACT_KEY.test(k) ? '••••••' : redactValue(val, depth + 1)
+    }
+    return out
   }
-  return out
+  return v
+}
+
+function redact(data: Record<string, unknown>): Record<string, unknown> {
+  return redactValue(data, 0) as Record<string, unknown>
 }
