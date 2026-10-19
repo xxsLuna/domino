@@ -66,6 +66,7 @@
  * and a single scrolling content region.
  */
 .runtime {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -199,30 +200,26 @@
   }
 }
 
-/* Indeterminate top progress while the agent renders the next screen. */
-.stream-bar {
-  position: sticky;
-  top: 0;
-  height: 2px;
-  margin-bottom: -2px;
-  overflow: hidden;
-  z-index: 5;
-}
-.stream-bar::after {
-  content: '';
+/* Determinate top gauge while the agent renders the next screen: pinned above
+   the app bar (phone pill included), fills with progress, fades on completion. */
+.render-gauge {
   position: absolute;
-  inset: 0;
-  width: 40%;
-  background: var(--accent);
-  animation: stream-slide 1.1s ease-in-out infinite;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: color-mix(in oklab, var(--accent) 15%, transparent);
+  overflow: hidden;
+  z-index: 20;
+  transition: opacity 400ms ease;
 }
-@keyframes stream-slide {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(250%);
-  }
+.render-gauge[data-done='true'] {
+  opacity: 0;
+}
+.render-gauge-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 300ms ease;
 }
 .runtime-banner {
   max-width: 1360px;
@@ -505,9 +502,12 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .grid-cell > :not(.skeleton),
-  .stream-bar::after {
+  .grid-cell > :not(.skeleton) {
     animation: none;
+  }
+  .render-gauge,
+  .render-gauge-fill {
+    transition: none;
   }
 }
 

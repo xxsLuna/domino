@@ -23,6 +23,8 @@ export type AgentUpdate =
       schemaChanged?: SchemaDiff
     }
   | { type: 'navigated'; page: string }
+  /** Streaming render_ui argument size — drives the top rendering gauge. */
+  | { type: 'progress'; chars: number }
   | { type: 'error'; message: string }
   | { type: 'done' }
 
@@ -39,6 +41,12 @@ const PREVIEW_INTERVAL_MS = 80
  * hostile stream can't grow memory without bound.
  */
 const MAX_TOOL_ARGS_CHARS = 2_000_000
+
+/**
+ * Minimum gap between progress updates. Same reasoning as previews: the
+ * gauge animates smoothly at 150ms spacing without a yield per delta.
+ */
+const PROGRESS_INTERVAL_MS = 150
 
 export interface AgentTurnOptions {
   adapter: LLMAdapter
@@ -73,6 +81,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
 
       const stream = opts.adapter.chat({ messages, tools: agentTools })
       let lastPreviewAt = 0
+      let lastProgressAt = 0
 
       for await (const delta of stream) {
         switch (delta.type) {
@@ -100,6 +109,10 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
               } else {
                 tc.args += delta.argsDelta
                 const now = Date.now()
+                if (tc.name === 'render_ui' && now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
+                  lastProgressAt = now
+                  yield { type: 'progress', chars: tc.args.length }
+                }
                 if (tc.name === 'render_ui' && now - lastPreviewAt >= PREVIEW_INTERVAL_MS) {
                   const partial = extractPartialSpec(tc.args)
                   const spec = partial ? tryValidateUiSpec(partial) : null

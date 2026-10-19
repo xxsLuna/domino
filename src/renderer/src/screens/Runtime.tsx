@@ -32,6 +32,7 @@ import {
   type SchemaBook
 } from '@core/agent/schema'
 import { mergeKnownPage, pregenTargets } from '@core/agent/pregen'
+import { nextSpecChars, renderProgress } from '@core/agent/progress'
 import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
 import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
@@ -91,6 +92,12 @@ export function Runtime({
   /** Endpoints whose responses the current turn's final spec is built from. */
   const turnDepsRef = useRef<ScreenDeps>({})
   const schemaTimer = useRef<number | null>(null)
+  /** Rendering gauge: turn start, streamed chars, EMA of finished spec sizes. */
+  const progressStart = useRef(0)
+  const progressChars = useRef(0)
+  const specCharsEma = useRef(0)
+  const progressTimer = useRef<number | null>(null)
+  const progressFade = useRef<number | null>(null)
   /** Background pre-generation: bumped to cancel (user turn, unmount, logout). */
   const pregenSeq = useRef(0)
   const pregenScheduled = useRef(false)
@@ -113,6 +120,8 @@ export function Runtime({
   // share the draft; submitting interrupts any streaming turn.
   const [editText, setEditText] = useState('')
   const [editOpen, setEditOpen] = useState(false)
+  /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
+  const [progress, setProgress] = useState<number | null>(null)
 
   const session = sessionRef.current
 
@@ -165,6 +174,65 @@ export function Runtime({
     setCanForward(session.canForward)
   }, [session])
 
+  /* ----------------------------- rendering gauge ---------------------------- */
+
+  /** Show the top gauge at 0% and tick it: elapsed-time creep while the model
+   *  thinks, then (once chars arrive) the measured argument stream. */
+  const startGauge = useCallback(() => {
+    if (progressTimer.current !== null) window.clearInterval(progressTimer.current)
+    if (progressFade.current !== null) {
+      window.clearTimeout(progressFade.current)
+      progressFade.current = null
+    }
+    progressStart.current = Date.now()
+    progressChars.current = 0
+    setProgress(0)
+    progressTimer.current = window.setInterval(() => {
+      setProgress(
+        renderProgress({
+          elapsed: Date.now() - progressStart.current,
+          chars: progressChars.current,
+          specChars: specCharsEma.current
+        })
+      )
+    }, 150)
+  }, [])
+
+  /** Final spec arrived: complete the bar, then fade it out after 400ms. */
+  const finishGauge = useCallback(() => {
+    if (progressTimer.current !== null) {
+      window.clearInterval(progressTimer.current)
+      progressTimer.current = null
+    }
+    setProgress(100)
+    progressFade.current = window.setTimeout(() => {
+      progressFade.current = null
+      setProgress(null)
+    }, 400)
+  }, [])
+
+  /** No finished screen (error/interrupt): drop the bar immediately. */
+  const cancelGauge = useCallback(() => {
+    if (progressTimer.current !== null) {
+      window.clearInterval(progressTimer.current)
+      progressTimer.current = null
+    }
+    if (progressFade.current !== null) {
+      window.clearTimeout(progressFade.current)
+      progressFade.current = null
+    }
+    setProgress(null)
+  }, [])
+
+  // Unmounting mid-turn must not leave the interval ticking into a dead tree.
+  useEffect(
+    () => () => {
+      if (progressTimer.current !== null) window.clearInterval(progressTimer.current)
+      if (progressFade.current !== null) window.clearTimeout(progressFade.current)
+    },
+    []
+  )
+
   // Bumping turnSeq orphans the in-flight turn's finally guard, which then
   // skips its cleanup — so every invalidation site clears the streaming UI
   // here too, or the spinner sticks and the handleNav guard blocks taps.
@@ -173,7 +241,8 @@ export function Runtime({
     setStreaming(false)
     setPreviewSpec(null)
     setStatus('')
-  }, [])
+    cancelGauge()
+  }, [cancelGauge])
 
   /** Apply a spec's navigation: explicit `nav` wins, login screens never show it. */
   const applyNav = useCallback((spec: UiSpec) => {
@@ -244,7 +313,9 @@ export function Runtime({
       setStreaming(true)
       setError(null)
       setStatus('생성 중…')
+      startGauge()
 
+      let completed = false
       try {
         const adapter = createAdapter(config)
         // One snapshot per turn: the engine diffs responses against it, the
@@ -266,6 +337,16 @@ export function Runtime({
           switch (update.type) {
             case 'spec':
               if (update.final) {
+                // Teach the gauge how big finished specs are (for next turn's
+                // denominator), then complete and fade the bar.
+                specCharsEma.current = nextSpecChars(
+                  specCharsEma.current,
+                  progressChars.current > 0
+                    ? progressChars.current
+                    : JSON.stringify(update.spec).length
+                )
+                finishGauge()
+                completed = true
                 const merged = withKnownPages(update.spec, knownRef.current)
                 finalizeSpec(merged, cacheKeyRef.current)
                 // Persist the screen (and which responses it was built from)
@@ -299,6 +380,9 @@ export function Runtime({
                 scheduleSchemaSave()
               }
               break
+            case 'progress':
+              progressChars.current = update.chars
+              break
             case 'navigated':
               break
             case 'error':
@@ -315,10 +399,13 @@ export function Runtime({
           setStreaming(false)
           setPreviewSpec(null)
           setStatus('')
+          // A turn that ended without a final spec leaves the bar mid-fill;
+          // a completed one is already fading out on its own.
+          if (!completed) cancelGauge()
         }
       }
     },
-    [apiRuntime, config, domino, finalizeSpec, scheduleSchemaSave]
+    [apiRuntime, cancelGauge, config, domino, finalizeSpec, scheduleSchemaSave, startGauge]
   )
 
   /* ------------------------- background pre-generation ------------------------- */
@@ -730,6 +817,19 @@ export function Runtime({
       data-style={domino.ui.style}
       data-scrolled={scrolled}
     >
+      {progress !== null ? (
+        <div
+          className="render-gauge"
+          role="progressbar"
+          aria-label="렌더링 진행률"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress)}
+          data-done={progress >= 100}
+        >
+          <div className="render-gauge-fill" style={{ width: `${progress}%` }} />
+        </div>
+      ) : null}
       <header className="app-bar">
         <BarButton label="이전 화면 (⌘[)" icon="back" onPress={goBack} isDisabled={!canBack} />
         <BarButton
@@ -923,7 +1023,6 @@ export function Runtime({
       <div className="runtime-main">
         {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
         <main className="runtime-body" ref={bodyRef} onScroll={onBodyScroll}>
-          {streaming ? <div className="stream-bar" aria-hidden /> : null}
           {error ? (
             <div className="runtime-banner">
               <Alert

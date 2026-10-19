@@ -378,3 +378,34 @@ describe('call_api schema memory', () => {
     expect(JSON.parse(tool!.content as string)).not.toHaveProperty('_schemaChange')
   })
 })
+
+describe('progress updates', () => {
+  it('emits progress with the streamed render_ui argument size', async () => {
+    const args =
+      '{"spec": {"version": 1, "page": "p", "pages": [{"id": "p", "name": "P", "layout": [{"name": "Heading", "props": {"text": "Hello"}}]}]}}'
+    const adapter: LLMAdapter = {
+      async *chat(): AsyncIterable<StreamDelta> {
+        yield { type: 'tool_call_start', id: 'g', name: 'render_ui' }
+        yield { type: 'tool_call_args', id: 'g', argsDelta: args.slice(0, 40) }
+        yield { type: 'tool_call_args', id: 'g', argsDelta: args.slice(40) }
+        yield { type: 'tool_call_end', id: 'g' }
+        yield { type: 'done' }
+      }
+    }
+    const updates: Array<Record<string, any>> = []
+    for await (const u of runAgentTurn({
+      adapter,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      api: { allow: [] }
+    }))
+      updates.push(u as Record<string, any>)
+    const progress = updates.filter((u) => u.type === 'progress')
+    expect(progress.length).toBeGreaterThanOrEqual(1)
+    expect(progress[0].chars).toBe(40)
+    // progress must arrive before the final spec it is measuring toward
+    expect(updates.findIndex((u) => u.type === 'progress')).toBeLessThan(
+      updates.findIndex((u) => u.type === 'spec' && u.final)
+    )
+  })
+})
