@@ -368,6 +368,16 @@ function pickSpec(messages) {
   if (last.includes('Login attempt FAILED') || last.includes('AUTH FAILED')) return loginFailedSpec
   if (last.includes('INITIAL SCREEN') && last.includes('Logged in: no')) return loginSpec
   if (last.includes('Authentication SUCCEEDED')) return dashboardSpec()
+  // Live edit: re-render the named page (a real model would apply the change
+  // too; the demo just proves the edit loop re-renders the same screen).
+  const edited = /EDIT REQUEST \(page "([^"]+)"\)/.exec(last)
+  if (edited) {
+    const target = edited[1]
+    if (target === 'main') return dashboardSpec()
+    if (target === 'leads') return leadsSpec()
+    if (target === 'settings') return settingsSpec()
+    return comingSoonSpec(target)
+  }
   const action = latestAction(last)
   if (action) {
     const { event, id, data } = action

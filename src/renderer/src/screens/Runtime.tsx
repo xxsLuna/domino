@@ -7,7 +7,19 @@ import {
   useRef,
   useState
 } from 'react'
-import { Button, Dropdown, Header, Label, Skeleton, Spinner, Tooltip } from '@heroui/react'
+import {
+  Button,
+  Dropdown,
+  Header,
+  InputGroup,
+  Label,
+  Modal,
+  Skeleton,
+  Spinner,
+  TextArea,
+  TextField,
+  Tooltip
+} from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
 import { buildSystemPrompt } from '@core/agent/prompt'
 import { resolveEndpoint } from '@core/agent/api'
@@ -91,6 +103,10 @@ export function Runtime({
   const [activeNav, setActiveNav] = useState<string | null>(null)
   // "app" renders like a real app; "inspect" reveals per-component cards.
   const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
+  // Live "change this screen" composer — the app-bar field and the phone modal
+  // share the draft; submitting interrupts any streaming turn.
+  const [editText, setEditText] = useState('')
+  const [editOpen, setEditOpen] = useState(false)
 
   const session = sessionRef.current
 
@@ -537,6 +553,42 @@ export function Runtime({
     [activeNav, currentSpec, handleEvent, streaming]
   )
 
+  /**
+   * "Change what I'm looking at": the instruction goes into history verbatim,
+   * then one turn applies it. Its result becomes the page's canonical version
+   * (session + persistent screen cache + view snapshot all update).
+   */
+  const submitEdit = useCallback(
+    (raw: string): void => {
+      const text = raw.trim()
+      if (!text || !currentSpec) return
+      const pageId = currentSpec.page
+      setEditText('')
+      setEditOpen(false)
+      interruptTurn()
+      historyRef.current.push({ role: 'user', content: `EDIT REQUEST (page "${pageId}"): ${text}` })
+      if (historyRef.current.length > 60) historyRef.current.splice(0, 20)
+
+      const cacheKey = `edit::${pageId}::${hashContext(text)}`
+      const cached = session.cacheGet(cacheKey)
+      if (cached) {
+        finalizeSpec(cached, cacheKey)
+        return
+      }
+      const stored = screensRef.current?.get(cacheKey, schemaHashes())
+      if (stored) {
+        session.cacheSet(cacheKey, stored.spec)
+        finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
+        return
+      }
+      void runTurn(
+        `The user asked to change the current screen (EDIT REQUEST above). Apply only that change to page "${pageId}" and keep everything else — layout, ids, values, data and the other pages — as it is unless the change requires otherwise. Re-render the page.`,
+        cacheKey
+      )
+    },
+    [currentSpec, finalizeSpec, interruptTurn, runTurn, schemaHashes, session]
+  )
+
   /* -------------------------------- render -------------------------------- */
   const view = useMemo(
     () => (previewSpec ? streamView(currentSpec, previewSpec) : null),
@@ -581,6 +633,7 @@ export function Runtime({
   const menuAction = (key: React.Key): void => {
     if (key === 'back') goBack()
     else if (key === 'forward') goForward()
+    else if (key === 'edit') setEditOpen(true)
     else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
     else if (key === 'settings') onOpenSettings()
     else if (key === 'home') onHome()
@@ -623,6 +676,38 @@ export function Runtime({
             </>
           ) : null}
         </div>
+        {/* Live "change this screen" composer: centered over the bar (opaque,
+            so it may ride over the title while focused). */}
+        <form
+          className="app-bar-edit hide-phone"
+          onSubmit={(e) => {
+            e.preventDefault()
+            submitEdit(editText)
+          }}
+        >
+          <TextField
+            value={editText}
+            onChange={setEditText}
+            aria-label="현재 화면 수정 요청"
+            isDisabled={!currentSpec}
+            variant="secondary"
+          >
+            <InputGroup variant="secondary" fullWidth>
+              <InputGroup.Prefix>
+                <Icon name="edit" className="text-muted" size={14} />
+              </InputGroup.Prefix>
+              <InputGroup.Input
+                placeholder="이 화면 바꾸기… (예: 상태 컬럼 추가)"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    submitEdit(editText)
+                  }
+                }}
+              />
+            </InputGroup>
+          </TextField>
+        </form>
         <div className="app-bar-actions">
           {streaming ? (
             <span
@@ -664,7 +749,8 @@ export function Runtime({
               onAction={menuAction}
               disabledKeys={[
                 ...(canBack ? [] : ['back']),
-                ...(canForward ? [] : ['forward'])
+                ...(canForward ? [] : ['forward']),
+                ...(currentSpec ? [] : ['edit'])
               ]}
             >
               <Dropdown.Section>
@@ -673,6 +759,10 @@ export function Runtime({
                   {title ? ` · ${title}` : ''}
                   {streaming ? ` · ${status || '생성 중…'}` : ''}
                 </Header>
+                <Dropdown.Item id="edit" textValue="화면 수정">
+                  <Icon name="edit" />
+                  <Label>화면 수정</Label>
+                </Dropdown.Item>
                 <Dropdown.Item id="back" textValue="이전 화면">
                   <Icon name="back" />
                   <Label>이전 화면</Label>
@@ -698,6 +788,53 @@ export function Runtime({
           </Dropdown.Popover>
         </Dropdown>
       </div>
+
+      {/* Phone: the same composer as a modal, opened from the pill menu. */}
+      <Modal.Backdrop
+        isOpen={editOpen}
+        onOpenChange={(open) => {
+          if (!open) setEditOpen(false)
+        }}
+        variant="blur"
+      >
+        <Modal.Container size="sm" placement="center">
+          <Modal.Dialog aria-label="화면 수정">
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Heading>화면 수정</Modal.Heading>
+              <p className="text-sm text-muted">
+                지금 보고 있는 화면에서 바뀌었으면 하는 것만 말해 주세요.
+              </p>
+            </Modal.Header>
+            <Modal.Body className="flex flex-col gap-3">
+              <TextField
+                value={editText}
+                onChange={setEditText}
+                aria-label="화면 수정 요청"
+                isDisabled={!currentSpec}
+                variant="secondary"
+                fullWidth
+              >
+                <TextArea
+                  rows={4}
+                  placeholder="예) 거래 상태 컬럼을 맨 앞에 추가하고, 금액은 천 단위 구분자로 표시해줘"
+                />
+              </TextField>
+            </Modal.Body>
+            <Modal.Footer className="flex justify-end gap-2">
+              <Button variant="ghost" onPress={() => setEditOpen(false)}>
+                취소
+              </Button>
+              <Button
+                isDisabled={!currentSpec || !editText.trim()}
+                onPress={() => submitEdit(editText)}
+              >
+                수정 요청
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
       <div className="runtime-main">
         {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}

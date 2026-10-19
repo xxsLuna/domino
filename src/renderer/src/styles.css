@@ -138,6 +138,22 @@
   white-space: nowrap;
 }
 
+/* Live "change this screen" composer, absolutely centered in the app bar.
+   Opaque and above the title, so it may overlap it while focused. */
+.app-bar-edit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, 44%);
+  z-index: 2;
+}
+@media (max-width: 1023px) {
+  .app-bar-edit {
+    width: min(300px, 38%);
+  }
+}
+
 .runtime-main {
   flex: 1;
   display: flex;
