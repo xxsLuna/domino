@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Jobs run `npm ci` (dependency install scripts); keep the default token
+# read-only unless a job explicitly asks for more (see release below).
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

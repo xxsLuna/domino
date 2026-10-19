@@ -58,12 +58,23 @@ function pickAsset(assets: Asset[]): Asset | undefined {
 
 let pending: { info: UpdateInfo; asset: Asset } | null = null
 
+/** GitHub release assets live on github.com / *.githubusercontent.com — nowhere else. */
+function trustedDownloadHost(hostname: string): boolean {
+  return (
+    hostname === 'github.com' ||
+    hostname.endsWith('.github.com') ||
+    hostname === 'githubusercontent.com' ||
+    hostname.endsWith('.githubusercontent.com')
+  )
+}
+
 /** Latest release newer than this build that has an asset for this platform. */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   // Dev builds report the package version but aren't installed anywhere to replace.
   if (!app.isPackaged && !process.env.DOMINO_UPDATE_CHECK) return null
   const res = await net.fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': `domino/${app.getVersion()}` }
+    headers: { accept: 'application/vnd.github+json', 'user-agent': `domino/${app.getVersion()}` },
+    signal: AbortSignal.timeout(15_000)
   })
   if (!res.ok) throw new Error(`GitHub API ${res.status}`)
   const release = (await res.json()) as {
@@ -91,26 +102,77 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   return info
 }
 
+/** GitHub asset digests are "sha256:<64 hex>"; anything else isn't verifiable. */
+const SHA256_DIGEST_RE = /^sha256:([0-9a-f]{64})$/i
+
 /** Stream an asset to disk, reporting progress and checking GitHub's digest. */
 async function download(
   asset: Asset,
   dest: string,
   onProgress: (p: UpdateProgress) => void
 ): Promise<void> {
-  const res = await net.fetch(asset.browser_download_url)
+  // The artifact gets executed (Windows exe, pkexec dpkg on Linux) — verify
+  // where it comes from and its checksum, or refuse to install at all.
+  let downloadUrl: URL
+  try {
+    downloadUrl = new URL(asset.browser_download_url)
+  } catch {
+    throw new Error('update asset has an invalid download URL')
+  }
+  if (downloadUrl.protocol !== 'https:' || !trustedDownloadHost(downloadUrl.hostname)) {
+    throw new Error(`refusing to download an update from ${downloadUrl.hostname}`)
+  }
+  const digest = asset.digest ? SHA256_DIGEST_RE.exec(asset.digest) : null
+  if (!digest) {
+    throw new Error('this release provides no sha256 checksum — refusing to install an unverified update')
+  }
+  const expected = digest[1].toLowerCase()
+
+  // Headers must arrive promptly; the body itself may legitimately take
+  // minutes, but a connection that stops producing bytes must not hang the
+  // install forever.
+  let headTimer: ReturnType<typeof setTimeout> | undefined
+  const headDeadline = new Promise<never>((_, reject) => {
+    headTimer = setTimeout(() => reject(new Error('timed out waiting for the download to start')), 30_000)
+    headTimer.unref?.()
+  })
+  let res: Response
+  try {
+    res = await Promise.race([net.fetch(downloadUrl.href), headDeadline])
+  } finally {
+    if (headTimer) clearTimeout(headTimer)
+  }
   if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`)
   const total = Number(res.headers.get('content-length')) || asset.size
+  // Never write much more than the release says the asset weighs (disk-fill guard).
+  const limit = Math.max(asset.size, total) + 1_048_576
   const hash = createHash('sha256')
   const out = createWriteStream(dest)
   const reader = res.body.getReader()
   let received = 0
   let lastReport = 0
+  const readWithIdleTimeout = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const idle = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('download stalled')), 60_000)
+      timer.unref?.()
+    })
+    try {
+      return await Promise.race([reader.read(), idle])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
   try {
     for (;;) {
-      const { done, value } = await reader.read()
+      const { done, value } = await readWithIdleTimeout()
       if (done) break
       hash.update(value)
       received += value.length
+      if (received > limit) {
+        await reader.cancel().catch(() => {})
+        throw new Error('update download exceeded the expected size')
+      }
       if (!out.write(value)) await new Promise<void>((r) => out.once('drain', () => r()))
       const now = Date.now()
       if (now - lastReport > 150) {
@@ -118,12 +180,15 @@ async function download(
         onProgress({ phase: 'download', received, total })
       }
     }
+  } catch (err) {
+    await reader.cancel().catch(() => {})
+    await rm(dest, { force: true })
+    throw err
   } finally {
     await new Promise<void>((r, j) => out.end((err?: Error | null) => (err ? j(err) : r())))
   }
   onProgress({ phase: 'download', received, total })
-  const expected = asset.digest?.startsWith('sha256:') ? asset.digest.slice(7) : null
-  if (expected && hash.digest('hex') !== expected) {
+  if (hash.digest('hex') !== expected) {
     await rm(dest, { force: true })
     throw new Error('downloaded file failed its checksum')
   }
