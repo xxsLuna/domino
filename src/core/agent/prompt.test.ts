@@ -41,6 +41,15 @@ describe('buildSystemPrompt (untrusted author content)', () => {
   })
 })
 
+describe('buildSystemPrompt (action identity)', () => {
+  it('shares one id across every control that performs the same action', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('One action, one id')
+    expect(prompt).toContain('shared by every control with the same action')
+    expect(prompt).toContain('same parent container')
+  })
+})
+
 describe('buildSystemPrompt (known API responses)', () => {
   const domino = parseDomino('[meta]\nname = X\n').domino!
 

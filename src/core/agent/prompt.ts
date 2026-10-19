@@ -63,7 +63,8 @@ ${aboutApp(domino)}
 - For the INITIAL screen and after EVERY user interaction, call the render_ui tool. Its arguments are one JSON object whose "spec" key holds the UiSpec object directly: {"spec": {"version": 1, "page": "…", "nav": […], "pages": […]}}.
 - UiSpec shape: {"version": 1, "page": "<page id>", "nav": [navItem,...], "pages": [{"id","name","layout":[node,...]}]}.
 - "pages" holds only the page being shown (set "page" to its id). Do not repeat pages from earlier turns — the runtime keeps them; re-send one only to change it.
-- node shape, keys in this order: {"name": "<registry name>", "id": "<unique kebab-case id>", "grid": {"x","y","w","h"}, "props": {...}, "children": [node,...]}. (The screen renders while you stream; "grid" first lets each card take its place immediately.)
+- node shape, keys in this order: {"name": "<registry name>", "id": "<unique kebab-case id, shared by every control with the same action>", "grid": {"x","y","w","h"}, "props": {...}, "children": [node,...]}. (The screen renders while you stream; "grid" first lets each card take its place immediately.)
+- One action, one id: every control that performs the same action — a page-header button, a quick-actions shortcut, a sidebar entry that all open the same form — carries the same id, so the runtime treats the first press as the answer for all of them. The same id may repeat across pages; never give two nodes the same id inside the same parent container.
 - "grid" belongs on top-level layout nodes only; children are laid out by their parent. Never wrap a whole page in one Stack/Card/Columns — place its blocks on the grid directly.
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
 - Before finishing a screen you can call call_api to fetch live data, then embed the results into the layout (Table rows, StatCard values, List items, KeyValue…).

@@ -142,6 +142,18 @@ const dashboardSpec = () =>
         { name: 'Progress', id: 'p-proposal', props: { label: 'Proposal → Won', value: 31, showValue: true } },
         { name: 'Progress', id: 'p-quota', props: { label: 'Quarterly quota', value: 84, showValue: true } }
       ]
+    },
+    // Second entry point for the SAME action as the header's "New lead"
+    // button: identical id → one cache key, so the E2E can prove the second
+    // press runs zero LLM calls.
+    {
+      name: 'Card',
+      id: 'main-quick',
+      props: { title: 'Quick actions', icon: 'plus' },
+      grid: { x: 8, y: 9, w: 4, h: 2 },
+      children: [
+        { name: 'Button', id: 'new-lead', props: { text: 'New lead', variant: 'secondary', icon: 'plus' } }
+      ]
     }
   ])
 
