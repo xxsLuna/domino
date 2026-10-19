@@ -63,9 +63,11 @@ export function buildScriptContext(state: {
 }): EvalContext {
   return {
     vars: {
+      // Spread first: a file's vars must never shadow the built-ins below,
+      // or `[script]` could be tricked into thinking the user is logged in.
+      ...(state.vars ?? {}),
       logged_in: state.loggedIn,
-      error: state.error ?? null,
-      ...(state.vars ?? {})
+      error: state.error ?? null
     }
   }
 }

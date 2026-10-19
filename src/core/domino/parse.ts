@@ -1,7 +1,23 @@
 import type { AuthSection, ApiSection, DominoFile, ParseError, ParseResult, ScriptRule, ScriptCommand, UiSection } from './types'
+import { validateCondition } from './conditions'
+import { isSafeCssColor } from '../ui/theme'
 
 const KNOWN_SECTIONS = new Set(['meta', 'auth', 'api', 'ui', 'script', 'guide'])
-const SECTION_HEADER = /^\s*\[[A-Za-z0-9_-]+\]\s*$/
+// A header may carry a trailing comment: `[api] ; endpoints`. Without this the
+// guide section never ends and swallows the rest of the file as prose.
+const SECTION_HEADER = /^\s*\[[A-Za-z0-9_-]+\]\s*(?:[;#].*)?$/
+// `obj[key] = …` with these keys hits Object.prototype setters instead of
+// creating an own property ([__proto__] section / key = pollution vectors).
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** Strip one layer of matching surrounding quotes from a value. */
+function unquote(v: string): string {
+  if (v.length >= 2) {
+    const q = v[0]
+    if ((q === '"' || q === "'") && v[v.length - 1] === q) return v.slice(1, -1)
+  }
+  return v
+}
 
 /** Parse a .domino v1 file. Never throws; diagnostics carry line numbers. */
 export function parseDomino(source: string): ParseResult {
@@ -51,7 +67,12 @@ export function parseDomino(source: string): ParseResult {
       errors.push({ line, message: `expected "key = value", got "${text}"` })
       continue
     }
-    sections.get(current)!.push({ line, key: kv[1].toLowerCase(), value: kv[2].trim() })
+    const key = kv[1].toLowerCase()
+    if (UNSAFE_KEYS.has(key)) {
+      errors.push({ line, message: `unsafe key "${key}" is not allowed` })
+      continue
+    }
+    sections.get(current)!.push({ line, key, value: unquote(kv[2].trim()) })
   }
 
   const get = (section: string, key: string): string | undefined =>
@@ -62,8 +83,15 @@ export function parseDomino(source: string): ParseResult {
 
   /* ------------------------------- meta ------------------------------- */
   const name = get('meta', 'name')
-  if (!name && sections.has('meta')) {
-    errors.push({ line: getLine('meta', 'name'), message: '[meta] name is required' })
+  if (!name) {
+    // Always report: with no [meta] section at all this used to return
+    // ok:false with an empty errors array (callers showed a blank message).
+    errors.push({
+      line: getLine('meta', 'name'),
+      message: sections.has('meta')
+        ? '[meta] name is required'
+        : '[meta] section is missing — name is required'
+    })
   }
   const home = get('meta', 'home') ?? 'main'
   const guide = guideLines.join('\n').trim()
@@ -117,15 +145,28 @@ export function parseDomino(source: string): ParseResult {
       radius = n
     }
   }
+  // Colors land in CSS custom properties via setProperty, so a value like
+  // `red; background-image: url(...)` (reachable through quotes, which
+  // stripComment keeps intact) would inject CSS — accept plain colors only.
+  const uiColor = (key: 'primary' | 'success' | 'warning' | 'danger'): string | undefined => {
+    const raw = get('ui', key)
+    if (raw === undefined) return undefined
+    if (isSafeCssColor(raw)) return raw
+    errors.push({
+      line: getLine('ui', key),
+      message: `[ui] ${key} must be a plain CSS color (hex, name or color function), got "${raw}"`
+    })
+    return undefined
+  }
   const ui: UiSection = {
     theme: themeRaw === 'light' || themeRaw === 'dark' ? themeRaw : 'auto',
     style: styleRaw === 'sharp' ? 'sharp' : 'soft',
     density: densityRaw === 'compact' ? 'compact' : 'comfortable',
-    primary: get('ui', 'primary'),
+    primary: uiColor('primary'),
     radius,
-    success: get('ui', 'success'),
-    warning: get('ui', 'warning'),
-    danger: get('ui', 'danger')
+    success: uiColor('success'),
+    warning: uiColor('warning'),
+    danger: uiColor('danger')
   }
 
   /* ------------------------------ script ------------------------------ */
@@ -136,6 +177,15 @@ export function parseDomino(source: string): ParseResult {
       errors.push({ line, message: `bad script rule "${text}" (expected: when <cond> -> <cmd>  or  on <event> -> <cmd>)` })
       continue
     }
+    if (rule.when !== undefined) {
+      const problem = validateCondition(rule.when)
+      if (problem) {
+        // A syntactically broken condition can only ever evaluate to false;
+        // report it at load time instead of failing silently at runtime.
+        errors.push({ line, message: `bad condition "${rule.when}": ${problem}` })
+        continue
+      }
+    }
     script.push({ line, ...rule })
   }
 
@@ -144,6 +194,7 @@ export function parseDomino(source: string): ParseResult {
   const extras: Record<string, Record<string, string>> = {}
   for (const [section, entries] of sections) {
     if (section === 'script') continue
+    if (UNSAFE_KEYS.has(section)) continue // never copies into plain objects
     const known = knownKeys(section)
     const extra: Record<string, string> = {}
     for (const e of entries) {

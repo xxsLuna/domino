@@ -193,3 +193,70 @@ allow = /orders
     expect(parseDomino('[meta]\nname = A').domino?.guide).toBeUndefined()
   })
 })
+
+describe('hardening', () => {
+  it('rejects __proto__-style sections and keys without polluting extras', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[__proto__]\npolluted = yes\n[ui]\n__proto__ = x\n'
+    )
+    expect(res.ok).toBe(true)
+    expect(res.errors.some((e) => e.message.includes('unknown section'))).toBe(true)
+    expect(res.errors.some((e) => e.message.includes('unsafe key'))).toBe(true)
+    // extras must not pick up the attacker's key through the prototype chain
+    expect((res.domino!.extras as Record<string, unknown>).polluted).toBeUndefined()
+    expect((res.domino!.extras as Record<string, unknown>).x).toBeUndefined()
+  })
+
+  it('ends [guide] on a section header that carries a comment', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[guide]\nprose here\n[api] ; endpoints\nallow = /a\n'
+    )
+    expect(res.ok).toBe(true)
+    expect(res.errors).toEqual([])
+    expect(res.domino?.guide).toBe('prose here')
+    expect(res.domino?.api.allow).toEqual(['/a'])
+  })
+
+  it('reports a missing [meta] section instead of an empty error list', () => {
+    const res = parseDomino('[api]\nallow = /x\n')
+    expect(res.ok).toBe(false)
+    expect(res.errors.length).toBeGreaterThan(0)
+    expect(res.errors[0].message).toContain('name is required')
+  })
+
+  it('strips one layer of surrounding quotes from values', () => {
+    const res = parseDomino('[meta]\nname = "Shop"\n[ui]\nprimary = \'#ff0000\'\n')
+    expect(res.domino?.meta.name).toBe('Shop')
+    expect(res.domino?.ui.primary).toBe('#ff0000')
+  })
+
+  it('rejects a malformed [script] condition at load time', () => {
+    const res = parseDomino('[meta]\nname = X\n[script]\nwhen a ==== b -> goto main\n')
+    expect(res.errors.some((e) => e.message.includes('bad condition'))).toBe(true)
+    expect(res.domino?.script).toHaveLength(0)
+  })
+
+  it('treats NaN as false and compares strings naturally, not by code units', () => {
+    expect(evalCondition('count', { vars: { count: NaN } })).toBe(false)
+    expect(evalCondition('name > "item9"', { vars: { name: 'item10' } })).toBe(true)
+  })
+
+  it('never lets file vars shadow the built-in logged_in', () => {
+    const ctx = buildScriptContext({ loggedIn: false, vars: { logged_in: true } })
+    expect(ctx.vars.logged_in).toBe(false)
+  })
+
+  it('drops [ui] colors that would inject CSS through setProperty', () => {
+    // Quoted so stripComment keeps the `;` — the only way a breakout survives.
+    const res = parseDomino(
+      '[meta]\nname = X\n[ui]\nprimary = "red; background-image: url(https://evil.test/x)"\n' +
+        'danger = url(https://evil.test/x)\nsuccess = rgb(10 20 30 / 50%)\nwarning = rebeccapurple\n'
+    )
+    expect(res.ok).toBe(true)
+    expect(res.domino?.ui.primary).toBeUndefined()
+    expect(res.domino?.ui.danger).toBeUndefined()
+    expect(res.domino?.ui.success).toBe('rgb(10 20 30 / 50%)')
+    expect(res.domino?.ui.warning).toBe('rebeccapurple')
+    expect(res.errors.filter((e) => e.message.includes('plain CSS color'))).toHaveLength(2)
+  })
+})

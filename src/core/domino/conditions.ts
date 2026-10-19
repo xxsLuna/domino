@@ -195,8 +195,14 @@ function resolve(path: string, vars: Record<string, unknown>): unknown {
 function truthy(v: unknown): boolean {
   if (typeof v === 'boolean') return v
   if (typeof v === 'string') return v.length > 0 && v !== 'false'
-  if (typeof v === 'number') return v !== 0
+  // NaN is neither 0 nor a meaningful value: treat it as false, not true.
+  if (typeof v === 'number') return v !== 0 && !Number.isNaN(v)
   return Boolean(v)
+}
+
+/** Natural string order ("item2" < "item10"); raw < compares UTF-16 code units. */
+function compareStrings(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true })
 }
 
 function evalNode(node: Node, ctx: EvalContext): unknown {
@@ -225,13 +231,13 @@ function evalNode(node: Node, ctx: EvalContext): unknown {
         case '!=':
           return numeric ? ln !== rn : ls !== rs
         case '>':
-          return numeric ? ln > rn : ls > rs
+          return numeric ? ln > rn : compareStrings(ls, rs) > 0
         case '<':
-          return numeric ? ln < rn : ls < rs
+          return numeric ? ln < rn : compareStrings(ls, rs) < 0
         case '>=':
-          return numeric ? ln >= rn : ls >= rs
+          return numeric ? ln >= rn : compareStrings(ls, rs) >= 0
         case '<=':
-          return numeric ? ln <= rn : ls <= rs
+          return numeric ? ln <= rn : compareStrings(ls, rs) <= 0
         default:
           throw new ConditionError(`unknown operator ${node.op}`)
       }
@@ -240,6 +246,8 @@ function evalNode(node: Node, ctx: EvalContext): unknown {
 }
 
 const cache = new Map<string, Node>()
+// Conditions come from remote .domino files; keep the memo bounded (FIFO).
+const MAX_CACHED_CONDITIONS = 1_000
 
 /** Parse (and memoize) a condition string; throws ConditionError on bad syntax. */
 export function parseCondition(src: string): Node {
@@ -247,8 +255,22 @@ export function parseCondition(src: string): Node {
   const hit = cache.get(key)
   if (hit) return hit
   const node = new Parser(tokenize(key)).parse()
+  if (cache.size >= MAX_CACHED_CONDITIONS) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
   cache.set(key, node)
   return node
+}
+
+/** Syntax check for [script] conditions: null when valid, else the reason. */
+export function validateCondition(src: string): string | null {
+  try {
+    parseCondition(src)
+    return null
+  } catch (err) {
+    return (err as Error).message
+  }
 }
 
 /** Returns false (with a console warning) on syntax errors rather than throwing. */

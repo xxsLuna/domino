@@ -1,7 +1,7 @@
 import { parseDomino } from '@core/domino/parse'
 import type { DominoFile, ParseError } from '@core/domino/types'
 import type { DominoSource } from '@core/session/prefs'
-import { httpFetch } from '@core/net'
+import { httpFetch, readTextCapped } from '@core/net'
 import { isElectron } from './platform'
 
 /**
@@ -55,9 +55,13 @@ async function loadUrl(raw: string): Promise<string> {
     // Remote: rewrite the custom scheme to https for fetch (web), or let
     // Electron's privileged scheme handle it natively.
     if (isElectron()) {
-      const res = await fetch(url)
+      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
       if (!res.ok) throw new DominoLoadError(`domino 프로토콜 요청 실패 (HTTP ${res.status})`)
-      return res.text()
+      const text = await readTextCapped(res, MAX_DOMINO_CHARS)
+      if (text.length >= MAX_DOMINO_CHARS) {
+        throw new DominoLoadError(`.domino 파일이 너무 큽니다 (최대 ${MAX_DOMINO_CHARS}자)`)
+      }
+      return text
     }
     const httpsUrl = url.replace(/^domino:\/\//, 'https://')
     return fetchRemote(httpsUrl)
@@ -71,15 +75,22 @@ async function loadUrl(raw: string): Promise<string> {
   return loadUrl(`domino://${url}`)
 }
 
+/** Remote .domino files are small text; cap and time-box the fetch. */
+const MAX_DOMINO_CHARS = 4_000_000
+
 async function fetchRemote(url: string): Promise<string> {
   let res: Response
   try {
-    res = await httpFetch(url)
+    res = await httpFetch(url, { signal: AbortSignal.timeout(30_000) })
   } catch (err) {
     throw new DominoLoadError(`요청 실패: ${(err as Error).message}`)
   }
   if (!res.ok) throw new DominoLoadError(`HTTP ${res.status} ${res.statusText} — ${url}`)
-  return res.text()
+  const text = await readTextCapped(res, MAX_DOMINO_CHARS)
+  if (text.length >= MAX_DOMINO_CHARS) {
+    throw new DominoLoadError(`.domino 파일이 너무 큽니다 (최대 ${MAX_DOMINO_CHARS}자) — ${url}`)
+  }
+  return text
 }
 
 export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> {
