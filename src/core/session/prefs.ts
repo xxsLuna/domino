@@ -1,5 +1,6 @@
 import type { LLMConfig, ProviderId } from '../llm/types'
 import { PROVIDER_META } from '../llm/types'
+import { sourceKey } from './registry'
 
 /**
  * Preferences persisted through a platform KeyValueStorage
@@ -95,9 +96,8 @@ export async function pushRecent(
   entry: Omit<RecentEntry, 'at'>
 ): Promise<RecentEntry[]> {
   const list = await loadRecents(storage)
-  const key = (e: DominoSource): string =>
-    e.type === 'url' ? `url:${e.url}` : e.type === 'file' ? `file:${e.path}` : 'text'
-  const filtered = list.filter((e) => key(e.source) !== key(entry.source))
+  const key = sourceKey(entry.source)
+  const filtered = list.filter((e) => sourceKey(e.source) !== key)
   const next = [{ ...entry, at: Date.now() }, ...filtered].slice(0, 8)
   await storage.set(KEYS.recents, JSON.stringify(next))
   return next

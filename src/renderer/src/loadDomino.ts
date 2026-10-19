@@ -1,8 +1,9 @@
 import { parseDomino } from '@core/domino/parse'
 import type { DominoFile, ParseError } from '@core/domino/types'
 import type { DominoSource } from '@core/session/prefs'
+import { clearCachedText, getCachedText, putCachedText } from '@core/session/registry'
 import { httpFetch, readTextCapped } from '@core/net'
-import { isElectron } from './platform'
+import { getStorage, isElectron } from './platform'
 
 /**
  * Resolves a DominoSource into raw text, then parses it.
@@ -94,19 +95,71 @@ async function fetchRemote(url: string): Promise<string> {
 }
 
 export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> {
-  const text = await loadDominoText(source)
-  const result = parseDomino(text)
-  if (!result.ok || !result.domino) {
+  const storage = getStorage()
+
+  // Remote opens parse from the local copy first: reopening is instant and
+  // works offline. The fresh copy is fetched in the background and wins on
+  // the NEXT open, so a mid-session redefinition can't pull the rug out.
+  if (source.type === 'url') {
+    const cached = await getCachedText(storage, source)
+    if (cached !== null) {
+      const hit = tryParse(cached, source)
+      if (hit) {
+        revalidate(source, cached, storage)
+        return hit
+      }
+      await clearCachedText(storage, source) // corrupt cache: fall through to fetch
+    }
+  }
+
+  let text: string
+  try {
+    text = await loadDominoText(source)
+  } catch (err) {
+    // Offline / file moved: the cached copy still opens the app.
+    if (source.type !== 'text') {
+      const cached = await getCachedText(storage, source)
+      if (cached !== null) {
+        const hit = tryParse(cached, source)
+        if (hit) return hit
+      }
+    }
+    throw err
+  }
+
+  const parsed = tryParse(text, source)
+  if (!parsed) {
+    const result = parseDomino(text)
     const detail = result.errors.map((e) => `${e.line}행: ${e.message}`).join('\n')
     throw new DominoLoadError(
       `.domino 파일을 파싱할 수 없습니다.\n${detail || '알 수 없는 오류'}`,
       result.errors
     )
   }
+  await putCachedText(storage, source, text)
+  return parsed
+}
+
+function tryParse(text: string, source: DominoSource): LoadedDomino | null {
+  const result = parseDomino(text)
+  if (!result.ok || !result.domino) return null
   return {
     domino: result.domino,
     source,
     name: result.domino.meta.name,
     warnings: result.errors
   }
+}
+
+/** Refresh the cached copy in the background; the open one stays as served. */
+function revalidate(
+  source: DominoSource,
+  served: string,
+  storage: ReturnType<typeof getStorage>
+): void {
+  void loadDominoText(source)
+    .then(async (fresh) => {
+      if (fresh !== served) await putCachedText(storage, source, fresh)
+    })
+    .catch(() => {}) // staying offline on the cached copy is a valid outcome
 }
