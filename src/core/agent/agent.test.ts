@@ -4,26 +4,49 @@ import type { ChatMessage, ChatRequest, LLMAdapter, StreamDelta } from '../llm/t
 import { runAgentTurn, specFromArgs } from './engine'
 import { extractPartialSpec, parsePartialJson } from './partialJson'
 
+const BASE = 'https://api.example.com/v1'
+
 describe('isAllowed (domino allow list)', () => {
   it('exact match', () => {
-    expect(isAllowed('/login', ['/login', '/me'])).toBe(true)
-    expect(isAllowed('/nope', ['/login'])).toBe(false)
+    expect(isAllowed('/login', ['/login', '/me'], BASE)).toBe(true)
+    expect(isAllowed('/nope', ['/login'], BASE)).toBe(false)
   })
 
   it('trailing /* wildcard', () => {
-    expect(isAllowed('/leads', ['/leads/*'])).toBe(true)
-    expect(isAllowed('/leads/42', ['/leads/*'])).toBe(true)
-    expect(isAllowed('/leads/42/stage', ['/leads/*'])).toBe(true)
-    expect(isAllowed('/other/42', ['/leads/*'])).toBe(false)
+    expect(isAllowed('/leads', ['/leads/*'], BASE)).toBe(true)
+    expect(isAllowed('/leads/42', ['/leads/*'], BASE)).toBe(true)
+    expect(isAllowed('/leads/42/stage', ['/leads/*'], BASE)).toBe(true)
+    expect(isAllowed('/other/42', ['/leads/*'], BASE)).toBe(false)
   })
 
-  it('full URLs are matched by pathname', () => {
-    expect(isAllowed('https://api.example.com/login', ['/login'])).toBe(true)
-    expect(isAllowed('https://evil.example.com/x', ['/login'])).toBe(false)
+  it('stays on the base_url origin — other hosts are denied even with a matching path', () => {
+    expect(isAllowed('https://api.example.com/login', ['/login'], BASE)).toBe(true)
+    expect(isAllowed('https://evil.example.com/login', ['/login'], BASE)).toBe(false)
+    expect(isAllowed('https://evil.example.com/v1/leads', ['/leads/*'], BASE)).toBe(false)
+  })
+
+  it('denies requests with no trusted origin (path-only pattern, no base_url)', () => {
+    expect(isAllowed('/login', ['/login'])).toBe(false)
+    expect(isAllowed('https://api.example.com/login', ['/login'])).toBe(false)
+    expect(isAllowed('https://api.example.com/login', ['*'])).toBe(false)
+  })
+
+  it('origin-pinned patterns work without base_url', () => {
+    const allow = ['https://api.example.com/*']
+    expect(isAllowed('https://api.example.com/login', allow)).toBe(true)
+    expect(isAllowed('https://other.example.com/login', allow)).toBe(false)
+  })
+
+  it('normalizes dot segments before matching', () => {
+    expect(isAllowed('/leads/../../admin', ['/leads/*'], BASE)).toBe(false)
+    expect(isAllowed('/leads/42/../43', ['/leads/*'], BASE)).toBe(true)
+    expect(isAllowed('https://api.example.com/v1/leads/../../admin', ['/leads/*'], BASE)).toBe(
+      false
+    )
   })
 
   it('empty allow list denies everything', () => {
-    expect(isAllowed('/login', [])).toBe(false)
+    expect(isAllowed('/login', [], BASE)).toBe(false)
   })
 })
 
@@ -38,6 +61,21 @@ describe('resolveEndpoint', () => {
   })
   it('keeps absolute urls', () => {
     expect(resolveEndpoint('https://x.test/a', 'https://api.example.com')).toBe('https://x.test/a')
+  })
+  it('resolves dot segments against the base', () => {
+    expect(resolveEndpoint('/v1/leads/../../admin', 'https://api.example.com/v1')).toBe(
+      'https://api.example.com/v1/admin'
+    )
+    expect(resolveEndpoint('leads/../billing', 'https://api.example.com/v1')).toBe(
+      'https://api.example.com/v1/billing'
+    )
+  })
+  it('returns null for a relative path without a base', () => {
+    expect(resolveEndpoint('/leads')).toBeNull()
+  })
+  it('returns null for unparseable urls', () => {
+    expect(resolveEndpoint('https://')).toBeNull()
+    expect(resolveEndpoint('/x', 'not a url')).toBeNull()
   })
 })
 

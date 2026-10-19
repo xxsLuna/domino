@@ -26,6 +26,13 @@ export type AgentUpdate =
  */
 const PREVIEW_INTERVAL_MS = 80
 
+/**
+ * Tool-call argument streams come straight off the network: stop accepting
+ * past this cap (the call then fails its parse cleanly) so a runaway or
+ * hostile stream can't grow memory without bound.
+ */
+const MAX_TOOL_ARGS_CHARS = 2_000_000
+
 export interface AgentTurnOptions {
   adapter: LLMAdapter
   system: string
@@ -52,6 +59,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       let text = ''
       const toolCalls = new Map<string, ToolCall>()
+      const overflowed = new Set<string>()
       const order: string[] = []
 
       const stream = opts.adapter.chat({ messages, tools: agentTools })
@@ -60,7 +68,8 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
       for await (const delta of stream) {
         switch (delta.type) {
           case 'text':
-            text += delta.text
+            // Same cap as tool args: assistant text lands in history untrimmed.
+            if (text.length + delta.text.length <= MAX_TOOL_ARGS_CHARS) text += delta.text
             yield { type: 'text', text: delta.text }
             break
           case 'tool_call_start': {
@@ -75,15 +84,20 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           }
           case 'tool_call_args': {
             const tc = toolCalls.get(delta.id)
-            if (tc) {
-              tc.args += delta.argsDelta
-              const now = Date.now()
-              if (tc.name === 'render_ui' && now - lastPreviewAt >= PREVIEW_INTERVAL_MS) {
-                const partial = extractPartialSpec(tc.args)
-                const spec = partial ? tryValidateUiSpec(partial) : null
-                if (spec) {
-                  lastPreviewAt = now
-                  yield { type: 'spec', spec, final: false }
+            if (tc && !overflowed.has(delta.id)) {
+              if (tc.args.length + delta.argsDelta.length > MAX_TOOL_ARGS_CHARS) {
+                overflowed.add(delta.id)
+                tc.args = '' // freed; the parse at completion fails with a clear error
+              } else {
+                tc.args += delta.argsDelta
+                const now = Date.now()
+                if (tc.name === 'render_ui' && now - lastPreviewAt >= PREVIEW_INTERVAL_MS) {
+                  const partial = extractPartialSpec(tc.args)
+                  const spec = partial ? tryValidateUiSpec(partial) : null
+                  if (spec) {
+                    lastPreviewAt = now
+                    yield { type: 'spec', spec, final: false }
+                  }
                 }
               }
             }
@@ -138,7 +152,6 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           if (spec) {
             sawRender = true
             rendered = true
-            yield { type: 'spec', spec, final: true }
             // Models copy their own earlier calls: a stringified spec, a missing
             // "version" or props-before-grid in history repeats on every later
             // turn. Keep the validated spec, in contract key order, there instead.
@@ -147,6 +160,8 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           } else {
             failedRender = true
           }
+          // Record the tool result before yielding: if the caller walks away
+          // at the yield (superseded turn), history must still carry it.
           messages.push({
             role: 'tool',
             toolCallId: tc.id,
@@ -163,6 +178,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
                   }
             )
           })
+          if (spec) yield { type: 'spec', spec, final: true }
         } else if (tc.name === 'call_api') {
           const parsed = safeParseArgs(tc.args)
           const result = await executeApi(opts.api, {
@@ -170,24 +186,26 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             method: parsed?.method ? String(parsed.method) : undefined,
             body: parsed?.body
           })
-          yield { type: 'api_result', result }
+          // Record before yielding so an already-executed (possibly non-idempotent)
+          // call is never lost to an abandoned turn — the model would repeat it.
           messages.push({
             role: 'tool',
             toolCallId: tc.id,
             toolName: tc.name,
             content: JSON.stringify({ status: result.status, data: result.data })
           })
+          yield { type: 'api_result', result }
         } else if (tc.name === 'navigate') {
           const parsed = safeParseArgs(tc.args)
           const page = String(parsed?.page ?? '')
           rendered = true
-          yield { type: 'navigated', page }
           messages.push({
             role: 'tool',
             toolCallId: tc.id,
             toolName: tc.name,
             content: JSON.stringify({ ok: true, page })
           })
+          yield { type: 'navigated', page }
         } else {
           messages.push({
             role: 'tool',
@@ -217,10 +235,12 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
     }
   } catch (err) {
     yield { type: 'error', message: (err as Error).message }
+  } finally {
+    // Hand the accumulated conversation back to the caller (without the system
+    // prompt) — including when the caller walks away mid-turn, so executed
+    // tool calls always reach the next turn's history.
+    opts.history.splice(0, opts.history.length, ...messages.filter((m) => m.role !== 'system'))
   }
-
-  // Hand the accumulated conversation back to the caller (without the system prompt).
-  opts.history.splice(0, opts.history.length, ...messages.filter((m) => m.role !== 'system'))
   yield { type: 'done' }
 }
 
