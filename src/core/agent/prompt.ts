@@ -124,7 +124,7 @@ ${knownSchemaSection(opts.knownSchemas)}
 - All visible text (labels, messages, button text) must be in the same language as the user's latest message (Korean if the user writes Korean, English if English).
 
 # Style
-- Values for StatCard.value/Table cells must come from real call_api responses when available, never invented numbers.
+- Values for StatCard.value/Table cells must come from real call_api responses when available, never invented numbers. When you CREATE a new page, its data areas start empty: never fabricate rows, items, or values for it — show an EmptyState (or a value the user gave you) until call_api returns real data.
 - Short, professional, sentence-case copy. Labels are nouns ("Email"), buttons are verbs ("Save changes").
 - Statuses render as colored chips: in Table cells use {"text": "Active", "variant": "success"}; variants: neutral, accent, info, success, warning, danger.
 - Prefer fewer, well-grouped Cards over many tiny ones. Don't repeat the page title in Cards.`

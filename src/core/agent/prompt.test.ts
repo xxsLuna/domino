@@ -40,6 +40,13 @@ describe('buildSystemPrompt (untrusted author content)', () => {
     expect(prompt).toContain('the runtime applies every page you return')
   })
 
+  it('tells the model a new page ships with empty data areas, never invented rows', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('its data areas start empty')
+    expect(prompt).toContain('never fabricate rows, items, or values')
+    expect(prompt).toContain('until call_api returns real data')
+  })
+
   it('truncates an oversized guide instead of shipping megabytes into the context', () => {
     const prompt = promptFor('[meta]\nname = X\n[guide]\n' + 'a'.repeat(40_000) + '\n')
     expect(prompt).toContain('truncated, 40000 chars total')
