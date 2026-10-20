@@ -10,6 +10,20 @@
   #root {
     height: 100%;
     margin: 0;
+    /* The whole app is an app surface, not a document: nothing drags. */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* Form fields still need text selection to edit values and compose Korean. */
+  input,
+  textarea,
+  [contenteditable]:not([contenteditable='false']) {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  /* Images are draggable by default in HTML — close that hole too. */
+  img {
+    -webkit-user-drag: none;
   }
   body {
     font-family:
