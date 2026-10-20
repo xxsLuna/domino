@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SessionStore, hashContext } from './session'
+import { MAX_HISTORY, SessionStore, hashContext } from './session'
 import type { UiSpec } from '../spec'
 
 const spec = (page: string): UiSpec => ({
@@ -77,6 +77,54 @@ describe('SessionStore reset', () => {
     // usable again after the reset
     s.push(spec('fresh'))
     expect(s.current?.spec.page).toBe('fresh')
+  })
+})
+
+describe('SessionStore history entries', () => {
+  it('labels entries from their page and marks the current one', () => {
+    const s = new SessionStore()
+    s.push(spec('leads'), { kind: 'start' })
+    s.push(spec('settings'), { kind: 'action' })
+    const entries = s.entries()
+    expect(entries.map((e) => e.label)).toEqual(['leads', 'settings'])
+    expect(entries.map((e) => e.kind)).toEqual(['start', 'action'])
+    expect(entries.map((e) => e.current)).toEqual([false, true])
+    s.back()
+    expect(s.entries().map((e) => e.current)).toEqual([true, false])
+  })
+
+  it('accepts an explicit label and defaults kind to action', () => {
+    const s = new SessionStore()
+    s.push(spec('home'))
+    expect(s.entries()[0].kind).toBe('action')
+    s.push(spec('home'), { kind: 'edit', label: '수정 · home' })
+    expect(s.entries()[1]).toMatchObject({ kind: 'edit', label: '수정 · home' })
+  })
+
+  it('jumpTo moves to an arbitrary moment without pushing', () => {
+    const s = new SessionStore()
+    s.push(spec('a'))
+    s.push(spec('b'))
+    s.push(spec('c'))
+    expect(s.jumpTo(1)?.spec.page).toBe('b')
+    expect(s.historySize).toBe(3)
+    expect(s.current?.spec.page).toBe('b')
+    // back/forward continue from the jumped-to spot
+    expect(s.forward()?.spec.page).toBe('c')
+    expect(s.jumpTo(-1)).toBeNull()
+    expect(s.jumpTo(3)).toBeNull()
+    expect(s.jumpTo(1.5)).toBeNull()
+  })
+
+  it('caps the stack, dropping the oldest moments first', () => {
+    const s = new SessionStore()
+    for (let i = 0; i < MAX_HISTORY + 5; i++) s.push(spec(`p${i}`))
+    expect(s.historySize).toBe(MAX_HISTORY)
+    const entries = s.entries()
+    expect(entries[0].pageId).toBe('p5') // oldest five fell off
+    expect(entries.at(-1)?.current).toBe(true)
+    expect(s.jumpTo(0)?.spec.page).toBe('p5')
+    expect(s.jumpTo(MAX_HISTORY)).toBeNull() // pre-cap indices are gone
   })
 })
 

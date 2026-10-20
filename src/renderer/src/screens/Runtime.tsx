@@ -38,7 +38,7 @@ import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { DominoFile } from '@core/domino/types'
 import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
 import { httpFetch, readTextCapped } from '@core/net'
-import { hashContext, SessionStore } from '@core/session/session'
+import { hashContext, SessionStore, type HistoryKind } from '@core/session/session'
 import { clearToken, extractToken, getToken, setToken } from '@core/session/prefs'
 import { ScreenStore, type ScreenDeps } from '@core/session/screenStore'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
@@ -50,6 +50,7 @@ import { themeVars } from '@core/ui/theme'
 import {
   findNode,
   findPage,
+  isCancelEvent,
   isSignOutEvent,
   withKnownPages,
   withTargetPage,
@@ -58,6 +59,7 @@ import {
   type UiSpec
 } from '@core/spec'
 import { resolvePageId } from '@core/pageLinks'
+import { isModalPresentation } from '@core/ui/presentation'
 import type { LoadedDomino } from '../loadDomino'
 import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
@@ -137,6 +139,8 @@ export function Runtime({
   const [editOpen, setEditOpen] = useState(false)
   /** "Rebuild from scratch" confirmation — carries the token-consumption warning. */
   const [rebuildOpen, setRebuildOpen] = useState(false)
+  /** Right-side screen-history drawer (collapsed by default). */
+  const [historyOpen, setHistoryOpen] = useState(false)
   /** Queued edit requests ({text, pageId}), applied one at a time. */
   const editQueueRef = useRef<Array<{ text: string; pageId: string }>>([])
   const editDraining = useRef(false)
@@ -355,8 +359,18 @@ export function Runtime({
   )
 
   const finalizeSpec = useCallback(
-    (spec: UiSpec, cacheKey: string | null) => {
-      session.push(spec)
+    (spec: UiSpec, cacheKey: string | null, kindHint?: HistoryKind) => {
+      // What the history panel shows as this moment's badge.
+      const kind: HistoryKind =
+        kindHint ??
+        (cacheKey == null
+          ? 'nav'
+          : cacheKey.startsWith('edit::')
+            ? 'edit'
+            : /^(init|auth-ok|signed-out)::/.test(cacheKey)
+              ? 'start'
+              : 'action')
+      session.push(spec, { kind })
       if (cacheKey) session.cacheSet(cacheKey, spec)
       // The model's state is the truth when it sends one (its own declarations
       // plus any explicit changes); when it omits the field, keep the live
@@ -409,6 +423,47 @@ export function Runtime({
     [finalizeSpec, session, showSpec]
   )
 
+  /**
+   * Index of the moment a full-screen sheet would sit over — the nearest
+   * older history entry on ANOTHER page (an edit of the sheet page itself
+   * pushes its own entry; those are skipped). -1 when the current screen
+   * isn't a sheet or there is nothing behind it.
+   */
+  const sheetBehindIndex = useCallback((): number => {
+    const cs = currentSpecRef.current
+    if (!cs) return -1
+    const page = findPage(cs, cs.page)
+    if (!page || !isModalPresentation(page)) return -1
+    const entries = session.entries()
+    const i = entries.findIndex((e) => e.current)
+    let j = i - 1
+    while (j >= 0 && entries[j].pageId === page.id) j--
+    return j
+  }, [session])
+
+  /**
+   * Restore one moment AS IT WAS: the snapshot's pages replace the canonical
+   * copies (time travel) and its state replaces the live one — the explicit
+   * counterpart to back/forward, which follow the current canonical pages.
+   * Interrupts a running turn only when the restore came from the UI.
+   */
+  const restoreAt = useCallback(
+    (index: number, fromUi: boolean): boolean => {
+      const snap = session.jumpTo(index)
+      if (!snap) return false
+      if (fromUi) {
+        interruptTurn()
+        clearEditHighlight()
+      }
+      stateRef.current = { ...(snap.spec.state ?? {}) }
+      pendingStateWrites.current = {}
+      showSpec(snap.spec)
+      syncNav()
+      return true
+    },
+    [clearEditHighlight, interruptTurn, session, showSpec, syncNav]
+  )
+
   const runTurn = useCallback(
     async (prompt: string, cacheKey: string | null): Promise<TurnOutcome> => {
       const isEdit = Boolean(cacheKey?.startsWith('edit::'))
@@ -428,6 +483,17 @@ export function Runtime({
       const liveState =
         Object.keys(stateRef.current).length > 0
           ? `\nCurrent screen state (updated client-side — carry it in your "state" field): ${JSON.stringify(stateRef.current)}`
+          : ''
+      // "Take me back to that moment" arrives as an ordinary request: hand the
+      // agent the moment list (bounded) so it can answer with history:<index>.
+      const hist = session.entries()
+      const historyLine =
+        hist.length >= 2
+          ? `\nScreen history (oldest first, "index) [kind] label time"; current = ${hist[hist.length - 1].index}): ` +
+            hist
+              .slice(-25)
+              .map((e) => `${e.index}) [${e.kind}] ${e.label} ${new Date(e.at).toTimeString().slice(0, 5)}`)
+              .join(' | ')
           : ''
       pendingStateWrites.current = {}
       setStreaming(true)
@@ -455,7 +521,7 @@ export function Runtime({
           loggedIn: loggedInRef.current,
           knownSchemas
         })
-        fork.push({ role: 'user', content: prompt + liveState })
+        fork.push({ role: 'user', content: prompt + liveState + historyLine })
         for await (const update of runAgentTurn({
           adapter,
           system,
@@ -515,6 +581,13 @@ export function Runtime({
               progressChars.current = update.chars
               break
             case 'navigated': {
+              // "history:<index>" restores that exact moment (time travel);
+              // the agent's own turn is spared — if it renders after, that wins.
+              const histTarget = /^history:(\d+)$/.exec(update.page)
+              if (histTarget) {
+                restoreAt(Number(histTarget[1]), false)
+                break
+              }
               // The model switched pages itself: land on it when the runtime
               // knows the page — a tool call the UI ignored used to end the
               // turn 'failed' with the screen unchanged.
@@ -574,6 +647,7 @@ export function Runtime({
       domino,
       finalizeSpec,
       landEdit,
+      restoreAt,
       scheduleSchemaSave,
       startGauge
     ]
@@ -714,7 +788,11 @@ export function Runtime({
   }, [])
 
   const goBack = useCallback(() => {
-    const snap = session.back()
+    // A full-screen sheet CLOSES rather than steps: jump to the moment it was
+    // opened over (an edit pushed onto the sheet would otherwise demand two
+    // backs before the sheet goes away).
+    const behind = sheetBehindIndex()
+    const snap = behind >= 0 ? session.jumpTo(behind) : session.back()
     if (snap) {
       interruptTurn() // cancel any streaming user turn (edits are spared)
       // The snapshot diffs against a different baseline — drop stale glow;
@@ -723,7 +801,7 @@ export function Runtime({
       showSpec(canonicalView(snap))
       syncNav()
     }
-  }, [canonicalView, clearEditHighlight, interruptTurn, session, showSpec, syncNav])
+  }, [canonicalView, clearEditHighlight, interruptTurn, session, sheetBehindIndex, showSpec, syncNav])
 
   const goForward = useCallback(() => {
     const snap = session.forward()
@@ -755,6 +833,8 @@ export function Runtime({
     if (session.canBack) goBack()
     else onHome()
   })
+  // …but while the history drawer is open, back closes the drawer (newest wins).
+  useBackHandler(historyOpen, () => setHistoryOpen(false))
 
   /* ----------------------------- interactions ---------------------------- */
 
@@ -893,11 +973,24 @@ export function Runtime({
         return
       }
 
+      // A sheet's Cancel dismisses the sheet in place — no model round trip.
+      if (isCancelEvent(e) && sheetBehindIndex() >= 0) {
+        goBack()
+        return
+      }
+
       // Pages the agent already delivered switch instantly, like a real app —
       // resolved through the nav↔page links, so a nav id that drifted from the
       // page id still lands on the stored page instead of asking the model to
       // draw it again ("yet another, different page").
       const target = e.event === 'navigate' ? String(e.data?.page ?? e.nodeId) : null
+      // "history:<index>" (the agent restoring a moment) — same restore the
+      // history panel runs; invalid indices are ignored.
+      const histTarget = target ? /^history:(\d+)$/.exec(target) : null
+      if (histTarget) {
+        restoreAt(Number(histTarget[1]), true)
+        return
+      }
       const resolved =
         target && currentSpec ? resolvePageId(navRef.current, currentSpec.pages, target) : null
       if (resolved && currentSpec && resolved !== currentSpec.page) {
@@ -943,11 +1036,14 @@ export function Runtime({
       currentSpec,
       domino,
       finalizeSpec,
+      goBack,
       handleLogin,
       interruptTurn,
+      restoreAt,
       runTurn,
       schemaHashes,
       session,
+      sheetBehindIndex,
       storage
     ]
   )
@@ -1133,6 +1229,21 @@ export function Runtime({
   // A same-origin base URL ("/zen/…") goes through the dev proxy, which may add the key.
   const needsKey = needsApiKey(config)
   const shownPage = shown ? (shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]) : null
+  // Full-screen sheet: a short form pages over the moment it was opened from.
+  // Both derives read the stack fresh — every push/jump already re-renders.
+  const behindIdx = sheetBehindIndex()
+  const behindPage =
+    behindIdx >= 0 && knownRef.current
+      ? (findPage(knownRef.current, session.entries()[behindIdx].pageId) ?? null)
+      : null
+  const behindSpec =
+    behindPage && knownRef.current ? { ...knownRef.current, page: behindPage.id } : null
+  const sheetMode = behindIdx >= 0 && behindSpec !== null
+  // The body shows the page BEHIND the sheet; the overlay carries the sheet.
+  const bodyPage = sheetMode ? behindPage : shownPage
+  const bodySpec = sheetMode ? behindSpec : shown
+  // Drawer rows, newest first; "current" comes from the stack itself.
+  const historyList = currentSpec ? session.entries().reverse() : []
   // A screen still streaming already knows its name and navigation.
   const title = (previewSpec && shownPage?.name) || pageName
   const navItems = previewSpec?.nav?.length ? previewSpec.nav : nav
@@ -1152,6 +1263,7 @@ export function Runtime({
     else if (key === 'forward') goForward()
     else if (key === 'edit') setEditOpen(true)
     else if (key === 'rebuild') setRebuildOpen(true)
+    else if (key === 'history') setHistoryOpen(true)
     else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
     else if (key === 'settings') onOpenSettings()
     else if (key === 'home') onHome()
@@ -1264,6 +1376,13 @@ export function Runtime({
             className="hide-phone"
           />
           <BarButton
+            label="화면 히스토리"
+            icon="history"
+            onPress={() => setHistoryOpen((v) => !v)}
+            active={historyOpen}
+            className="hide-phone"
+          />
+          <BarButton
             label="처음부터 다시 만들기"
             icon="refresh"
             onPress={() => setRebuildOpen(true)}
@@ -1289,7 +1408,8 @@ export function Runtime({
                 ...(canBack ? [] : ['back']),
                 ...(canForward ? [] : ['forward']),
                 ...(currentSpec ? [] : ['edit']),
-                ...(currentSpec ? [] : ['rebuild'])
+                ...(currentSpec ? [] : ['rebuild']),
+                ...(currentSpec ? [] : ['history'])
               ]}
             >
               <Dropdown.Section>
@@ -1313,6 +1433,10 @@ export function Runtime({
                 <Dropdown.Item id="rebuild" textValue="처음부터 다시 만들기">
                   <Icon name="refresh" />
                   <Label>처음부터 다시 만들기</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="history" textValue="화면 히스토리">
+                  <Icon name="history" />
+                  <Label>화면 히스토리</Label>
                 </Dropdown.Item>
               </Dropdown.Section>
               <Dropdown.Item id="inspect" textValue="구조 보기">
@@ -1419,6 +1543,39 @@ export function Runtime({
         </AlertDialog.Container>
       </AlertDialog.Backdrop>
 
+      {/* Short forms arrive as a full-screen sheet over the page they were
+          opened from; closing it (X, Escape, Android back, Cancel) = goBack. */}
+      {sheetMode && shown && shownPage ? (
+        <Modal.Backdrop
+          isOpen
+          onOpenChange={(open) => {
+            if (!open) goBack()
+          }}
+        >
+          <Modal.Container size="full" placement="center" scroll="inside">
+            <Modal.Dialog aria-label={shownPage.name}>
+              <Modal.CloseTrigger />
+              <Modal.Header>
+                <Modal.Heading>{shownPage.name}</Modal.Heading>
+              </Modal.Header>
+              <Modal.Body>
+                <CardGrid
+                  page={shownPage}
+                  spec={shown}
+                  onEvent={handleEvent}
+                  streaming={Boolean(previewSpec)}
+                  pending={view?.pending}
+                  hidden={view?.hidden}
+                  chrome={chrome}
+                  density={domino.ui.density}
+                  changed={changed}
+                />
+              </Modal.Body>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      ) : null}
+
       <div className="runtime-main">
         {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
         <main className="runtime-body" ref={bodyRef} onScroll={onBodyScroll}>
@@ -1432,17 +1589,17 @@ export function Runtime({
               />
             </div>
           ) : null}
-          {shown && shownPage ? (
+          {bodyPage && bodySpec ? (
             <CardGrid
-              page={shownPage}
-              spec={shown}
+              page={bodyPage}
+              spec={bodySpec}
               onEvent={handleEvent}
-              streaming={Boolean(previewSpec)}
-              pending={view?.pending}
-              hidden={view?.hidden}
+              streaming={sheetMode ? false : Boolean(previewSpec)}
+              pending={sheetMode ? undefined : view?.pending}
+              hidden={sheetMode ? undefined : view?.hidden}
               chrome={chrome}
               density={domino.ui.density}
-              changed={changed}
+              changed={sheetMode ? undefined : changed}
             />
           ) : error ? null : (
             <LoadingScreen />
@@ -1459,8 +1616,53 @@ export function Runtime({
           </span>
         </div>
       ) : null}
+
+      {/* Right-side screen history: every settled moment; click restores it. */}
+      {historyOpen ? <div className="history-scrim" onClick={() => setHistoryOpen(false)} /> : null}
+      <aside className={`history-panel${historyOpen ? ' is-open' : ''}`} aria-label="화면 히스토리">
+        <div className="history-panel-head">
+          <span className="history-panel-title">화면 히스토리</span>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="히스토리 닫기"
+            onPress={() => setHistoryOpen(false)}
+          >
+            <Icon name="close" size={16} />
+          </Button>
+        </div>
+        <ul className="history-list">
+          {historyList.map((e) => (
+            <li key={e.index}>
+              <button
+                type="button"
+                className="history-item"
+                aria-current={e.current ? 'true' : undefined}
+                onClick={() => {
+                  if (restoreAt(e.index, true)) setHistoryOpen(false)
+                }}
+              >
+                <span className="history-badge" data-kind={e.kind}>
+                  {HISTORY_KIND_LABEL[e.kind]}
+                </span>
+                <span className="history-label">{e.label}</span>
+                <time className="history-time">{new Date(e.at).toTimeString().slice(0, 5)}</time>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </aside>
     </div>
   )
+}
+
+const HISTORY_KIND_LABEL: Record<HistoryKind, string> = {
+  start: '시작',
+  action: '액션',
+  nav: '이동',
+  edit: '수정',
+  restore: '복원'
 }
 
 function BarButton({

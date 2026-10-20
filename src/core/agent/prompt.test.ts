@@ -54,6 +54,12 @@ describe('buildSystemPrompt (untrusted author content)', () => {
     expect(prompt).toContain('secondary "Cancel" Button whose id is "cancel"')
   })
 
+  it('teaches the agent to restore earlier moments through the screen history', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('Screen history')
+    expect(prompt).toContain('history:<index>')
+    expect(prompt).toContain('Never invent an index')
+  })
 
   it('truncates an oversized guide instead of shipping megabytes into the context', () => {
     const prompt = promptFor('[meta]\nname = X\n[guide]\n' + 'a'.repeat(40_000) + '\n')

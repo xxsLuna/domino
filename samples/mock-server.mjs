@@ -185,7 +185,10 @@ const leadsSpec = (opts = {}) => {
       id: 'leads-header',
       props: { title: 'Leads', description: `${leads.length} leads · sorted by last activity` },
       grid: { x: 0, y: 0, w: 12, h: 1 },
-      children: [{ name: 'Button', id: 'new-lead', props: { text: 'New lead', variant: 'primary', icon: 'plus' } }]
+      children: [
+        { name: 'Button', id: 'quick-contact', props: { text: 'Quick contact', variant: 'secondary' } },
+        { name: 'Button', id: 'new-lead', props: { text: 'New lead', variant: 'primary', icon: 'plus' } }
+      ]
     },
     { name: 'SearchField', id: 'leads-search', props: { name: 'q', placeholder: 'Search by name or company…' }, grid: { x: 0, y: 1, w: 8, h: 1 } },
     { name: 'Select', id: 'leads-stage', props: { name: 'stage', placeholder: 'All stages', options: ['All stages', 'New', 'Qualified', 'Proposal', 'Won'] }, grid: { x: 8, y: 1, w: 4, h: 1 } },
@@ -310,6 +313,26 @@ const newLeadSpec = () =>
         { name: 'Switch', id: 'nl-notify', props: { label: 'Notify the owner', name: 'notify', defaultChecked: true } },
         { name: 'Button', id: 'nl-cancel', props: { text: 'Cancel', variant: 'secondary' } },
         { name: 'Button', id: 'nl-save', props: { text: 'Create lead', variant: 'primary' } }
+      ]
+    }
+  ])
+
+// Short create form WITHOUT a submit button: the runtime must both inject the
+// missing submit (auto "저장") and present the page as a full-screen sheet
+// (few fields), then let Cancel close it without an LLM round trip.
+const quickContactSpec = () =>
+  page('quick-contact', 'Quick contact', [
+    { name: 'Breadcrumbs', id: 'qc-crumbs', props: { items: [{ id: 'leads', label: 'Leads' }, { id: 'quick-contact', label: 'Quick contact' }] }, grid: { x: 2, y: 0, w: 8, h: 1 } },
+    {
+      name: 'Form',
+      id: 'qc-form',
+      props: { title: 'Quick contact', description: 'Name, company and a note — that is all.' },
+      grid: { x: 3, y: 1, w: 6, h: 6 },
+      children: [
+        { name: 'Input', id: 'qc-name', props: { label: 'Name', name: 'name', required: true } },
+        { name: 'Input', id: 'qc-company', props: { label: 'Company', name: 'company' } },
+        { name: 'Textarea', id: 'qc-note', props: { label: 'Note', name: 'note', rows: 3 } },
+        { name: 'Button', id: 'qc-cancel', props: { text: 'Cancel', variant: 'secondary' } }
       ]
     }
   ])
@@ -460,6 +483,7 @@ function pickSpec(messages) {
     }
     if (event === 'submit' && id === 'new-lead-form') return leadsSpec({ created: true })
     if (event === 'click' && id === 'new-lead') return newLeadSpec()
+    if (event === 'click' && id === 'quick-contact') return quickContactSpec()
     if (event === 'click' && (id === 'nl-cancel' || id === 'back-dashboard')) return id === 'nl-cancel' ? leadsSpec() : dashboardSpec()
     if (event === 'click' && id === 'logout') return loginSpec
     if (event === 'search' || event === 'change' || event === 'page') return leadsSpec()

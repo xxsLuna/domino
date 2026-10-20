@@ -565,6 +565,110 @@
   }
 }
 
+/* ------------------------- screen history drawer ------------------------- */
+/* Sits above page content (and HeroUI's overlay layer): the drawer can open
+   over anything, and Android back closes it first (useBackHandler). */
+.history-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-index-overlay) + 1);
+  background: rgb(0 0 0 / 0.3);
+}
+.history-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-index-overlay) + 2);
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 85vw);
+  padding-top: var(--sat);
+  padding-bottom: var(--sab);
+  background: var(--surface);
+  border-left: 1px solid var(--separator);
+  box-shadow: var(--overlay-shadow);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition:
+    transform 0.22s ease,
+    visibility 0s linear 0.22s;
+}
+.history-panel.is-open {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.22s ease;
+}
+.history-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1px solid var(--separator);
+}
+.history-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.history-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  list-style: none;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.history-item:hover {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+.history-item[aria-current='true'] {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+}
+.history-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  background: color-mix(in oklab, var(--muted) 20%, transparent);
+  color: var(--muted);
+}
+.history-badge[data-kind='edit'] {
+  background: color-mix(in oklab, var(--accent) 24%, transparent);
+  color: var(--accent-foreground);
+}
+.history-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Structure mode (▦): every node framed and labeled. */
 .inspect-card {
   border: 1px dashed color-mix(in oklab, var(--accent) 45%, transparent);

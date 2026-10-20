@@ -97,11 +97,12 @@ export const callApiTool: ToolDef = {
 
 export const navigateTool: ToolDef = {
   name: 'navigate',
-  description: 'Switch to another page defined in the UiSpec (records browser-style history).',
+  description:
+    'Switch to another page defined in the UiSpec, or restore an earlier screen by passing page "history:<index>" from the Screen history list (records browser-style history).',
   parameters: {
     type: 'object',
     properties: {
-      page: { type: 'string', description: 'Target page id' }
+      page: { type: 'string', description: 'Target page id, or "history:<index>" to restore that moment' }
     },
     required: ['page']
   }
