@@ -3,7 +3,7 @@ import { Skeleton } from '@heroui/react'
 import { CellContext, LayoutContext, RuntimeContext, type Runtime } from './context'
 import { breakpointFor, placeNodes, type Breakpoint, type Placement } from './layout'
 import { getComponent } from './registry'
-import type { ActionEvent, CardNode, PageSpec, UiSpec } from '../spec'
+import { resolveStateBindings, type ActionEvent, type CardNode, type PageSpec, type UiSpec } from '../spec'
 
 /**
  * CardGrid — renders a PageSpec on the 12-column grid. Placement is derived
@@ -70,10 +70,13 @@ export function CardGrid({
     []
   )
   const layout = useMemo(() => ({ bp, density }), [bp, density])
-  const nodes = useMemo(
-    () => (hidden ? page.layout.filter((n) => n !== hidden) : page.layout),
-    [page.layout, hidden]
-  )
+  const nodes = useMemo(() => {
+    const base = hidden ? page.layout.filter((n) => n !== hidden) : page.layout
+    // Live client-side state (spec.state) substitutes {"$state": key} props;
+    // stateless screens skip this entirely (identity fast-path inside).
+    if (!spec.state) return base
+    return base.map((n) => resolveStateBindings(n, spec.state!))
+  }, [page.layout, spec.state, hidden])
   const placed = useMemo(() => placeNodes(nodes, bp), [nodes, bp])
   // Last cell of the first row: on phones it makes room for the floating menu button.
   const topRight = useMemo(() => {

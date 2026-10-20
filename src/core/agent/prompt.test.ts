@@ -50,6 +50,24 @@ describe('buildSystemPrompt (action identity)', () => {
   })
 })
 
+describe('buildSystemPrompt (screen state)', () => {
+  it('declares the state field, bindings and local delta buttons', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('# Screen state (client-side)')
+    expect(prompt).toContain('"$state"')
+    expect(prompt).toContain('stateKey')
+    expect(prompt).toContain('"delta"')
+    expect(prompt).toContain('"state": {"<key>": value')
+  })
+
+  it('keeps filters/search out of state and says state-keyed changes never reach the model', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('NEVER put a value in "state" that needs data re-fetched')
+    expect(prompt).toContain('never reaches you')
+    expect(prompt).toContain('NO model turn runs')
+  })
+})
+
 describe('buildSystemPrompt (known API responses)', () => {
   const domino = parseDomino('[meta]\nname = X\n').domino!
 

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   describeUiSpecProblem,
+  findNode,
   isSignOutEvent,
   iterateNodes,
   normalizeGrid,
+  resolveStateBindings,
   tryValidateUiSpec,
   validateUiSpec,
-  withKnownPages
+  withKnownPages,
+  type CardNode
 } from './spec'
 
 const page = (layout: unknown[]): unknown => ({
@@ -145,5 +148,91 @@ describe('runaway nesting', () => {
       ])
     )
     expect([...iterateNodes(spec.pages[0].layout)].map((n) => n.id)).toEqual(['a', 'a1', 'a2', 'b'])
+  })
+})
+
+describe('client-side state', () => {
+  const withState = (state: unknown, extra: Record<string, unknown> = {}): unknown => ({
+    version: 1,
+    page: 'p',
+    pages: [{ id: 'p', name: 'P', layout: [] }],
+    ...extra,
+    state
+  })
+
+  it('validates and round-trips a declared state (schema registration)', () => {
+    const spec = validateUiSpec(withState({ trashCount: '3', dense: true }))
+    expect(spec.state).toEqual({ trashCount: '3', dense: true })
+    // Round-trip: a validated spec re-parses with state intact (history, cache).
+    expect(validateUiSpec(JSON.parse(JSON.stringify(spec))).state).toEqual({ trashCount: '3', dense: true })
+  })
+
+  it('still strips unregistered top-level junk but drops a non-object state', () => {
+    const spec = validateUiSpec(withState('nope', { junk: 1 }))
+    expect(spec.state).toBeUndefined()
+    expect((spec as unknown as Record<string, unknown>).junk).toBeUndefined()
+    expect(validateUiSpec(withState(undefined, { junk: 1 })).state).toBeUndefined()
+  })
+
+  it('normalizeUiSpec carries state through (spread path)', () => {
+    const spec = validateUiSpec({ page: 'p', state: { q: '1' }, pages: [{ id: 'p', name: 'P', layout: [] }] })
+    expect(spec.state).toEqual({ q: '1' })
+  })
+
+  it('findNode locates a node by id at any depth of the current page', () => {
+    const spec = validateUiSpec(
+      page([
+        { name: 'Card', id: 'a', children: [{ name: 'Button', id: 'deep', props: { text: 'Go' } }] },
+        { name: 'StatCard', id: 'stat' }
+      ])
+    )
+    expect(findNode(spec, 'deep')?.props).toEqual({ text: 'Go' })
+    expect(findNode(spec, 'stat')?.name).toBe('StatCard')
+    expect(findNode(spec, 'missing')).toBeNull()
+  })
+
+  const bound = (extra: Record<string, unknown> = {}): CardNode => ({
+    name: 'Card',
+    id: 'c',
+    props: { title: 'Trash', value: { $state: 'trashCount' } },
+    children: [{ name: 'Button', id: 'minus', props: { text: '-', stateKey: 'trashCount', delta: -1 } }],
+    ...extra
+  })
+
+  it('substitutes {"$state"} props with the live value, recursively', () => {
+    const out = resolveStateBindings(bound(), { trashCount: 7 })
+    expect(out.props?.value).toBe(7)
+    expect(out.children?.[0].props?.delta).toBe(-1)
+  })
+
+  it('resolves bindings inside nested objects and children', () => {
+    const node: CardNode = {
+      name: 'Card',
+      id: 'c',
+      props: { items: [{ label: { $state: 'name' } }], meta: { count: { $state: 'n' } } },
+      children: [{ name: 'Label', props: { text: { $state: 'name' } } }]
+    }
+    const out = resolveStateBindings(node, { name: 'Ana', n: 3 })
+    expect(out.props?.items).toEqual([{ label: 'Ana' }])
+    expect(out.props?.meta).toEqual({ count: 3 })
+    expect(out.children?.[0].props?.text).toBe('Ana')
+  })
+
+  it('a missing key resolves to undefined (prop disappears)', () => {
+    const out = resolveStateBindings(bound(), {})
+    expect(out.props?.value).toBeUndefined()
+  })
+
+  it('returns the SAME reference when nothing binds state (memo/signature stability)', () => {
+    const plain: CardNode = {
+      name: 'Card',
+      id: 'c',
+      props: { title: 'Static' },
+      children: [{ name: 'Button', props: { text: 'OK' } }]
+    }
+    expect(resolveStateBindings(plain, { other: 1 })).toBe(plain)
+    // The {$state} shape only swaps on an exact single-key object.
+    const lookalike: CardNode = { name: 'Badge', props: { value: { $state: 'a', extra: 1 } } }
+    expect(resolveStateBindings(lookalike, { a: 5 })).toBe(lookalike)
   })
 })

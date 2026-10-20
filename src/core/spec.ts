@@ -53,6 +53,13 @@ export interface UiSpec {
   pages: PageSpec[]
   /** Primary navigation; omit to keep the previous screen's, `[]` to hide it. */
   nav?: NavItem[]
+  /**
+   * Client-side screen state (React-useState style): keys the runtime updates
+   * locally — no LLM round trip — bound into props via `{"$state": "<key>"}`.
+   * Only keys the model declared here are handled locally; anything else keeps
+   * the normal event → model flow (filters, search…).
+   */
+  state?: Record<string, unknown>
 }
 
 /** An interaction captured from a rendered component, sent to the agent. */
@@ -109,6 +116,9 @@ export const uiSpecSchema = z.object({
   version: z.literal(1),
   page: z.string().min(1),
   nav: navSchema.optional(),
+  // Registered so the validated spec carries `state` (z.object strips unknown
+  // keys) — the engine then records it in history and the model sees it.
+  state: z.record(z.unknown()).optional(),
   pages: z.array(pageSpecSchema).min(1)
 })
 
@@ -216,12 +226,16 @@ export function normalizeUiSpec(input: unknown): unknown {
         return { ...item, id: id === undefined ? id : String(id), label: label === undefined ? label : String(label) }
       })
     : input.nav
+  // Client-side state: only an object survives; anything else is dropped so
+  // one odd value can't fail validation (bindings then simply resolve stale).
+  const state = isRecord(input.state) ? input.state : undefined
   return {
     ...input,
     version: 1,
     page: page ?? pages[0]?.id,
     pages,
-    nav
+    nav,
+    state
   }
 }
 
@@ -284,6 +298,61 @@ export function* iterateNodes(nodes: CardNode[]): Generator<CardNode> {
       for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
     }
   }
+}
+
+/** First node in the current page's layout with this id (any depth). */
+export function findNode(spec: UiSpec, id: string): CardNode | null {
+  const page = findPage(spec, spec.page)
+  if (!page) return null
+  for (const node of iterateNodes(page.layout)) if (node.id === id) return node
+  return null
+}
+
+/** True for the single-key binding object `{"$state": "<key>"}`. */
+const stateBinding = (v: unknown): string | null =>
+  isRecord(v) &&
+  Object.keys(v).length === 1 &&
+  typeof v['$state'] === 'string' &&
+  (v['$state'] as string).length > 0
+    ? (v['$state'] as string)
+    : null
+
+function resolveValue(v: unknown, state: Record<string, unknown>): unknown {
+  const key = stateBinding(v)
+  if (key !== null) return state[key]
+  if (Array.isArray(v)) return v.map((x) => resolveValue(x, state))
+  if (isRecord(v)) {
+    let replaced = false
+    const out: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v)) {
+      const next = resolveValue(val, state)
+      if (next !== val) replaced = true
+      out[k] = next
+    }
+    return replaced ? out : v
+  }
+  return v
+}
+
+/**
+ * Substitute `{"$state": "<key>"}` prop bindings with the live values of the
+ * spec's client-side `state` (missing key → undefined). Recursive into props
+ * and children; returns the ORIGINAL node reference when nothing was replaced,
+ * so stateless screens keep their WeakMap signatures and memoized cells.
+ */
+export function resolveStateBindings(node: CardNode, state: Record<string, unknown>): CardNode {
+  let replaced = false
+  const props =
+    node.props === undefined
+      ? undefined
+      : (resolveValue(node.props, state) as Record<string, unknown> | undefined)
+  if (props !== node.props) replaced = true
+  const children = node.children?.map((c) => {
+    const next = resolveStateBindings(c, state)
+    if (next !== c) replaced = true
+    return next
+  })
+  return replaced ? { ...node, props, children: children ?? node.children } : node
 }
 
 /** Stable key describing "which screen this is" for the session render cache. */

@@ -91,8 +91,8 @@ const loginFailedSpec = {
 
 const leadRows = (leads) => leads.map((l) => [l.name, l.company, stageChip(l.stage), l.owner, l.value])
 
-const dashboardSpec = () =>
-  page('main', 'Dashboard', [
+const dashboardSpec = () => {
+  const spec = page('main', 'Dashboard', [
     {
       name: 'PageHeader',
       id: 'main-header',
@@ -154,8 +154,28 @@ const dashboardSpec = () =>
       children: [
         { name: 'Button', id: 'new-lead', props: { text: 'New lead', variant: 'secondary', icon: 'plus' } }
       ]
+    },
+    // Client-side state widget: adjusting trash count must NOT hit the model.
+    // The Select's change and the +/− buttons' clicks are applied locally by
+    // the runtime (stateKey/delta), and every bound node re-renders at once.
+    {
+      name: 'Card',
+      id: 'trash-card',
+      props: { title: 'Trash count', icon: 'box' },
+      grid: { x: 0, y: 9, w: 4, h: 2 },
+      children: [
+        { name: 'StatCard', id: 'stat-trash', props: { label: 'Items in trash', value: { $state: 'trashCount' }, icon: 'box' } },
+        { name: 'Button', id: 'trash-minus', props: { text: '−', stateKey: 'trashCount', delta: -1 } },
+        { name: 'Button', id: 'trash-plus', props: { text: '+', stateKey: 'trashCount', delta: 1 } },
+        { name: 'Select', id: 'trash-select', props: { label: 'Trash count', name: 'trashCount', value: { $state: 'trashCount' }, options: ['1', '3', '5', '7', '9'] } }
+      ]
     }
   ])
+  // Declared so the runtime owns it: changes update locally (no LLM turn) and
+  // the view snapshot persists it across reloads.
+  spec.state = { trashCount: '3' }
+  return spec
+}
 
 const leadsSpec = (opts = {}) => {
   const leads = opts.created ? [{ name: 'New Prospect', company: 'Contoso', stage: 'New', owner: 'You', value: '$2,100' }, ...LEADS] : LEADS

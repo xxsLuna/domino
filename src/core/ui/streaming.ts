@@ -70,6 +70,9 @@ export function streamView(current: UiSpec | null, preview: UiSpec): StreamView 
     spec: {
       ...preview,
       nav: preview.nav ?? current?.nav,
+      // State streams in after the nodes that bind it; keep the current
+      // values until it arrives so bindings never flash raw {$state} objects.
+      state: preview.state ?? current?.state,
       pages: preview.pages.map((p) => (p === next ? { ...next, layout } : p))
     },
     pending: lastIsNew && !hidden ? last : undefined,

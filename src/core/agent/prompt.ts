@@ -61,7 +61,7 @@ export function buildSystemPrompt(
 ${aboutApp(domino)}
 # Output contract
 - For the INITIAL screen and after EVERY user interaction, call the render_ui tool. Its arguments are one JSON object whose "spec" key holds the UiSpec object directly: {"spec": {"version": 1, "page": "…", "nav": […], "pages": […]}}.
-- UiSpec shape: {"version": 1, "page": "<page id>", "nav": [navItem,...], "pages": [{"id","name","layout":[node,...]}]}.
+- UiSpec shape: {"version": 1, "page": "<page id>", "state": {"<key>": value,...}, "nav": [navItem,...], "pages": [{"id","name","layout":[node,...]}]}. ("state" is optional — only screens with client-side controls declare it; see the Screen state section.)
 - "pages" holds only the page being shown (set "page" to its id). Do not repeat pages from earlier turns — the runtime keeps them; re-send one only to change it.
 - node shape, keys in this order: {"name": "<registry name>", "id": "<unique kebab-case id, shared by every control with the same action>", "grid": {"x","y","w","h"}, "props": {...}, "children": [node,...]}. (The screen renders while you stream; "grid" first lets each card take its place immediately.)
 - One action, one id: every control that performs the same action — a page-header button, a quick-actions shortcut, a sidebar entry that all open the same form — carries the same id, so the runtime treats the first press as the answer for all of them. The same id may repeat across pages; never give two nodes the same id inside the same parent container.
@@ -93,9 +93,16 @@ Icons (for "icon" props and nav): ${iconNames.join(', ')}. An emoji also works.
 - DETAIL: Breadcrumbs (y:0) → PageHeader with status "badge" and actions → Card (w:8) holding Tabs (Overview = KeyValue, Activity = List, …) → side Cards (w:4: owner Avatar, next step).
 - CREATE / EDIT FORM: Breadcrumbs → one Form (x:2 w:8, or x:3 w:6 for short forms) whose "title" and "description" are the page heading (no PageHeader), "columns": 2 when it has 6+ fields; end with a secondary "Cancel" Button and a primary submit Button.
 - SETTINGS: PageHeader (no Save button there) → one Form per section (x:0 w:8), each with its own submit Button; every editable control — Input, Switch (on/off), Select (one-of-many), RadioGroup (2–4 visible choices) — goes inside a Form → side Cards (x:8 w:4) for plan, account (sign-out) and danger zone.
-- Forms: a Button outside a Form never submits it, and Switch/Select/Checkbox/RadioGroup outside a Form send a "change" event (a full round trip) on every toggle — keep fields and their submit Button inside the same Form.
+- Forms: a Button outside a Form never submits it, and Switch/Select/Checkbox/RadioGroup outside a Form send a "change" event (a full round trip — unless the field's name is a screen-state key, see Screen state) on every toggle — keep fields and their submit Button inside the same Form.
 - AUTH / LOGIN (id "login"): "nav": [], no PageHeader — the page is a single Form at x:4 w:4 whose title + description are the heading, with Inputs, Checkbox "remember me" and a full-width primary Button. Put an Alert (variant "danger", x:4 w:4) above the form on failure.
 - Feedback: Alert for inline status after an action (success/danger), EmptyState for "nothing here yet", Skeleton never needed (the runtime shows loading states).
+
+# Screen state (client-side)
+- The top-level "state" object declares LOCAL control values the runtime updates and persists on its own — React-useState style: counters, toggles, "remember this choice" values. When such a control changes, the runtime updates every bound node instantly and NO model turn runs.
+- NEVER put a value in "state" that needs data re-fetched from the API — filters, search queries, pagination. Those keep using "change"/"search" events so fresh data loads.
+- Bind any prop to a state key with the exact object {"$state": "<key>"} — e.g. a StatCard "value", a Select "value", a Label "text". The runtime substitutes the live value on every render; several nodes may share one key (a counter label and its controls).
+- Number steppers: give a Button props {"stateKey": "<key>", "delta": 1} (or -1, -10…). Clicking it adds delta to the current number locally — no round trip.
+- Include "state" in EVERY render_ui for a screen that uses it, with the current values (the latest values are also injected into your turn as "Current screen state"). A "change" event whose data.name is a state key is handled by the runtime and never reaches you.
 
 # Screens & flow
 - App home page id: "${domino.meta.home}".

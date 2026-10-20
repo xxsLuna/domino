@@ -47,6 +47,7 @@ import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
 import {
+  findNode,
   findPage,
   isSignOutEvent,
   withKnownPages,
@@ -132,6 +133,10 @@ export function Runtime({
   const [editCount, setEditCount] = useState(0)
   /** Spec the current highlight diffs against; null = no highlight. */
   const [editBase, setEditBase] = useState<UiSpec | null>(null)
+  /** Live client-side screen state (spec.state) — applied without the model. */
+  const stateRef = useRef<Record<string, unknown>>({})
+  /** Local writes made while a turn was streaming; merged when it lands. */
+  const pendingStateWrites = useRef<Record<string, unknown>>({})
   /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
   const [progress, setProgress] = useState<number | null>(null)
 
@@ -306,15 +311,19 @@ export function Runtime({
 
   const showSpec = useCallback(
     (spec: UiSpec) => {
+      // Overlay the live client-side state so stale cache hits and
+      // back/forward snapshots show current values, not their capture-time ones.
+      const live = Object.keys(stateRef.current).length > 0 ? stateRef.current : undefined
+      const applied = live ? { ...spec, state: { ...spec.state, ...live } } : spec
       // Back/forward snapshots may predate pages delivered since; keep those too.
-      const known = withKnownPages(spec, knownRef.current)
+      const known = withKnownPages(applied, knownRef.current)
       knownRef.current = known
-      setCurrentSpec(spec)
+      setCurrentSpec(applied)
       setPreviewSpec(null)
-      setPageName(spec.pages.find((p) => p.id === spec.page)?.name ?? spec.page)
-      applyNav(spec)
+      setPageName(applied.pages.find((p) => p.id === applied.page)?.name ?? applied.page)
+      applyNav(applied)
       // Remember where the user was: reopening restores this screen as-is.
-      void screensRef.current?.saveView(loggedInRef.current, { page: spec.page, known })
+      void screensRef.current?.saveView(loggedInRef.current, { page: applied.page, known })
     },
     [applyNav]
   )
@@ -323,6 +332,13 @@ export function Runtime({
     (spec: UiSpec, cacheKey: string | null) => {
       session.push(spec)
       if (cacheKey) session.cacheSet(cacheKey, spec)
+      // The model's state is the truth when it sends one (its own declarations
+      // plus any explicit changes); when it omits the field, keep the live
+      // values — a turn that never touched them. Writes made while the turn
+      // streamed beat both: they happened after the model's snapshot.
+      if (spec.state !== undefined) {
+        stateRef.current = { ...spec.state, ...pendingStateWrites.current }
+      }
       // A non-edit screen (click hit, boot, instant-nav) makes the previous
       // edit's result the new baseline — no cells left to glow.
       if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
@@ -351,6 +367,13 @@ export function Runtime({
       turnDepsRef.current = {}
       // An ordinary turn replaces the screen the edit glow was tracking.
       if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
+      // Inject live client-side state so the model carries it in "state";
+      // writes made from here on are merged over its result when it lands.
+      const liveState =
+        Object.keys(stateRef.current).length > 0
+          ? `\nCurrent screen state (updated client-side — carry it in your "state" field): ${JSON.stringify(stateRef.current)}`
+          : ''
+      pendingStateWrites.current = {}
       setStreaming(true)
       setError(null)
       setStatus('생성 중…')
@@ -366,7 +389,7 @@ export function Runtime({
           loggedIn: loggedInRef.current,
           knownSchemas
         })
-        historyRef.current.push({ role: 'user', content: prompt })
+        historyRef.current.push({ role: 'user', content: prompt + liveState })
         for await (const update of runAgentTurn({
           adapter,
           system,
@@ -684,6 +707,18 @@ export function Runtime({
     [domino, runTurn, storage]
   )
 
+  /** Write client-side state locally: no history, no cache, no model turn. */
+  const applyLocalState = useCallback(
+    (key: string, value: unknown): void => {
+      const next = { ...stateRef.current, [key]: value }
+      stateRef.current = next
+      pendingStateWrites.current[key] = value
+      // saveView persists the overlay; no session.push → back-stack untouched.
+      if (currentSpec) showSpec({ ...currentSpec, state: next })
+    },
+    [currentSpec, showSpec]
+  )
+
   const handleEvent = useCallback(
     (e: ActionEvent): void => {
       const pageId = currentSpec?.page ?? e.pageId
@@ -691,6 +726,30 @@ export function Runtime({
       if (e.event === 'submit' && hasPassword && domino.auth.loginEndpoint) {
         void handleLogin(e.data ?? {})
         return
+      }
+
+      // Client-side screen state (spec.state): a change on a state-keyed field
+      // or a click on a stateKey+delta button is applied by the runtime itself
+      // — no history, no cache, no LLM round trip.
+      if (currentSpec?.state) {
+        if (e.event === 'change') {
+          const name = String(e.data?.name ?? e.nodeId)
+          if (name in currentSpec.state) {
+            applyLocalState(name, e.data?.value)
+            return
+          }
+        } else if (e.event === 'click') {
+          const node = findNode(currentSpec, e.nodeId)
+          const stateKey = node?.props?.stateKey
+          if (typeof stateKey === 'string' && stateKey in currentSpec.state) {
+            const delta = Number(node?.props?.delta)
+            const cur = Number(currentSpec.state[stateKey])
+            if (Number.isFinite(delta) && Number.isFinite(cur)) {
+              applyLocalState(stateKey, cur + delta)
+              return
+            }
+          }
+        }
       }
 
       // Sign-out convention: the runtime owns the token, so it clears it itself.
