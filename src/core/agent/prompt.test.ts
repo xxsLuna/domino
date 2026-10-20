@@ -34,6 +34,12 @@ describe('buildSystemPrompt (untrusted author content)', () => {
     expect(prompt).toContain('keeping the rest of the page')
   })
 
+  it('sends app-wide edit requests back with every page re-rendered', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('re-render EVERY page with the change applied')
+    expect(prompt).toContain('the runtime applies every page you return')
+  })
+
   it('truncates an oversized guide instead of shipping megabytes into the context', () => {
     const prompt = promptFor('[meta]\nname = X\n[guide]\n' + 'a'.repeat(40_000) + '\n')
     expect(prompt).toContain('truncated, 40000 chars total')

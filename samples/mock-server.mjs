@@ -414,14 +414,29 @@ function pickSpec(messages) {
   // too; the demo just proves the edit loop re-renders the same screen). Each
   // edit tags the header so the diff is never empty — the E2E watches that
   // cell glow — and bumps /stats so the check can count edit turns.
-  const edited = /EDIT REQUEST \(page "([^"]+)"\)/.exec(last)
+  // The runtime's own turn prompt follows the request on the next line, so
+  // scan only the user's words — that prompt names themes as an example and
+  // must not self-trigger the app-wide branch.
+  const editPart = last.split('The user asked to change')[0]
+  const edited = /EDIT REQUEST \(page "([^"]+)"\):([\s\S]*)/.exec(editPart)
   if (edited) {
     stats.edits++
     const target = edited[1]
+    const request = edited[2]
     const tag = (spec) => {
-      const head = spec.pages[0].layout.find((n) => n.name === 'PageHeader')
-      if (head?.props?.description) head.props.description += ` · edit ${stats.edits}`
+      for (const p of spec.pages) {
+        const head = p.layout.find((n) => n.name === 'PageHeader')
+        if (head?.props?.description) head.props.description += ` · edit ${stats.edits}`
+      }
       return spec
+    }
+    const builders = { main: dashboardSpec, leads: leadsSpec, settings: settingsSpec }
+    // An app-wide request ("red theme everywhere") comes back as EVERY page
+    // changed — that multi-page result is what the runtime merges.
+    const appWide = /전역|전체|모든|테마|빨강|theme|everywhere|all pages/i.test(request)
+    if (appWide && builders[target]) {
+      const specs = Object.values(builders).map((build) => build())
+      return tag({ ...specs.find((s) => s.page === target), pages: specs.flatMap((s) => s.pages) })
     }
     if (target === 'main') return tag(dashboardSpec())
     if (target === 'leads') return tag(leadsSpec())

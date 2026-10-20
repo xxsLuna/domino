@@ -66,6 +66,9 @@ interface RuntimeProps {
   onOpenSettings: () => void
 }
 
+/** How a turn ended: applied to a screen, failed, or taken over by a newer turn. */
+type TurnOutcome = 'applied' | 'failed' | 'superseded'
+
 export function Runtime({
   loaded,
   config,
@@ -78,7 +81,8 @@ export function Runtime({
   const sessionRef = useRef(new SessionStore())
   const historyRef = useRef<ChatMessage[]>([])
   const turnSeq = useRef(0)
-  const cacheKeyRef = useRef<string | null>(null)
+  /** Which kind of turn owns the lane — navigation spares background edits. */
+  const turnKindRef = useRef<'user' | 'edit' | null>(null)
   const loggedInRef = useRef(false)
   // Token kept in a ref so API calls inside async turns see fresh values.
   const sessionTokenRef = useRef<string | null>(null)
@@ -106,6 +110,11 @@ export function Runtime({
   const pregenRunnerRef = useRef<((seq: number) => Promise<void>) | null>(null)
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
+  /** Mirror of currentSpec for async turns deciding "is my page on screen". */
+  const currentSpecRef = useRef<UiSpec | null>(null)
+  useEffect(() => {
+    currentSpecRef.current = currentSpec
+  }, [currentSpec])
   const [previewSpec, setPreviewSpec] = useState<UiSpec | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [status, setStatus] = useState('')
@@ -271,18 +280,22 @@ export function Runtime({
   // Bumping turnSeq orphans the in-flight turn's finally guard, which then
   // skips its cleanup — so every invalidation site clears the streaming UI
   // here too, or the spinner sticks and the handleNav guard blocks taps.
+  //
+  // Navigation interrupts the streaming USER turn only. A background edit
+  // keeps its lane: its result lands on its own page wherever the user has
+  // browsed to (landEdit), and the toast/gauge stay up while it runs.
   const interruptTurn = useCallback(() => {
+    if (turnKindRef.current === 'edit') return
     turnSeq.current++
     turnActiveRef.current = false
     setStreaming(false)
     setPreviewSpec(null)
     setStatus('')
     cancelGauge()
-    // Back/forward/instant-nav also cancels queued edit requests and glow.
-    editQueueRef.current = []
-    setEditCount(0)
-    clearEditHighlight()
-  }, [cancelGauge, clearEditHighlight])
+    // The interrupted turn's finally is now orphaned (guard skips it), so a
+    // queued edit that was waiting on this lane must be drained from here.
+    editDrainRef.current?.()
+  }, [cancelGauge])
 
   /** Apply a spec's navigation: explicit `nav` wins, login screens never show it. */
   const applyNav = useCallback((spec: UiSpec) => {
@@ -318,6 +331,7 @@ export function Runtime({
       // Back/forward snapshots may predate pages delivered since; keep those too.
       const known = withKnownPages(applied, knownRef.current)
       knownRef.current = known
+      currentSpecRef.current = applied // async turns decide visibility against it
       setCurrentSpec(applied)
       setPreviewSpec(null)
       setPageName(applied.pages.find((p) => p.id === applied.page)?.name ?? applied.page)
@@ -358,15 +372,42 @@ export function Runtime({
     [domino]
   )
 
+  /**
+   * Land an edit's result on ITS page. The user is on that page right now →
+   * the normal finalize path (session push + cache + highlight). They browsed
+   * elsewhere → merge into the known pages only: no session.push (the back
+   * stack is theirs, not the edit's), viewport and live state untouched — the
+   * change appears when that page is next shown.
+   */
+  const landEdit = useCallback(
+    (spec: UiSpec, cacheKey: string, pageId: string): void => {
+      const visible = currentSpecRef.current
+      if (visible && visible.page === pageId) {
+        // Navigation during the edit may have dropped the glow; re-baseline on
+        // the screen as it stands so only this edit's cells light up.
+        setEditBase(visible)
+        finalizeSpec(spec, cacheKey)
+        return
+      }
+      session.cacheSet(cacheKey, spec)
+      // Keep the page the user is looking at; every page the model returned
+      // (one page, or all of them for an app-wide edit) still wins.
+      showSpec({ ...spec, page: visible?.page ?? spec.page })
+    },
+    [finalizeSpec, session, showSpec]
+  )
+
   const runTurn = useCallback(
-    async (prompt: string, cacheKey: string | null): Promise<void> => {
+    async (prompt: string, cacheKey: string | null): Promise<TurnOutcome> => {
+      const isEdit = Boolean(cacheKey?.startsWith('edit::'))
+      const editPageId = isEdit && cacheKey ? cacheKey.slice('edit::'.length).split('::')[0] : null
       const myTurn = ++turnSeq.current
+      turnKindRef.current = isEdit ? 'edit' : 'user'
       pregenSeq.current++ // a live request outranks background building
       turnActiveRef.current = true
-      cacheKeyRef.current = cacheKey
       turnDepsRef.current = {}
       // An ordinary turn replaces the screen the edit glow was tracking.
-      if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
+      if (!isEdit) clearEditHighlight()
       // Inject live client-side state so the model carries it in "state";
       // writes made from here on are merged over its result when it lands.
       const liveState =
@@ -379,6 +420,13 @@ export function Runtime({
       setStatus('생성 중…')
       startGauge()
 
+      // The engine splices history back into the array it is given, and a newer
+      // turn may start while this one winds down — so run on our own copy and
+      // hand back only the messages we added (append-only: neither side's
+      // entries are lost, executed tool calls still reach the next turn).
+      const fork: ChatMessage[] = [...historyRef.current]
+      const snapLen = fork.length
+
       let completed = false
       try {
         const adapter = createAdapter(config)
@@ -389,15 +437,15 @@ export function Runtime({
           loggedIn: loggedInRef.current,
           knownSchemas
         })
-        historyRef.current.push({ role: 'user', content: prompt + liveState })
+        fork.push({ role: 'user', content: prompt + liveState })
         for await (const update of runAgentTurn({
           adapter,
           system,
-          history: historyRef.current,
+          history: fork,
           api: apiRuntime(),
           knownSchemas
         })) {
-          if (turnSeq.current !== myTurn) return // superseded by a newer turn
+          if (turnSeq.current !== myTurn) break // superseded by a newer turn
           switch (update.type) {
             case 'spec':
               if (update.final) {
@@ -412,21 +460,22 @@ export function Runtime({
                 finishGauge()
                 completed = true
                 const merged = withKnownPages(update.spec, knownRef.current)
-                finalizeSpec(merged, cacheKeyRef.current)
+                if (isEdit && cacheKey && editPageId) landEdit(merged, cacheKey, editPageId)
+                else finalizeSpec(merged, cacheKey)
                 // Persist the screen (and which responses it was built from)
                 // so the next session restores it instead of regenerating.
-                if (cacheKeyRef.current) {
-                  void screensRef.current?.put(
-                    cacheKeyRef.current,
-                    merged,
-                    turnDepsRef.current
-                  )
+                if (cacheKey) {
+                  void screensRef.current?.put(cacheKey, merged, turnDepsRef.current)
                 }
                 setStatus('')
               } else {
                 // Previews are interruptible: typing/scrolling stays responsive
                 // while the screen assembles, and stale previews get skipped.
-                startTransition(() => setPreviewSpec(update.spec))
+                // A background edit previews only while its target page is on
+                // screen — browsing elsewhere must not flash the edit over it.
+                if (!isEdit || currentSpecRef.current?.page === editPageId) {
+                  startTransition(() => setPreviewSpec(update.spec))
+                }
               }
               break
             case 'text':
@@ -459,7 +508,13 @@ export function Runtime({
       } catch (err) {
         if (turnSeq.current === myTurn) setError((err as Error).message)
       } finally {
+        // Hand our messages back even when superseded: an already-executed
+        // tool call must reach the next turn's history. Append-only, so a turn
+        // that started meanwhile keeps whatever it pushed in the meantime.
+        const mine = fork.slice(snapLen)
+        if (mine.length) historyRef.current.push(...mine)
         if (turnSeq.current === myTurn) {
+          turnKindRef.current = null
           turnActiveRef.current = false
           setStreaming(false)
           setPreviewSpec(null)
@@ -469,13 +524,17 @@ export function Runtime({
           if (!completed) cancelGauge()
           // A finished edit glows for ~2s; a failed/interrupted one drops
           // the highlight at once. Either way, drain any queued requests.
-          if (cacheKey?.startsWith('edit::')) {
+          if (isEdit) {
             if (completed) armEditFade()
             else clearEditHighlight()
           }
           editDrainRef.current?.()
         }
       }
+      // Superseded after applying still counts as applied (the queue advances);
+      // superseded before finishing keeps its queue head for the re-drain.
+      if (completed) return 'applied'
+      return turnSeq.current === myTurn ? 'failed' : 'superseded'
     },
     [
       apiRuntime,
@@ -485,6 +544,7 @@ export function Runtime({
       config,
       domino,
       finalizeSpec,
+      landEdit,
       scheduleSchemaSave,
       startGauge
     ]
@@ -597,6 +657,7 @@ export function Runtime({
       cancelled = true
       turnSeq.current++ // invalidate in-flight turns
       pregenSeq.current++ // …and any background builds still running
+      editQueueRef.current = [] // …queued edits must not start new turns
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -605,20 +666,24 @@ export function Runtime({
   const goBack = useCallback(() => {
     const snap = session.back()
     if (snap) {
-      interruptTurn() // cancel any streaming turn
+      interruptTurn() // cancel any streaming user turn (edits are spared)
+      // The snapshot diffs against a different baseline — drop stale glow;
+      // a landing edit re-baselines on what's on screen then (landEdit).
+      clearEditHighlight()
       showSpec(snap.spec)
       syncNav()
     }
-  }, [interruptTurn, session, showSpec, syncNav])
+  }, [clearEditHighlight, interruptTurn, session, showSpec, syncNav])
 
   const goForward = useCallback(() => {
     const snap = session.forward()
     if (snap) {
       interruptTurn()
+      clearEditHighlight()
       showSpec(snap.spec)
       syncNav()
     }
-  }, [interruptTurn, session, showSpec, syncNav])
+  }, [clearEditHighlight, interruptTurn, session, showSpec, syncNav])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -755,6 +820,11 @@ export function Runtime({
       // Sign-out convention: the runtime owns the token, so it clears it itself.
       if (isSignOutEvent(e) && loggedInRef.current) {
         void (async () => {
+          // The signed-out screen must not be rebuilt from a queued edit —
+          // drop pending requests (the runTurn below supersedes a running one).
+          editQueueRef.current = []
+          setEditCount(0)
+          clearEditHighlight()
           await clearToken(storage, domino.id)
           sessionTokenRef.current = null
           loggedInRef.current = false
@@ -816,6 +886,7 @@ export function Runtime({
       )
     },
     [
+      clearEditHighlight,
       currentSpec,
       domino,
       finalizeSpec,
@@ -845,10 +916,11 @@ export function Runtime({
   /**
    * Apply one queued edit: history records it now (not at submit time, so an
    * in-flight turn's history stays coherent), the highlight baseline is the
-   * screen as it stands, then cache or one turn applies the change.
+   * screen as it stands, then cache or one turn applies the change — landing
+   * on the edited page wherever the user has browsed to (landEdit).
    */
   const processEdit = useCallback(
-    async (item: { text: string; pageId: string }): Promise<void> => {
+    async (item: { text: string; pageId: string }): Promise<TurnOutcome> => {
       historyRef.current.push({
         role: 'user',
         content: `EDIT REQUEST (page "${item.pageId}"): ${item.text}`
@@ -859,35 +931,46 @@ export function Runtime({
       const cacheKey = `edit::${item.pageId}::${hashContext(item.text)}`
       const cached = session.cacheGet(cacheKey)
       if (cached) {
-        finalizeSpec(cached, cacheKey)
+        landEdit(cached, cacheKey, item.pageId)
         armEditFade()
-        return
+        return 'applied'
       }
       const stored = screensRef.current?.get(cacheKey, schemaHashes())
       if (stored) {
-        session.cacheSet(cacheKey, stored.spec)
-        finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
+        landEdit(withKnownPages(stored.spec, knownRef.current), cacheKey, item.pageId)
         armEditFade()
-        return
+        return 'applied'
       }
-      await runTurn(
-        `The user asked to change the current screen (EDIT REQUEST above). Apply only that change to page "${item.pageId}" and keep everything else — layout, ids, values, data and the other pages — as it is unless the change requires otherwise. Re-render the page.`,
+      return await runTurn(
+        `The user asked to change the current screen (EDIT REQUEST above). Apply only that change to page "${item.pageId}" and keep everything else — layout, ids, values, data and the other pages — as it is unless the change requires otherwise. Re-render the page. If the request is app-wide (a theme, colors, wording, navigation), re-render every page with the change applied and include all of them in the spec.`,
         cacheKey
       )
     },
-    [armEditFade, finalizeSpec, runTurn, schemaHashes, session]
+    [armEditFade, landEdit, runTurn, schemaHashes, session]
   )
 
-  /** Queue head → apply → next. Never overlaps a turn; turns re-drain on finish. */
+  /**
+   * Queue head → apply → next. Never overlaps a turn; turns re-drain on
+   * finish. A newer turn superseding an edit keeps its head in the queue —
+   * the edit resumes from that turn's finally instead of being lost.
+   */
   const drainEditQueue = useCallback((): void => {
     if (editDraining.current || turnActiveRef.current) return
     const head = editQueueRef.current[0]
     if (!head) return
     editDraining.current = true
-    void processEdit(head).finally(() => {
-      editDraining.current = false
-      // Navigation may have cleared the queue mid-edit; only advance our item.
+    const advance = (): void => {
       if (editQueueRef.current[0] === head) editQueueRef.current.shift()
+    }
+    void processEdit(head).then(
+      (outcome) => {
+        // Superseded: keep the head — this edit re-runs on the next drain.
+        if (outcome !== 'superseded') advance()
+      },
+      // An unexpected throw is a failed edit: advance rather than loop on it.
+      advance
+    ).finally(() => {
+      editDraining.current = false
       setEditCount(editQueueRef.current.length)
       if (editQueueRef.current.length > 0) drainEditQueue()
     })
@@ -896,8 +979,9 @@ export function Runtime({
 
   /**
    * "Change what I'm looking at": the request is queued and applied by
-   * drainEditQueue — several can stack while one runs, each result becoming
-   * the page's canonical version (session + screen cache + view snapshot).
+   * drainEditQueue in the background — it survives page navigation, stacks
+   * with further requests, and each result becomes its page's canonical
+   * version (session + screen cache + view snapshot).
    */
   const submitEdit = useCallback(
     (raw: string): void => {
