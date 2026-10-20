@@ -1,6 +1,6 @@
 {
   "name": "domino",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "domino: open .domino files and let an LLM generate the app UI in real time",
   "author": {
     "name": "Luna",
