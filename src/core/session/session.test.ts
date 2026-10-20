@@ -61,6 +61,25 @@ describe('SessionStore render cache', () => {
   })
 })
 
+describe('SessionStore reset', () => {
+  it('drops the back stack and every cached render', () => {
+    const s = new SessionStore()
+    s.push(spec('a'))
+    s.push(spec('b'))
+    s.cacheSet('k', spec('cached'))
+    s.reset()
+    expect(s.current).toBeNull()
+    expect(s.canBack).toBe(false)
+    expect(s.canForward).toBe(false)
+    expect(s.historySize).toBe(0)
+    expect(s.cacheGet('k')).toBeNull()
+    expect(s.cacheSize).toBe(0)
+    // usable again after the reset
+    s.push(spec('fresh'))
+    expect(s.current?.spec.page).toBe('fresh')
+  })
+})
+
 describe('hashContext', () => {
   it('is stable for equal input and differs otherwise', () => {
     expect(hashContext({ a: 1 })).toBe(hashContext({ a: 1 }))

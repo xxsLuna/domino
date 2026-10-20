@@ -66,6 +66,13 @@ export class SessionStore {
   get cacheSize(): number {
     return this.cache.size
   }
+
+  /** Drop the back stack and every cached render ("rebuild from scratch"). */
+  reset(): void {
+    this.stack = []
+    this.idx = -1
+    this.cache.clear()
+  }
 }
 
 /** Cheap stable hash for screen-identity keys. */

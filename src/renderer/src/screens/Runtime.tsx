@@ -8,6 +8,7 @@ import {
   useState
 } from 'react'
 import {
+  AlertDialog,
   Button,
   Dropdown,
   Header,
@@ -80,6 +81,8 @@ export function Runtime({
 
   const sessionRef = useRef(new SessionStore())
   const historyRef = useRef<ChatMessage[]>([])
+  /** Bumped when history is wiped (rebuild): an orphaned turn must not append back. */
+  const historyEpochRef = useRef(0)
   const turnSeq = useRef(0)
   /** Which kind of turn owns the lane — navigation spares background edits. */
   const turnKindRef = useRef<'user' | 'edit' | null>(null)
@@ -130,6 +133,8 @@ export function Runtime({
   // share the draft; submitting queues the request and drains it sequentially.
   const [editText, setEditText] = useState('')
   const [editOpen, setEditOpen] = useState(false)
+  /** "Rebuild from scratch" confirmation — carries the token-consumption warning. */
+  const [rebuildOpen, setRebuildOpen] = useState(false)
   /** Queued edit requests ({text, pageId}), applied one at a time. */
   const editQueueRef = useRef<Array<{ text: string; pageId: string }>>([])
   const editDraining = useRef(false)
@@ -426,6 +431,9 @@ export function Runtime({
       // entries are lost, executed tool calls still reach the next turn).
       const fork: ChatMessage[] = [...historyRef.current]
       const snapLen = fork.length
+      // A rebuild wipes history mid-turn: then this turn's messages belong to
+      // a conversation that no longer exists and must not be appended back.
+      const epoch = historyEpochRef.current
 
       let completed = false
       try {
@@ -512,7 +520,7 @@ export function Runtime({
         // tool call must reach the next turn's history. Append-only, so a turn
         // that started meanwhile keeps whatever it pushed in the meantime.
         const mine = fork.slice(snapLen)
-        if (mine.length) historyRef.current.push(...mine)
+        if (mine.length && historyEpochRef.current === epoch) historyRef.current.push(...mine)
         if (turnSeq.current === myTurn) {
           turnKindRef.current = null
           turnActiveRef.current = false
@@ -996,6 +1004,57 @@ export function Runtime({
     [currentSpec, drainEditQueue]
   )
 
+  /**
+   * "Tangled beyond repair": wipe every derived copy — conversation, caches,
+   * back stack, stored screens — and generate the app again from the current
+   * state, exactly like a fresh boot. The token cost is real (a full LLM
+   * re-generation), so the caller only reaches here through the warning dialog.
+   */
+  const rebuildApp = useCallback((): void => {
+    // Stop everything in flight: queued edits die here, and the lane
+    // interrupt covers a background edit too (kind is cleared first so the
+    // edit-lane exemption doesn't spare it). turnSeq bump orphans any
+    // running turn's finally — the epoch guard keeps its messages out of
+    // the history we are about to wipe.
+    editQueueRef.current = []
+    setEditCount(0)
+    clearEditHighlight()
+    turnKindRef.current = null
+    interruptTurn()
+    historyEpochRef.current++
+    historyRef.current = []
+    // Content: everything derived from past turns goes.
+    knownRef.current = null
+    currentSpecRef.current = null
+    setCurrentSpec(null)
+    setPreviewSpec(null)
+    setPageName('')
+    // Navigation + caches: no snapshot, no replay, no reopen-restores-old-pages.
+    session.reset()
+    void screensRef.current?.clear(loggedInRef.current)
+    syncNav()
+    // Live state and the rest of the surface state.
+    stateRef.current = {}
+    pendingStateWrites.current = {}
+    navRef.current = []
+    setNav([])
+    setActiveNav(null)
+    setEditText('')
+    setEditOpen(false)
+    pregenSeq.current++ // any background build targets pages that no longer exist
+    pregenScheduled.current = false
+    setError(null)
+    // schemaBookRef stays: API response shapes are unrelated to page tangles
+    // and re-learning them would only cost extra calls.
+    // Boot's opening move, unchanged: one turn draws the first page.
+    const target = resolveInitialPage(domino, loggedInRef.current)
+    const auth = domino.auth.required ? ` Logged in: ${loggedInRef.current ? 'yes' : 'no'}.` : ''
+    void runTurn(
+      `INITIAL SCREEN.${auth} Show the "${target}" page following the screen patterns.`,
+      `init::${target}::auth:${loggedInRef.current}`
+    )
+  }, [clearEditHighlight, interruptTurn, runTurn, session, syncNav])
+
   /* -------------------------------- render -------------------------------- */
   const view = useMemo(
     () => (previewSpec ? streamView(currentSpec, previewSpec) : null),
@@ -1047,6 +1106,7 @@ export function Runtime({
     if (key === 'back') goBack()
     else if (key === 'forward') goForward()
     else if (key === 'edit') setEditOpen(true)
+    else if (key === 'rebuild') setRebuildOpen(true)
     else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
     else if (key === 'settings') onOpenSettings()
     else if (key === 'home') onHome()
@@ -1158,6 +1218,13 @@ export function Runtime({
             active={chrome === 'inspect'}
             className="hide-phone"
           />
+          <BarButton
+            label="처음부터 다시 만들기"
+            icon="refresh"
+            onPress={() => setRebuildOpen(true)}
+            isDisabled={!currentSpec}
+            className="hide-phone"
+          />
           <BarButton label="설정" icon="settings" onPress={onOpenSettings} className="hide-phone" />
           <BarButton label="domino 닫기" icon="close" onPress={onHome} className="hide-phone" />
         </div>
@@ -1176,7 +1243,8 @@ export function Runtime({
               disabledKeys={[
                 ...(canBack ? [] : ['back']),
                 ...(canForward ? [] : ['forward']),
-                ...(currentSpec ? [] : ['edit'])
+                ...(currentSpec ? [] : ['edit']),
+                ...(currentSpec ? [] : ['rebuild'])
               ]}
             >
               <Dropdown.Section>
@@ -1196,6 +1264,10 @@ export function Runtime({
                 <Dropdown.Item id="forward" textValue="다음 화면">
                   <Icon name="arrow-right" />
                   <Label>다음 화면</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="rebuild" textValue="처음부터 다시 만들기">
+                  <Icon name="refresh" />
+                  <Label>처음부터 다시 만들기</Label>
                 </Dropdown.Item>
               </Dropdown.Section>
               <Dropdown.Item id="inspect" textValue="구조 보기">
@@ -1261,6 +1333,46 @@ export function Runtime({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
+
+      {/* Rebuild-from-scratch: an explicit, warned choice — a full LLM
+          re-generation is expensive and destroys every derived copy. */}
+      <AlertDialog.Backdrop
+        isOpen={rebuildOpen}
+        onOpenChange={(open) => {
+          if (!open) setRebuildOpen(false)
+        }}
+      >
+        <AlertDialog.Container size="sm" placement="center">
+          <AlertDialog.Dialog>
+            <AlertDialog.Header>
+              <AlertDialog.Icon status="warning" />
+              <AlertDialog.Heading>앱을 처음부터 다시 만들까요?</AlertDialog.Heading>
+            </AlertDialog.Header>
+            <AlertDialog.Body>
+              <p className="text-sm text-muted">
+                모든 화면과 대화 기록이 지워지고 현재 앱 상태에서 처음부터 다시 생성됩니다.{' '}
+                <strong className="text-warning">
+                  LLM에 다시 요청하므로 토큰을 많이 소모할 수 있습니다.
+                </strong>
+              </p>
+            </AlertDialog.Body>
+            <AlertDialog.Footer className="flex justify-end gap-2">
+              <Button variant="ghost" onPress={() => setRebuildOpen(false)}>
+                취소
+              </Button>
+              <Button
+                variant="danger"
+                onPress={() => {
+                  setRebuildOpen(false)
+                  rebuildApp()
+                }}
+              >
+                다시 만들기
+              </Button>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
 
       <div className="runtime-main">
         {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}

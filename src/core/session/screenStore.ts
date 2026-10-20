@@ -133,6 +133,21 @@ export class ScreenStore {
     }
   }
 
+  /**
+   * Erase every stored screen and the view snapshot for the given auth flag —
+   * the persisted half of "rebuild from scratch", so reopening starts from the
+   * LLM instead of restoring pages that were thrown away.
+   */
+  async clear(loggedIn: boolean): Promise<void> {
+    this.entries = []
+    try {
+      await this.storage.remove(screensKey(this.dominoId))
+      await this.storage.remove(viewKey(this.dominoId, loggedIn))
+    } catch {
+      /* without removal the next reopen restores old pages once */
+    }
+  }
+
   async loadView(loggedIn: boolean): Promise<ViewSnapshot | null> {
     const raw = await safeGet(this.storage, viewKey(this.dominoId, loggedIn))
     if (!raw) return null

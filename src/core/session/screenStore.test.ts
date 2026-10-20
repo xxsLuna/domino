@@ -189,3 +189,27 @@ describe('ScreenStore view snapshot', () => {
     expect(await store.loadView(true)).toBeNull()
   })
 })
+
+describe('ScreenStore clear', () => {
+  it('erases stored screens and the view so a reopen starts from the LLM', async () => {
+    const storage = memStorage()
+    const store = await ScreenStore.open(storage, 'crm')
+    await store.put('k', spec('home'))
+    await store.saveView(true, { page: 'home', known: spec('home') })
+
+    await store.clear(true)
+    expect(store.get('k')).toBeNull()
+    expect(await store.loadView(true)).toBeNull()
+    expect(storage.map.has(screensKey('crm'))).toBe(false)
+    expect(storage.map.has(viewKey('crm', true))).toBe(false)
+    expect((await ScreenStore.open(storage, 'crm')).get('k')).toBeNull()
+  })
+
+  it('only clears the view snapshot for the given auth flag', async () => {
+    const storage = memStorage()
+    const store = await ScreenStore.open(storage, 'crm')
+    await store.saveView(false, { page: 'login', known: spec('login') })
+    await store.clear(true)
+    expect((await store.loadView(false))?.page).toBe('login')
+  })
+})
