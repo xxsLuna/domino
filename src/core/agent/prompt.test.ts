@@ -47,6 +47,14 @@ describe('buildSystemPrompt (untrusted author content)', () => {
     expect(prompt).toContain('until call_api returns real data')
   })
 
+  it('demands a visible submit action on every input form and names the cancel id', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('MUST end with that primary submit Button')
+    expect(prompt).toContain('no visible submit action is invalid output')
+    expect(prompt).toContain('secondary "Cancel" Button whose id is "cancel"')
+  })
+
+
   it('truncates an oversized guide instead of shipping megabytes into the context', () => {
     const prompt = promptFor('[meta]\nname = X\n[guide]\n' + 'a'.repeat(40_000) + '\n')
     expect(prompt).toContain('truncated, 40000 chars total')

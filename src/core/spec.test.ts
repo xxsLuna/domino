@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   describeUiSpecProblem,
   findNode,
+  isCancelEvent,
   isSignOutEvent,
   iterateNodes,
   normalizeGrid,
@@ -156,6 +157,18 @@ describe('isSignOutEvent', () => {
     expect(isSignOutEvent({ event: 'click', nodeId: 'logout-history' })).toBe(false)
     expect(isSignOutEvent({ event: 'click', nodeId: 'catalog' })).toBe(false)
     expect(isSignOutEvent({ event: 'submit', nodeId: 'logout' })).toBe(false)
+  })
+})
+
+describe('isCancelEvent', () => {
+  it('recognizes the ids models give cancel buttons', () => {
+    for (const nodeId of ['cancel', 'nl-cancel', 'btn_cancel', 'form-cancel-2'])
+      expect(isCancelEvent({ event: 'click', nodeId }), nodeId).toBe(true)
+  })
+  it('ignores other buttons and events', () => {
+    expect(isCancelEvent({ event: 'click', nodeId: 'cancel-order' })).toBe(false)
+    expect(isCancelEvent({ event: 'click', nodeId: 'cancels' })).toBe(false)
+    expect(isCancelEvent({ event: 'submit', nodeId: 'cancel' })).toBe(false)
   })
 })
 

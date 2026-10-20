@@ -79,6 +79,14 @@ export function isSignOutEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolea
   return e.event === 'click' && /(?:^|[-_.])(?:log-?out|sign-?out)(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
 }
 
+/**
+ * Cancel buttons on create/edit forms: the prompt prescribes id "cancel" and
+ * models prefix it ("nl-cancel", "btn_cancel") — same matching idea as sign-out.
+ */
+export function isCancelEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
+  return e.event === 'click' && /(?:^|[-_.])cancel(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
+}
+
 const cardNodeSchema: z.ZodType<CardNode> = z.lazy(() =>
   // Key order matters: parsed specs go back into the conversation, and models
   // copy the order they see there (grid before props streams placement first).

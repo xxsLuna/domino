@@ -500,6 +500,13 @@ export function Form({
   const fieldSpecs = specs.filter((_, i) => !isButton(i))
   const buttons = kids.filter((_, i) => isButton(i))
   const twoCol = Number(columns) === 2 && bp !== 'sm'
+  const hasSubmit = specs.some((s) => s.name === 'Button' && buttonSubmits(s.props, true))
+  // A form that collects data must offer a submit action even when the model
+  // sent only a Cancel (or nothing at all) — render the missing primary in,
+  // labeled by submitText or a default. Also covers Cancel + submitText,
+  // which the old "only when no buttons" rule silently dropped.
+  const autoSubmit =
+    !hasSubmit && (fields.length > 0 || (!buttons.length && Boolean(submitText)))
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault()
@@ -539,7 +546,7 @@ export function Form({
           </div>
         ))}
       </div>
-      {buttons.length || submitText ? (
+      {buttons.length || autoSubmit || submitText ? (
         <div
           className={
             bp === 'sm'
@@ -548,9 +555,9 @@ export function Form({
           }
         >
           {buttons}
-          {!buttons.length && submitText ? (
+          {autoSubmit ? (
             <HButton type="submit" size={size} fullWidth={bp === 'sm'}>
-              {text(submitText)}
+              {text(submitText || '저장')}
             </HButton>
           ) : null}
         </div>
@@ -940,6 +947,28 @@ const BUTTON_VARIANTS = new Set([
   'danger',
   'danger-soft'
 ])
+
+/**
+ * Whether a Button acts as its form's submit: an explicit type="submit", or
+ * the default/primary variant inside a form. One definition — the Button
+ * component and Form's missing-submit repair both consult it.
+ */
+export function buttonSubmits(
+  props: { type?: unknown; variant?: unknown } | null | undefined,
+  inForm: boolean
+): boolean {
+  const type = props?.type
+  const variant = props?.variant
+  if (type === 'submit') return true
+  if (!inForm || type === 'button') return false
+  const v = BUTTON_VARIANTS.has(String(variant))
+    ? String(variant)
+    : variant === 'link'
+      ? 'ghost'
+      : 'primary'
+  return v === 'primary'
+}
+
 const hasHangul = (s: string): boolean => /[가-힣]/.test(s)
 
 export function Button({
@@ -977,7 +1006,7 @@ export function Button({
   ) as 'primary' | 'secondary' | 'tertiary' | 'outline' | 'ghost' | 'danger' | 'danger-soft'
   // Inside a form the primary button submits (its submit event carries the
   // data); secondary actions like "Cancel" stay plain clicks.
-  const submits = type === 'submit' || (inForm && type !== 'button' && v === 'primary')
+  const submits = buttonSubmits({ type, variant }, inForm)
   const s = size === 'sm' || size === 'lg' ? size : density
   const caption = text(label || 'Button')
 

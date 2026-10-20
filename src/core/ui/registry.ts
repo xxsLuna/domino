@@ -72,7 +72,7 @@ export const COMPONENT_DEFS: ComponentDef[] = [
   def('Chip', 'text', 'Alias of Badge.', Badge),
   def('Link', 'text', 'Text link. Props: text, href (external URLs open in a browser; without href it dispatches click).', Link),
   // form
-  def('Form', 'form', 'Groups inputs; submitting dispatches "submit" with all values by name. Props: title, description, columns (1|2), submitText (adds a submit button when no Button child). Children: inputs, then Buttons (primary = submit, others = click).', Form),
+  def('Form', 'form', 'Groups inputs; submitting dispatches "submit" with all values by name. Props: title, description, columns (1|2), submitText (label of the submit button — shown whenever the form has no primary Button). Children: inputs, then Buttons (primary = submit, others = click).', Form),
   def('Input', 'form', 'Text field. Props: label, name, type (text|email|password|number|tel|url|date|time), placeholder, value, description, icon, required, readOnly, disabled.', Input),
   def('Textarea', 'form', 'Multi-line text. Props: label, name, placeholder, value, rows, description, required.', Textarea),
   def('Select', 'form', 'Dropdown choice. Props: label, name, options (string[] or {label,value}[]), value, placeholder, description, required. Outside a Form it dispatches "change".', Select),

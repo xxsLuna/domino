@@ -1,7 +1,8 @@
 import { createElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Checkbox, Input, RadioGroup, Select, Switch, Textarea } from './components'
+import { Button, Checkbox, Form, Input, RadioGroup, Select, Switch, Textarea } from './components'
+import type { CardNode } from '../spec'
 
 const render = <P extends object>(c: ComponentType<P>, props: P): string =>
   renderToStaticMarkup(createElement(c, props))
@@ -63,5 +64,61 @@ describe('form controls carry their label as their name', () => {
     const search = attrsOf(render(Input, { name: 'q', placeholder: 'Find…' }), 'input')
     expect(search['aria-label']).toBe('Find…')
     expect(attrsOf(render(Checkbox, { name: 'agree' }), 'input')['aria-label']).toBe('agree')
+  })
+})
+
+// Models sometimes send a form whose only button is Cancel (or none at all) —
+// the runtime must still render a working submit rather than a dead form.
+describe('a form with fields always renders a submit action', () => {
+  const inputNode: CardNode = { name: 'Input', id: 'f-name', props: { label: 'Name', name: 'name' } }
+  const cancelNode: CardNode = {
+    name: 'Button',
+    id: 'nl-cancel',
+    props: { text: '취소', variant: 'secondary' }
+  }
+  const submitNode: CardNode = { name: 'Button', id: 'f-ok', props: { text: '등록' } }
+
+  const formHtml = (nodes: CardNode[], props: Record<string, unknown> = {}): string =>
+    renderToStaticMarkup(
+      createElement(Form, {
+        ...props,
+        nodeId: 'f',
+        nodeName: 'Form',
+        childNodes: nodes,
+        children: nodes.map((n) =>
+          n.name === 'Button'
+            ? createElement(Button, { key: n.id, ...n.props, nodeName: 'Button', nodeId: n.id })
+            : createElement(Input, { key: n.id, ...n.props })
+        )
+      })
+    )
+
+  const submitCount = (html: string): number => (html.match(/type="submit"/g) ?? []).length
+
+  it('adds a default "저장" submit when the form only carries a Cancel', () => {
+    const html = formHtml([inputNode, cancelNode])
+    expect(submitCount(html)).toBe(1)
+    expect(html).toContain('저장')
+    expect(html).toContain('취소')
+  })
+
+  it('does not double up when the form already has its primary submit', () => {
+    const html = formHtml([inputNode, submitNode])
+    expect(submitCount(html)).toBe(1)
+    expect(html).toContain('등록')
+    expect(html).not.toContain('저장')
+  })
+
+  it('honors submitText next to a Cancel button instead of dropping it', () => {
+    const html = formHtml([inputNode, cancelNode], { submitText: '등록하기' })
+    expect(submitCount(html)).toBe(1)
+    expect(html).toContain('등록하기')
+    expect(html).not.toContain('저장')
+  })
+
+  it('adds the default submit to a buttonless field form', () => {
+    const html = formHtml([inputNode])
+    expect(submitCount(html)).toBe(1)
+    expect(html).toContain('저장')
   })
 })
