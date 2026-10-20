@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CardNode, UiSpec } from '../spec'
-import { streamView } from './streaming'
+import { changedNodeIds, streamView } from './streaming'
 
 const node = (
   id: string,
@@ -61,5 +61,56 @@ describe('streamView', () => {
     const v = streamView(current, preview)
     expect(ids(v)).toEqual(['head', 'alert', 'table'])
     expect(v.pending?.id).toBe('table')
+  })
+})
+
+describe('changedNodeIds', () => {
+  it('reports nothing for an identical screen', () => {
+    const s = spec('main', [node('a', 0), node('b', 1)])
+    expect(changedNodeIds(s, s)).toEqual(new Set())
+  })
+
+  it('flags a node whose props changed', () => {
+    const base = spec('main', [node('a', 0), node('b', 1)])
+    const next = spec('main', [node('a', 0), node('b', 1, { title: 'renamed' })])
+    expect(changedNodeIds(base, next)).toEqual(new Set(['b']))
+  })
+
+  it('flags a node that moved on the grid', () => {
+    const base = spec('main', [node('a', 0), node('b', 1)])
+    const next = spec('main', [node('a', 0), { ...node('b', 1), grid: { x: 4, y: 2, w: 8, h: 1 } }])
+    expect(changedNodeIds(base, next)).toEqual(new Set(['b']))
+  })
+
+  it('flags brand-new nodes', () => {
+    const base = spec('main', [node('a', 0)])
+    const next = spec('main', [node('a', 0), node('fresh', 1)])
+    expect(changedNodeIds(base, next)).toEqual(new Set(['fresh']))
+  })
+
+  it('ignores deletions — there is no cell left to highlight', () => {
+    const base = spec('main', [node('a', 0), node('b', 1)])
+    const next = spec('main', [node('a', 0)])
+    expect(changedNodeIds(base, next)).toEqual(new Set())
+  })
+
+  it('falls back to name-index keys for id-less nodes, like CardGrid', () => {
+    const base = spec('main', [node('a', 0), node('b', 1)])
+    const bare = (title: string): CardNode => ({
+      name: 'Card',
+      props: { title },
+      grid: { x: 0, y: 1, w: 12, h: 1 }
+    })
+    const prev = spec('main', [node('a', 0), bare('one')])
+    const next = spec('main', [node('a', 0), bare('two')])
+    expect(changedNodeIds(prev, next)).toEqual(new Set(['Card-1']))
+    // `b` was deleted, so only the id-less replacement glows — same rule.
+    expect(changedNodeIds(base, next)).toEqual(new Set(['Card-1']))
+  })
+
+  it('reports nothing across different pages', () => {
+    const base = spec('main', [node('a', 0)])
+    const next = spec('leads', [node('a', 0, { totally: 'different' })])
+    expect(changedNodeIds(base, next)).toEqual(new Set())
   })
 })

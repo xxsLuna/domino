@@ -32,6 +32,8 @@ interface CardGridProps {
    */
   chrome?: 'app' | 'inspect'
   density?: 'comfortable' | 'compact'
+  /** Top-level cell keys that changed since the last edit (see streaming.ts). */
+  changed?: ReadonlySet<string>
 }
 
 export function CardGrid({
@@ -42,7 +44,8 @@ export function CardGrid({
   pending,
   hidden,
   chrome = 'app',
-  density = 'comfortable'
+  density = 'comfortable',
+  changed
 }: CardGridProps): React.JSX.Element {
   const gridRef = useRef<HTMLDivElement>(null)
   const bp = useContainerBreakpoint(gridRef)
@@ -89,17 +92,21 @@ export function CardGrid({
           data-chrome={chrome}
           data-streaming={streaming ? 'true' : undefined}
         >
-          {placed.map(({ node, index, placement }, i) => (
-            <GridCell
-              topRight={i === topRight}
-              key={node.id ?? `${node.name}-${index}`}
-              node={node}
-              signature={node === pending ? `pending:${node.name}` : signatureOf(node)}
-              placement={placement}
-              chrome={chrome}
-              pending={node === pending}
-            />
-          ))}
+          {placed.map(({ node, index, placement }, i) => {
+            const key = node.id ?? `${node.name}-${index}`
+            return (
+              <GridCell
+                topRight={i === topRight}
+                key={key}
+                node={node}
+                signature={node === pending ? `pending:${node.name}` : signatureOf(node)}
+                placement={placement}
+                chrome={chrome}
+                pending={node === pending}
+                changed={changed?.has(key)}
+              />
+            )
+          })}
         </div>
       </LayoutContext.Provider>
     </RuntimeContext.Provider>
@@ -142,6 +149,8 @@ interface GridCellProps {
   /** Still streaming: show a placeholder instead of rendering partial props. */
   pending?: boolean
   topRight?: boolean
+  /** Changed since the edit baseline: glow the cell (fades out on its own). */
+  changed?: boolean
 }
 
 const GridCell = memo(
@@ -151,7 +160,8 @@ const GridCell = memo(
     placement,
     chrome,
     pending,
-    topRight
+    topRight,
+    changed
   }: GridCellProps): React.JSX.Element {
     const style: React.CSSProperties = {
       gridColumn: placement.column,
@@ -178,6 +188,7 @@ const GridCell = memo(
             style={style}
             data-node={node.name}
             data-top-right={topRight || undefined}
+            data-changed={changed || undefined}
           >
             {body}
           </div>
@@ -188,7 +199,11 @@ const GridCell = memo(
     const def = getComponent(node.name)
     return (
       <CellContext.Provider value={cell}>
-        <div className="grid-cell inspect-card" style={{ ...style, maxWidth: undefined }}>
+        <div
+          className="grid-cell inspect-card"
+          style={{ ...style, maxWidth: undefined }}
+          data-changed={changed || undefined}
+        >
           <div className="inspect-head">
             <span className="inspect-name">{node.name}</span>
             <span className="inspect-meta">
@@ -205,6 +220,7 @@ const GridCell = memo(
     a.signature === b.signature &&
     a.pending === b.pending &&
     a.topRight === b.topRight &&
+    a.changed === b.changed &&
     a.chrome === b.chrome &&
     a.placement.column === b.placement.column &&
     a.placement.row === b.placement.row &&

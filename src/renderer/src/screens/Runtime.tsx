@@ -42,7 +42,7 @@ import { clearToken, extractToken, getToken, setToken } from '@core/session/pref
 import { ScreenStore, type ScreenDeps } from '@core/session/screenStore'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
 import { CardGrid } from '@core/ui/CardGrid'
-import { streamView } from '@core/ui/streaming'
+import { changedNodeIds, streamView } from '@core/ui/streaming'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
@@ -117,9 +117,21 @@ export function Runtime({
   // "app" renders like a real app; "inspect" reveals per-component cards.
   const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
   // Live "change this screen" composer — the app-bar field and the phone modal
-  // share the draft; submitting interrupts any streaming turn.
+  // share the draft; submitting queues the request and drains it sequentially.
   const [editText, setEditText] = useState('')
   const [editOpen, setEditOpen] = useState(false)
+  /** Queued edit requests ({text, pageId}), applied one at a time. */
+  const editQueueRef = useRef<Array<{ text: string; pageId: string }>>([])
+  const editDraining = useRef(false)
+  const editFadeTimer = useRef<number | null>(null)
+  /** True while ANY turn runs (edits wait on it; its finally re-drains). */
+  const turnActiveRef = useRef(false)
+  /** Late-bound so a turn's finally can drain without a stale closure. */
+  const editDrainRef = useRef<(() => void) | null>(null)
+  /** Requests queued + running — drives the toast count. */
+  const [editCount, setEditCount] = useState(0)
+  /** Spec the current highlight diffs against; null = no highlight. */
+  const [editBase, setEditBase] = useState<UiSpec | null>(null)
   /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
   const [progress, setProgress] = useState<number | null>(null)
 
@@ -233,16 +245,39 @@ export function Runtime({
     []
   )
 
+  /** Drop the changed-cell highlight immediately (and any pending fade). */
+  const clearEditHighlight = useCallback(() => {
+    if (editFadeTimer.current !== null) {
+      window.clearTimeout(editFadeTimer.current)
+      editFadeTimer.current = null
+    }
+    setEditBase(null)
+  }, [])
+
+  /** After the last edit lands, keep the glow ~2s then let it fade out. */
+  const armEditFade = useCallback(() => {
+    if (editFadeTimer.current !== null) window.clearTimeout(editFadeTimer.current)
+    editFadeTimer.current = window.setTimeout(() => {
+      editFadeTimer.current = null
+      setEditBase(null)
+    }, 2000)
+  }, [])
+
   // Bumping turnSeq orphans the in-flight turn's finally guard, which then
   // skips its cleanup — so every invalidation site clears the streaming UI
   // here too, or the spinner sticks and the handleNav guard blocks taps.
   const interruptTurn = useCallback(() => {
     turnSeq.current++
+    turnActiveRef.current = false
     setStreaming(false)
     setPreviewSpec(null)
     setStatus('')
     cancelGauge()
-  }, [cancelGauge])
+    // Back/forward/instant-nav also cancels queued edit requests and glow.
+    editQueueRef.current = []
+    setEditCount(0)
+    clearEditHighlight()
+  }, [cancelGauge, clearEditHighlight])
 
   /** Apply a spec's navigation: explicit `nav` wins, login screens never show it. */
   const applyNav = useCallback((spec: UiSpec) => {
@@ -288,11 +323,14 @@ export function Runtime({
     (spec: UiSpec, cacheKey: string | null) => {
       session.push(spec)
       if (cacheKey) session.cacheSet(cacheKey, spec)
+      // A non-edit screen (click hit, boot, instant-nav) makes the previous
+      // edit's result the new baseline — no cells left to glow.
+      if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
       showSpec(spec)
       syncNav()
       schedulePreGen()
     },
-    [schedulePreGen, session, showSpec, syncNav]
+    [clearEditHighlight, schedulePreGen, session, showSpec, syncNav]
   )
 
   const apiRuntime = useCallback(
@@ -308,8 +346,11 @@ export function Runtime({
     async (prompt: string, cacheKey: string | null): Promise<void> => {
       const myTurn = ++turnSeq.current
       pregenSeq.current++ // a live request outranks background building
+      turnActiveRef.current = true
       cacheKeyRef.current = cacheKey
       turnDepsRef.current = {}
+      // An ordinary turn replaces the screen the edit glow was tracking.
+      if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
       setStreaming(true)
       setError(null)
       setStatus('생성 중…')
@@ -396,16 +437,34 @@ export function Runtime({
         if (turnSeq.current === myTurn) setError((err as Error).message)
       } finally {
         if (turnSeq.current === myTurn) {
+          turnActiveRef.current = false
           setStreaming(false)
           setPreviewSpec(null)
           setStatus('')
           // A turn that ended without a final spec leaves the bar mid-fill;
           // a completed one is already fading out on its own.
           if (!completed) cancelGauge()
+          // A finished edit glows for ~2s; a failed/interrupted one drops
+          // the highlight at once. Either way, drain any queued requests.
+          if (cacheKey?.startsWith('edit::')) {
+            if (completed) armEditFade()
+            else clearEditHighlight()
+          }
+          editDrainRef.current?.()
         }
       }
     },
-    [apiRuntime, cancelGauge, config, domino, finalizeSpec, scheduleSchemaSave, startGauge]
+    [
+      apiRuntime,
+      armEditFade,
+      cancelGauge,
+      clearEditHighlight,
+      config,
+      domino,
+      finalizeSpec,
+      scheduleSchemaSave,
+      startGauge
+    ]
   )
 
   /* ------------------------- background pre-generation ------------------------- */
@@ -725,39 +784,73 @@ export function Runtime({
   )
 
   /**
-   * "Change what I'm looking at": the instruction goes into history verbatim,
-   * then one turn applies it. Its result becomes the page's canonical version
-   * (session + persistent screen cache + view snapshot all update).
+   * Apply one queued edit: history records it now (not at submit time, so an
+   * in-flight turn's history stays coherent), the highlight baseline is the
+   * screen as it stands, then cache or one turn applies the change.
    */
-  const submitEdit = useCallback(
-    (raw: string): void => {
-      const text = raw.trim()
-      if (!text || !currentSpec) return
-      const pageId = currentSpec.page
-      setEditText('')
-      setEditOpen(false)
-      interruptTurn()
-      historyRef.current.push({ role: 'user', content: `EDIT REQUEST (page "${pageId}"): ${text}` })
+  const processEdit = useCallback(
+    async (item: { text: string; pageId: string }): Promise<void> => {
+      historyRef.current.push({
+        role: 'user',
+        content: `EDIT REQUEST (page "${item.pageId}"): ${item.text}`
+      })
       if (historyRef.current.length > 60) historyRef.current.splice(0, 20)
 
-      const cacheKey = `edit::${pageId}::${hashContext(text)}`
+      setEditBase(knownRef.current)
+      const cacheKey = `edit::${item.pageId}::${hashContext(item.text)}`
       const cached = session.cacheGet(cacheKey)
       if (cached) {
         finalizeSpec(cached, cacheKey)
+        armEditFade()
         return
       }
       const stored = screensRef.current?.get(cacheKey, schemaHashes())
       if (stored) {
         session.cacheSet(cacheKey, stored.spec)
         finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
+        armEditFade()
         return
       }
-      void runTurn(
-        `The user asked to change the current screen (EDIT REQUEST above). Apply only that change to page "${pageId}" and keep everything else — layout, ids, values, data and the other pages — as it is unless the change requires otherwise. Re-render the page.`,
+      await runTurn(
+        `The user asked to change the current screen (EDIT REQUEST above). Apply only that change to page "${item.pageId}" and keep everything else — layout, ids, values, data and the other pages — as it is unless the change requires otherwise. Re-render the page.`,
         cacheKey
       )
     },
-    [currentSpec, finalizeSpec, interruptTurn, runTurn, schemaHashes, session]
+    [armEditFade, finalizeSpec, runTurn, schemaHashes, session]
+  )
+
+  /** Queue head → apply → next. Never overlaps a turn; turns re-drain on finish. */
+  const drainEditQueue = useCallback((): void => {
+    if (editDraining.current || turnActiveRef.current) return
+    const head = editQueueRef.current[0]
+    if (!head) return
+    editDraining.current = true
+    void processEdit(head).finally(() => {
+      editDraining.current = false
+      // Navigation may have cleared the queue mid-edit; only advance our item.
+      if (editQueueRef.current[0] === head) editQueueRef.current.shift()
+      setEditCount(editQueueRef.current.length)
+      if (editQueueRef.current.length > 0) drainEditQueue()
+    })
+  }, [processEdit])
+  editDrainRef.current = drainEditQueue
+
+  /**
+   * "Change what I'm looking at": the request is queued and applied by
+   * drainEditQueue — several can stack while one runs, each result becoming
+   * the page's canonical version (session + screen cache + view snapshot).
+   */
+  const submitEdit = useCallback(
+    (raw: string): void => {
+      const text = raw.trim()
+      if (!text || !currentSpec) return
+      editQueueRef.current.push({ text, pageId: currentSpec.page })
+      setEditCount(editQueueRef.current.length)
+      setEditText('')
+      setEditOpen(false)
+      drainEditQueue()
+    },
+    [currentSpec, drainEditQueue]
   )
 
   /* -------------------------------- render -------------------------------- */
@@ -766,6 +859,12 @@ export function Runtime({
     [currentSpec, previewSpec]
   )
   const shown = view?.spec ?? currentSpec
+  // Cells that differ from the edit baseline glow while (and just after) the
+  // edit applies — streaming previews included, so the change is visible live.
+  const changed = useMemo(
+    () => (editBase && shown && editBase !== shown ? changedNodeIds(editBase, shown) : undefined),
+    [editBase, shown]
+  )
   const shownPageId = shown?.page
   // A new screen starts at the top, like navigating in any app.
   const bodyRef = useRef<HTMLElement>(null)
@@ -1043,6 +1142,7 @@ export function Runtime({
               hidden={view?.hidden}
               chrome={chrome}
               density={domino.ui.density}
+              changed={changed}
             />
           ) : error ? null : (
             <LoadingScreen />
@@ -1050,6 +1150,15 @@ export function Runtime({
         </main>
       </div>
       {hasNav ? <BottomNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
+      {/* Bottom-right chip: how many edit requests are queued / in flight. */}
+      {editCount > 0 ? (
+        <div className="edit-toast" role="status" aria-live="polite">
+          <Spinner size="sm" />
+          <span>
+            {editCount > 1 ? `화면 수정 요청 ${editCount}건 처리 중…` : '화면 수정 요청 처리 중…'}
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }

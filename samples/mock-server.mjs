@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 
 const PORT = Number(process.env.PORT ?? 8787)
 const CHUNK_MS = Number(process.env.CHUNK_MS ?? 12)
-const stats = { llm: 0, login: 0, leads: 0 }
+const stats = { llm: 0, login: 0, leads: 0, edits: 0 }
 
 const LEADS = [
   { id: 'lead-1', name: 'Ana Ruiz', title: 'Head of Ops', company: 'Northwind', stage: 'Qualified', owner: 'Luna Kim', value: '$12,400', email: 'ana@northwind.test', score: 82 },
@@ -391,13 +391,21 @@ function pickSpec(messages) {
     return comingSoonSpec(target)
   }
   // Live edit: re-render the named page (a real model would apply the change
-  // too; the demo just proves the edit loop re-renders the same screen).
+  // too; the demo just proves the edit loop re-renders the same screen). Each
+  // edit tags the header so the diff is never empty — the E2E watches that
+  // cell glow — and bumps /stats so the check can count edit turns.
   const edited = /EDIT REQUEST \(page "([^"]+)"\)/.exec(last)
   if (edited) {
+    stats.edits++
     const target = edited[1]
-    if (target === 'main') return dashboardSpec()
-    if (target === 'leads') return leadsSpec()
-    if (target === 'settings') return settingsSpec()
+    const tag = (spec) => {
+      const head = spec.pages[0].layout.find((n) => n.name === 'PageHeader')
+      if (head?.props?.description) head.props.description += ` · edit ${stats.edits}`
+      return spec
+    }
+    if (target === 'main') return tag(dashboardSpec())
+    if (target === 'leads') return tag(leadsSpec())
+    if (target === 'settings') return tag(settingsSpec())
     return comingSoonSpec(target)
   }
   const action = latestAction(last)
