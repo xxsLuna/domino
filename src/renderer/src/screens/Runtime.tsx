@@ -52,10 +52,12 @@ import {
   findPage,
   isSignOutEvent,
   withKnownPages,
+  withTargetPage,
   type ActionEvent,
   type NavItem,
   type UiSpec
 } from '@core/spec'
+import { resolvePageId } from '@core/pageLinks'
 import type { LoadedDomino } from '../loadDomino'
 import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
@@ -309,7 +311,12 @@ export function Runtime({
     else if (spec.page === 'login') items = []
     navRef.current = items
     setNav(items)
-    if (items.some((i) => i.id === spec.page)) setActiveNav(spec.page)
+    // Highlight the tab this screen belongs to: by id first, then by the
+    // page's name (nav ids drift from page ids). Nothing matching — a page
+    // outside the nav — clears the highlight instead of leaving it stale.
+    const name = spec.pages.find((p) => p.id === spec.page)?.name
+    const active = items.find((i) => i.id === spec.page || (name !== undefined && i.label === name))
+    setActiveNav(active ? active.id : null)
   }, [])
 
   /**
@@ -504,8 +511,19 @@ export function Runtime({
             case 'progress':
               progressChars.current = update.chars
               break
-            case 'navigated':
+            case 'navigated': {
+              // The model switched pages itself: land on it when the runtime
+              // knows the page — a tool call the UI ignored used to end the
+              // turn 'failed' with the screen unchanged.
+              const shownNow = currentSpecRef.current
+              const page = shownNow
+                ? resolvePageId(navRef.current, shownNow.pages, update.page)
+                : null
+              if (shownNow && page && page !== shownNow.page) {
+                finalizeSpec({ ...shownNow, page }, null)
+              }
               break
+            }
             case 'error':
               setError(update.message)
               break
@@ -601,8 +619,14 @@ export function Runtime({
       if (!base) return
       for (const pageId of pregenTargets(domino, base, loggedInRef.current)) {
         if (pregenSeq.current !== seq) return
+        // The user may have reached this page while earlier targets were
+        // building: a page the runtime already knows is canonical — a live
+        // render beats a background guess.
+        if (knownRef.current?.pages.some((p) => p.id === pageId)) continue
         const built = await pregenOne(pageId, seq)
         if (pregenSeq.current !== seq || !built || !knownRef.current) return
+        // …same race across the build itself: re-check before merging.
+        if (knownRef.current.pages.some((p) => p.id === pageId)) continue
         // Merge into what the runtime knows — no session.push (no back-stack
         // pollution), no showSpec (the user's screen never flickers).
         knownRef.current = mergeKnownPage(knownRef.current, built, pageId)
@@ -650,7 +674,7 @@ export function Runtime({
       const stored = screens.get(cacheKey, schemaHashes())
       if (stored && !cancelled) {
         session.cacheSet(cacheKey, stored.spec)
-        finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
+        finalizeSpec(withTargetPage(stored.spec, knownRef.current), cacheKey)
         return
       }
       if (cancelled) return
@@ -671,6 +695,20 @@ export function Runtime({
   }, [])
 
   /* ------------------------- back / forward keys ------------------------- */
+  // Back/forward choose WHICH page to show, never WHEN: the snapshot's page
+  // pointer + the current canonical pages (knownRef). Reviving the snapshot's
+  // own copy used to rewind other pages to capture time — an edit tag vanished
+  // and a list reverted after browsing back. Ids the canonical set doesn't
+  // know (login boundary, cleared rebuilds) fall back to the snapshot's copy.
+  const canonicalView = useCallback((snap: { spec: UiSpec }): UiSpec => {
+    const cur = knownRef.current
+    if (!cur) return snap.spec
+    const target = snap.spec.page
+    if (cur.pages.some((p) => p.id === target)) return { ...cur, page: target }
+    const snapPage = snap.spec.pages.find((p) => p.id === target)
+    return snapPage ? { ...cur, page: target, pages: [...cur.pages, snapPage] } : cur
+  }, [])
+
   const goBack = useCallback(() => {
     const snap = session.back()
     if (snap) {
@@ -678,20 +716,20 @@ export function Runtime({
       // The snapshot diffs against a different baseline — drop stale glow;
       // a landing edit re-baselines on what's on screen then (landEdit).
       clearEditHighlight()
-      showSpec(snap.spec)
+      showSpec(canonicalView(snap))
       syncNav()
     }
-  }, [clearEditHighlight, interruptTurn, session, showSpec, syncNav])
+  }, [canonicalView, clearEditHighlight, interruptTurn, session, showSpec, syncNav])
 
   const goForward = useCallback(() => {
     const snap = session.forward()
     if (snap) {
       interruptTurn()
       clearEditHighlight()
-      showSpec(snap.spec)
+      showSpec(canonicalView(snap))
       syncNav()
     }
-  }, [clearEditHighlight, interruptTurn, session, showSpec, syncNav])
+  }, [canonicalView, clearEditHighlight, interruptTurn, session, showSpec, syncNav])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -851,16 +889,16 @@ export function Runtime({
         return
       }
 
-      // Pages the agent already delivered switch instantly, like a real app.
+      // Pages the agent already delivered switch instantly, like a real app —
+      // resolved through the nav↔page links, so a nav id that drifted from the
+      // page id still lands on the stored page instead of asking the model to
+      // draw it again ("yet another, different page").
       const target = e.event === 'navigate' ? String(e.data?.page ?? e.nodeId) : null
-      if (
-        target &&
-        currentSpec &&
-        target !== currentSpec.page &&
-        currentSpec.pages.some((p) => p.id === target)
-      ) {
+      const resolved =
+        target && currentSpec ? resolvePageId(navRef.current, currentSpec.pages, target) : null
+      if (resolved && currentSpec && resolved !== currentSpec.page) {
         interruptTurn()
-        finalizeSpec({ ...currentSpec, page: target }, null)
+        finalizeSpec({ ...currentSpec, page: resolved }, null)
         return
       }
       if (target && navRef.current.some((i) => i.id === target)) setActiveNav(target)
@@ -877,7 +915,10 @@ export function Runtime({
       const cacheKey = `${pageId}::${hashContext({ id: e.nodeId, ev: e.event, d: e.data })}`
       const cached = session.cacheGet(cacheKey)
       if (cached) {
-        finalizeSpec(cached, cacheKey)
+        // A replay only speaks for ITS target page: the other pages in the
+        // stored spec were captured alongside it and must not drag the rest
+        // of the app back to that moment (withTargetPage).
+        finalizeSpec(withTargetPage(cached, knownRef.current), cacheKey)
         return
       }
       // Persisted across restarts — but only while every endpoint it embeds
@@ -885,7 +926,7 @@ export function Runtime({
       const stored = screensRef.current?.get(cacheKey, schemaHashes())
       if (stored) {
         session.cacheSet(cacheKey, stored.spec)
-        finalizeSpec(withKnownPages(stored.spec, knownRef.current), cacheKey)
+        finalizeSpec(withTargetPage(stored.spec, knownRef.current), cacheKey)
         return
       }
       void runTurn(

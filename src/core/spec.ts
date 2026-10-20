@@ -282,6 +282,22 @@ export function withKnownPages(next: UiSpec, prev: UiSpec | null): UiSpec {
   return kept.length ? { ...next, pages: [...next.pages, ...kept] } : next
 }
 
+/**
+ * Replay merge for a stored screen: only the page the replay is about
+ * (`next.page`) replaces what the runtime knows — every other page in the
+ * stored spec was captured alongside it and must not drag other pages back to
+ * that moment. Pages not known yet still come along.
+ */
+export function withTargetPage(next: UiSpec, prev: UiSpec | null): UiSpec {
+  if (!prev) return next
+  const known = new Set(prev.pages.map((p) => p.id))
+  const wins = next.pages.filter((p) => p.id === next.page || !known.has(p.id))
+  const winIds = new Set(wins.map((p) => p.id))
+  const kept = prev.pages.filter((p) => !winIds.has(p.id))
+  if (kept.length === 0) return next // next already supersedes every known page
+  return { ...next, pages: [...wins, ...kept] }
+}
+
 export function findPage(spec: UiSpec, pageId: string): PageSpec | undefined {
   return spec.pages.find((p) => p.id === pageId)
 }

@@ -9,6 +9,7 @@ import {
   tryValidateUiSpec,
   validateUiSpec,
   withKnownPages,
+  withTargetPage,
   type CardNode
 } from './spec'
 
@@ -109,6 +110,40 @@ describe('withKnownPages', () => {
   it('passes the first spec through', () => {
     const first = spec('main', ['main'])
     expect(withKnownPages(first, null)).toBe(first)
+  })
+})
+
+describe('withTargetPage', () => {
+  // `v` stamps a generation so tests can tell which side each page came from.
+  const spec = (page: string, ids: string[], v: string) => ({
+    version: 1 as const,
+    page,
+    pages: ids.map((id) => ({ id, name: `${id} v${v}`, layout: [] }))
+  })
+  it('lets the replayed page win but keeps other pages at their current version', () => {
+    // stored earlier at v1 while 'settings' has moved on to v3 since
+    const merged = withTargetPage(
+      spec('leads', ['leads', 'settings'], '1'),
+      spec('leads', ['settings'], '3')
+    )
+    expect(merged.pages.find((p) => p.id === 'leads')?.name).toBe('leads v1')
+    expect(merged.pages.find((p) => p.id === 'settings')?.name).toBe('settings v3')
+    expect(merged.page).toBe('leads')
+  })
+  it('still introduces pages the runtime has never seen', () => {
+    const merged = withTargetPage(
+      spec('leads', ['leads', 'newpage'], '1'),
+      spec('main', ['main'], '2')
+    )
+    expect(merged.pages.map((p) => p.id).sort()).toEqual(['leads', 'main', 'newpage'])
+  })
+  it('passes the spec through when everything in it is authoritative', () => {
+    const only = spec('main', ['main'], '2')
+    expect(withTargetPage(only, spec('main', ['main'], '1'))).toBe(only)
+  })
+  it('passes the first spec through', () => {
+    const first = spec('main', ['main'], '1')
+    expect(withTargetPage(first, null)).toBe(first)
   })
 })
 
