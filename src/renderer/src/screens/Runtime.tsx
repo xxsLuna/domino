@@ -416,6 +416,9 @@ export function Runtime({
       const myTurn = ++turnSeq.current
       turnKindRef.current = isEdit ? 'edit' : 'user'
       pregenSeq.current++ // a live request outranks background building
+      // …and let the next settled screen re-arm it: one interruption used to
+      // disable pre-generation for the rest of the session.
+      pregenScheduled.current = false
       turnActiveRef.current = true
       turnDepsRef.current = {}
       // An ordinary turn replaces the screen the edit glow was tracking.
@@ -624,7 +627,8 @@ export function Runtime({
         // render beats a background guess.
         if (knownRef.current?.pages.some((p) => p.id === pageId)) continue
         const built = await pregenOne(pageId, seq)
-        if (pregenSeq.current !== seq || !built || !knownRef.current) return
+        if (pregenSeq.current !== seq || !knownRef.current) return
+        if (!built) continue // one failed build must not abandon the rest
         // …same race across the build itself: re-check before merging.
         if (knownRef.current.pages.some((p) => p.id === pageId)) continue
         // Merge into what the runtime knows — no session.push (no back-stack
