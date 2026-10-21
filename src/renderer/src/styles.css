@@ -482,6 +482,31 @@
   padding-block: 24px;
 }
 
+/* On those centered screens alerts must not join the flow: appearing in-flow
+   re-runs the centering and shoves the whole card down. Both alert kinds are
+   pinned to the top of the page instead — the runtime's own error banner, and
+   the agent's Alert cell (absolute grid children leave the track layout
+   untouched, so the centered block never moves). */
+.runtime-body[data-centered] > .runtime-banner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 5;
+}
+.runtime-body[data-centered] .grid-cell[data-node='Alert'] {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  left: 16px;
+  z-index: 4;
+}
+/* When both show, drop the agent alert below the runtime banner. */
+.runtime-body[data-centered]:has(> .runtime-banner)
+  .grid-cell[data-node='Alert'] {
+  top: 72px;
+}
+
 /* Floating action button (a page's primary action on phones). */
 .fab-slot {
   position: fixed;
