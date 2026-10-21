@@ -208,10 +208,6 @@
   .app-bar {
     display: none;
   }
-  /* Keep the first row clear of the floating button. */
-  .card-grid[data-bp='sm'] > .grid-cell[data-top-right] {
-    padding-right: 48px;
-  }
 }
 
 /* Determinate top gauge while the agent renders the next screen: pinned above
