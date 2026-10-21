@@ -1578,7 +1578,12 @@ export function Runtime({
 
       <div className="runtime-main">
         {hasNav ? <SideNav items={navItems} activeId={activeNav} onSelect={handleNav} /> : null}
-        <main className="runtime-body" ref={bodyRef} onScroll={onBodyScroll}>
+        <main
+          className="runtime-body"
+          ref={bodyRef}
+          onScroll={onBodyScroll}
+          data-centered={navItems.length === 0 && !sheetMode ? 'true' : undefined}
+        >
           {error ? (
             <div className="runtime-banner">
               <Alert

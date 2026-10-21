@@ -424,6 +424,18 @@
   padding-bottom: calc(96px + var(--sab));
 }
 
+/* Auth and onboarding screens (no navigation) sit vertically centered like a
+   native sign-in. min-height — never height — so taller content keeps its
+   natural flow and scrolls instead of clipping; padding is symmetric so the
+   optical center matches the screen center (the FAB clearance above would
+   otherwise bias the block upward). Placed after the FAB-clearance rules and
+   tied on specificity: source order wins the tie. */
+.runtime-body[data-centered] .card-grid[data-bp] {
+  min-height: 100%;
+  align-content: center;
+  padding-block: 24px;
+}
+
 /* Floating action button (a page's primary action on phones). */
 .fab-slot {
   position: fixed;
