@@ -1258,32 +1258,7 @@ export function Runtime({
     }
   }, [hasNav])
 
-  // Phones: the floating menu lives behind an edge handle — hidden by default,
-  // revealed on handle press, gone again after a pick or a short idle spell.
-  const [pillRevealed, setPillRevealed] = useState(false)
-  const pillTimer = useRef<number | null>(null)
-  const revealPill = (): void => {
-    if (pillTimer.current !== null) window.clearTimeout(pillTimer.current)
-    setPillRevealed(true)
-    setScrolled('up') // the scroll-away rule must not hide it right back
-    pillTimer.current = window.setTimeout(() => setPillRevealed(false), 5000)
-  }
-  const hidePill = (): void => {
-    if (pillTimer.current !== null) {
-      window.clearTimeout(pillTimer.current)
-      pillTimer.current = null
-    }
-    setPillRevealed(false)
-  }
-  useEffect(
-    () => () => {
-      if (pillTimer.current !== null) window.clearTimeout(pillTimer.current)
-    },
-    []
-  )
-
   const menuAction = (key: React.Key): void => {
-    hidePill()
     if (key === 'back') goBack()
     else if (key === 'forward') goForward()
     else if (key === 'edit') setEditOpen(true)
@@ -1300,7 +1275,6 @@ export function Runtime({
       data-density={domino.ui.density}
       data-style={domino.ui.style}
       data-scrolled={scrolled}
-      data-pill={pillRevealed ? 'on' : undefined}
     >
       {progress !== null ? (
         <div
@@ -1420,86 +1394,73 @@ export function Runtime({
         </div>
       </header>
 
-      {/* Phones: a slim edge handle is the only always-visible entry; pressing
-          it slides the menu button in (auto-hides, or collapses after a pick). */}
-      <button
-        type="button"
-        className="runtime-handle phone-only"
-        aria-label="메뉴 열기"
-        aria-expanded={pillRevealed}
-        onClick={revealPill}
-      >
-        <Icon name="more" size={14} />
-      </button>
-
-      {/* Phones: the runtime controls shrink to one floating button. */}
-      <div className="runtime-pill phone-only">
-        <Dropdown
-          onOpenChange={(open) => {
-            // Open: refresh the idle timer (the menu must not vanish under it);
-            // close: tuck the button away at once, picked or dismissed alike.
-            if (open) revealPill()
-            else hidePill()
-          }}
+      {/* Phones: the menu lives behind a slim handle docked to the right edge;
+          the handle IS the trigger — tapping it opens the menu directly, no
+          square button in between. */}
+      <Dropdown>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="secondary"
+          className="runtime-handle phone-only"
+          aria-label="Domino UI 메뉴"
         >
-          <Button isIconOnly variant="secondary" aria-label="Domino UI 메뉴">
-            {streaming ? <Spinner size="sm" /> : <Icon name="more" size={18} />}
-          </Button>
-          <Dropdown.Popover placement="bottom end">
-            <Dropdown.Menu
-              aria-label="Runtime menu"
-              onAction={menuAction}
-              disabledKeys={[
-                ...(canBack ? [] : ['back']),
-                ...(canForward ? [] : ['forward']),
-                ...(currentSpec ? [] : ['edit']),
-                ...(currentSpec ? [] : ['rebuild']),
-                ...(currentSpec ? [] : ['history'])
-              ]}
-            >
-              <Dropdown.Section>
-                <Header className="px-2 pb-1 text-xs text-muted">
-                  {domino.meta.name}
-                  {title ? ` · ${title}` : ''}
-                  {streaming ? ` · ${status || '생성 중…'}` : ''}
-                </Header>
-                <Dropdown.Item id="edit" textValue="화면 수정">
-                  <Icon name="edit" />
-                  <Label>화면 수정</Label>
-                </Dropdown.Item>
-                <Dropdown.Item id="back" textValue="이전 화면">
-                  <Icon name="back" />
-                  <Label>이전 화면</Label>
-                </Dropdown.Item>
-                <Dropdown.Item id="forward" textValue="다음 화면">
-                  <Icon name="arrow-right" />
-                  <Label>다음 화면</Label>
-                </Dropdown.Item>
-                <Dropdown.Item id="rebuild" textValue="처음부터 다시 만들기">
-                  <Icon name="refresh" />
-                  <Label>처음부터 다시 만들기</Label>
-                </Dropdown.Item>
-                <Dropdown.Item id="history" textValue="화면 히스토리">
-                  <Icon name="history" />
-                  <Label>화면 히스토리</Label>
-                </Dropdown.Item>
-              </Dropdown.Section>
-              <Dropdown.Item id="inspect" textValue="구조 보기">
-                <Icon name="layers" />
-                <Label>{chrome === 'app' ? '구조 보기' : '앱처럼 보기'}</Label>
+          {streaming ? <Spinner size="sm" /> : <Icon name="more" size={16} />}
+        </Button>
+        <Dropdown.Popover placement="bottom end">
+          <Dropdown.Menu
+            aria-label="Runtime menu"
+            onAction={menuAction}
+            disabledKeys={[
+              ...(canBack ? [] : ['back']),
+              ...(canForward ? [] : ['forward']),
+              ...(currentSpec ? [] : ['edit']),
+              ...(currentSpec ? [] : ['rebuild']),
+              ...(currentSpec ? [] : ['history'])
+            ]}
+          >
+            <Dropdown.Section>
+              <Header className="px-2 pb-1 text-xs text-muted">
+                {domino.meta.name}
+                {title ? ` · ${title}` : ''}
+                {streaming ? ` · ${status || '생성 중…'}` : ''}
+              </Header>
+              <Dropdown.Item id="edit" textValue="화면 수정">
+                <Icon name="edit" />
+                <Label>화면 수정</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="settings" textValue="설정">
-                <Icon name={needsKey ? 'key' : 'settings'} />
-                <Label>{needsKey ? '설정 (BYOK 미설정)' : '설정'}</Label>
+              <Dropdown.Item id="back" textValue="이전 화면">
+                <Icon name="back" />
+                <Label>이전 화면</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="home" textValue="domino 닫기">
-                <Icon name="close" />
-                <Label>domino 닫기</Label>
+              <Dropdown.Item id="forward" textValue="다음 화면">
+                <Icon name="arrow-right" />
+                <Label>다음 화면</Label>
               </Dropdown.Item>
-            </Dropdown.Menu>
-          </Dropdown.Popover>
-        </Dropdown>
-      </div>
+              <Dropdown.Item id="rebuild" textValue="처음부터 다시 만들기">
+                <Icon name="refresh" />
+                <Label>처음부터 다시 만들기</Label>
+              </Dropdown.Item>
+              <Dropdown.Item id="history" textValue="화면 히스토리">
+                <Icon name="history" />
+                <Label>화면 히스토리</Label>
+              </Dropdown.Item>
+            </Dropdown.Section>
+            <Dropdown.Item id="inspect" textValue="구조 보기">
+              <Icon name="layers" />
+              <Label>{chrome === 'app' ? '구조 보기' : '앱처럼 보기'}</Label>
+            </Dropdown.Item>
+            <Dropdown.Item id="settings" textValue="설정">
+              <Icon name={needsKey ? 'key' : 'settings'} />
+              <Label>{needsKey ? '설정 (BYOK 미설정)' : '설정'}</Label>
+            </Dropdown.Item>
+            <Dropdown.Item id="home" textValue="domino 닫기">
+              <Icon name="close" />
+              <Label>domino 닫기</Label>
+            </Dropdown.Item>
+          </Dropdown.Menu>
+        </Dropdown.Popover>
+      </Dropdown>
 
       {/* Phone: the same composer as a modal, opened from the pill menu. */}
       <Modal.Backdrop

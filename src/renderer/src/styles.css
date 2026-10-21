@@ -184,66 +184,37 @@
   scrollbar-gutter: stable;
 }
 
-/* Phones: no bar — a small floating button opens the runtime menu and
-   slides away while scrolling down, so the app owns the whole screen. */
-.runtime-pill {
-  position: fixed;
-  top: calc(var(--sat) + 10px);
-  right: calc(var(--sar) + 10px);
-  z-index: 30;
-  /* Phones keep the menu tucked away: off-canvas until the edge handle asks. */
-  transform: translateX(calc(100% + var(--sar) + 24px));
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    transform 0.2s ease,
-    opacity 0.2s ease;
-}
-.runtime-pill .button {
-  background: color-mix(in oklab, var(--surface) 88%, transparent);
-  box-shadow: var(--overlay-shadow);
-  backdrop-filter: blur(8px);
-}
-.runtime[data-pill='on'] .runtime-pill {
-  transform: none;
-  opacity: 1;
-  pointer-events: auto;
-}
-.runtime[data-scrolled='down'] .runtime-pill {
-  transform: translateY(calc(-100% - 12px - var(--sat)));
-  opacity: 0;
-  pointer-events: none;
-}
-/* The edge handle is the only entry that shows on phones by default: a slim
-   sliver on the side, clear of every header action. */
-.runtime-handle {
+/* Phones: no bar — the runtime menu lives behind a slim handle docked to the
+   right edge: vertical dots over a soft translucent gradient that fades into
+   the edge (not a floating chip). The handle IS the menu trigger. */
+.runtime .runtime-handle {
   position: fixed;
   right: 0;
   top: 50%;
   transform: translateY(-50%);
   z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
+  width: 30px;
   height: 64px;
+  min-width: 0;
+  min-height: 0;
   padding: 0;
   border: 0;
-  border-radius: 12px 0 0 12px;
-  background: color-mix(in oklab, var(--surface) 65%, transparent);
+  border-radius: 999px 0 0 999px;
+  background: linear-gradient(
+    to left,
+    color-mix(in oklab, var(--surface) 82%, transparent),
+    color-mix(in oklab, var(--surface) 24%, transparent)
+  );
+  box-shadow: none;
+  backdrop-filter: blur(10px);
   color: var(--muted);
-  backdrop-filter: blur(6px);
-  opacity: 0.55;
-  cursor: pointer;
-  transition: opacity 0.2s ease;
 }
-.runtime-handle:active,
-.runtime-handle:focus-visible {
-  opacity: 1;
+.runtime .runtime-handle:hover {
+  color: var(--foreground);
 }
-.runtime[data-pill='on'] .runtime-handle {
-  opacity: 0;
-  pointer-events: none;
+/* The ellipsis glyph draws horizontally; a side handle wants it vertical. */
+.runtime .runtime-handle svg {
+  transform: rotate(90deg);
 }
 @media (max-width: 639px) {
   .app-bar {
@@ -252,7 +223,7 @@
 }
 
 /* Determinate top gauge while the agent renders the next screen: pinned above
-   the app bar (phone pill included), fills with progress, fades on completion. */
+   the app bar (edge handle included), fills with progress, fades on completion. */
 .render-gauge {
   position: absolute;
   top: 0;
