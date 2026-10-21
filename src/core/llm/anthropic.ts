@@ -24,7 +24,7 @@ function toAnthropic(messages: ChatMessage[]): {
       const content: unknown[] = []
       if (m.content) content.push({ type: 'text', text: m.content })
       for (const tc of m.toolCalls ?? []) {
-        let input: unknown = {}
+        let input: unknown
         try {
           input = tc.args ? JSON.parse(tc.args) : {}
         } catch {

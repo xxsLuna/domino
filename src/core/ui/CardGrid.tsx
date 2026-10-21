@@ -89,7 +89,7 @@ export function CardGrid({
           data-chrome={chrome}
           data-streaming={streaming ? 'true' : undefined}
         >
-          {placed.map(({ node, index, placement }, i) => {
+          {placed.map(({ node, index, placement }) => {
             const key = node.id ?? `${node.name}-${index}`
             return (
               <GridCell

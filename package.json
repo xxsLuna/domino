@@ -56,6 +56,9 @@
     "build:web": "vite build --config vite.web.config.ts",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
     "dist": "npm run build && electron-builder --publish never",
     "android:sync": "npm run build:web && cap sync android"
   },
@@ -77,6 +80,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
@@ -84,8 +88,14 @@
     "electron": "^37.0.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^3.1.0",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "prettier": "^3.9.10",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.8.0",
+    "typescript-eslint": "^8.72.0",
     "vite": "^6.0.0",
     "vitest": "^3.1.0"
   },

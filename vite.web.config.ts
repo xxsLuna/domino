@@ -83,7 +83,7 @@ function zenCsrfGate(): Plugin {
     if (req.method === 'OPTIONS') return deny('preflight is not allowed')
     const origin = req.headers.origin
     if (origin) {
-      let originHost = ''
+      let originHost: string
       try {
         originHost = new URL(origin).host
       } catch {

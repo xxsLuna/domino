@@ -1,0 +1,8 @@
+dist-web
+release
+node_modules
+package-lock.json
+android/app/src/main/assets
+*.apk
+*.dmg
+*.exe

@@ -1,7 +1,7 @@
 import { httpFetch } from '../net'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
-import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta, ToolCall } from './types'
+import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
 import { LLM_TIMEOUT_MS } from './types'
 
 /**

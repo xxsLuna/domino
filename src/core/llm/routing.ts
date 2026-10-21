@@ -16,7 +16,7 @@ export function routingHeaders(baseUrl: string): Record<string, string> {
   // from this app's own page apart from cross-site ones — browsers cannot send
   // a custom header cross-origin without a preflight, which the proxy rejects.
   if (baseUrl.startsWith('/')) return { 'x-domino-client': 'domino-web' }
-  let host = ''
+  let host: string
   try {
     host = new URL(baseUrl, 'http://localhost').hostname
   } catch {

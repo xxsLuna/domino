@@ -20,7 +20,7 @@ const fieldForm = (fields: number, id = 'new-lead'): PageSpec =>
       node('Breadcrumbs'),
       node(
         'Form',
-        Array.from({ length: fields }, (_, i) => node('Input'))
+        Array.from({ length: fields }, () => node('Input'))
       )
     ],
     id

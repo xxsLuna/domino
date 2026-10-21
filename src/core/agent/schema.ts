@@ -182,7 +182,7 @@ export async function loadSchemaBook(
   storage: KeyValueStorage,
   dominoId: string
 ): Promise<SchemaBook> {
-  let raw: string | null = null
+  let raw: string | null
   try {
     raw = await storage.get(schemasKey(dominoId))
   } catch {
