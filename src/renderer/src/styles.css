@@ -185,8 +185,9 @@
 }
 
 /* Phones: no bar — the runtime menu lives behind a slim handle docked to the
-   right edge: vertical dots over a soft translucent gradient that fades into
-   the edge (not a floating chip). The handle IS the menu trigger. */
+   edge: vertical dots over a faint translucent gradient that fades into the
+   wall (dotted on press). The handle IS the menu trigger, and it drags along
+   either wall — position persists. */
 .runtime .runtime-handle {
   position: fixed;
   right: 0;
@@ -200,21 +201,54 @@
   padding: 0;
   border: 0;
   border-radius: 999px 0 0 999px;
+  touch-action: none;
   background: linear-gradient(
     to left,
-    color-mix(in oklab, var(--surface) 82%, transparent),
-    color-mix(in oklab, var(--surface) 24%, transparent)
+    color-mix(in oklab, var(--surface) 50%, transparent),
+    color-mix(in oklab, var(--surface) 8%, transparent)
   );
   box-shadow: none;
   backdrop-filter: blur(10px);
-  color: var(--muted);
+  color: color-mix(in oklab, var(--muted) 75%, transparent);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 .runtime .runtime-handle:hover {
+  color: var(--muted);
+}
+/* Pressed: a touch denser and brighter, still soft. */
+.runtime .runtime-handle:active,
+.runtime .runtime-handle[data-pressed] {
+  background: linear-gradient(
+    to left,
+    color-mix(in oklab, var(--surface) 94%, transparent),
+    color-mix(in oklab, var(--surface) 55%, transparent)
+  );
   color: var(--foreground);
 }
 /* The ellipsis glyph draws horizontally; a side handle wants it vertical. */
 .runtime .runtime-handle svg {
   transform: rotate(90deg);
+}
+/* Left wall: mirror the docking (rounding, fade direction, pressed state). */
+.runtime .runtime-handle[data-side='left'] {
+  right: auto;
+  left: 0;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in oklab, var(--surface) 50%, transparent),
+    color-mix(in oklab, var(--surface) 8%, transparent)
+  );
+}
+.runtime .runtime-handle[data-side='left']:active,
+.runtime .runtime-handle[data-side='left'][data-pressed] {
+  background: linear-gradient(
+    to right,
+    color-mix(in oklab, var(--surface) 94%, transparent),
+    color-mix(in oklab, var(--surface) 55%, transparent)
+  );
 }
 @media (max-width: 639px) {
   .app-bar {

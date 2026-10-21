@@ -1258,6 +1258,62 @@ export function Runtime({
     }
   }, [hasNav])
 
+  // The phone handle hugs a wall — which one, and where along it, is the
+  // user's choice: drag it up/down (or across to the other wall) and the
+  // placement is persisted. A plain tap still opens the menu.
+  const [handlePos, setHandlePos] = useState<{ side: 'left' | 'right'; y: number }>({
+    side: 'right',
+    y: 0.5
+  })
+  const handlePosRef = useRef(handlePos)
+  useEffect(() => {
+    let live = true
+    void storage.get('domino:handle-pos').then((raw) => {
+      if (!live || !raw) return
+      try {
+        const v = JSON.parse(String(raw)) as { side?: string; y?: unknown }
+        if ((v.side === 'left' || v.side === 'right') && typeof v.y === 'number' && Number.isFinite(v.y)) {
+          setHandlePos({ side: v.side, y: Math.min(0.94, Math.max(0.06, v.y)) })
+        }
+      } catch {
+        /* corrupted placement — keep the default */
+      }
+    })
+    return () => {
+      live = false
+    }
+  }, [storage])
+  const handleDrag = useRef<{ id: number; startY: number; moved: boolean } | null>(null)
+  const onHandlePointerDown = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    handleDrag.current = { id: e.pointerId, startY: e.clientY, moved: false }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  const onHandlePointerMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    const d = handleDrag.current
+    if (!d || d.id !== e.pointerId) return
+    if (Math.abs(e.clientY - d.startY) > 6) d.moved = true
+    if (!d.moved) return
+    // Glued to a wall at all times: the nearest wall follows the finger,
+    // vertical position is free within on-screen bounds.
+    const next = {
+      side: e.clientX < window.innerWidth / 2 ? ('left' as const) : ('right' as const),
+      y: Math.min(0.94, Math.max(0.06, e.clientY / window.innerHeight))
+    }
+    handlePosRef.current = next
+    setHandlePos(next)
+  }
+  const onHandlePointerUp = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    const d = handleDrag.current
+    handleDrag.current = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* capture already gone */
+    }
+    if (!d?.moved) return // a tap — the menu opens through the normal press
+    void storage.set('domino:handle-pos', JSON.stringify(handlePosRef.current))
+  }
+
   const menuAction = (key: React.Key): void => {
     if (key === 'back') goBack()
     else if (key === 'forward') goForward()
@@ -1404,10 +1460,16 @@ export function Runtime({
           variant="secondary"
           className="runtime-handle phone-only"
           aria-label="Domino UI 메뉴"
+          data-side={handlePos.side}
+          style={{ top: `${handlePos.y * 100}%` }}
+          onPointerDown={onHandlePointerDown}
+          onPointerMove={onHandlePointerMove}
+          onPointerUp={onHandlePointerUp}
+          onPointerCancel={onHandlePointerUp}
         >
           {streaming ? <Spinner size="sm" /> : <Icon name="more" size={16} />}
         </Button>
-        <Dropdown.Popover placement="bottom end">
+        <Dropdown.Popover placement={handlePos.side === 'left' ? 'bottom start' : 'bottom end'}>
           <Dropdown.Menu
             aria-label="Runtime menu"
             onAction={menuAction}
