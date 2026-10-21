@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches the web app's default --background (a near-black oklch(12%)).
+         Only ever visible behind/underneath the WebView: splash frames, the
+         decor band under a system bar, and any gap before the page paints. -->
+    <color name="domino_window">#1E1E22</color>
+</resources>

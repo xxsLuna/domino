@@ -118,7 +118,7 @@ export function Welcome({
             }}
           >
             <TextField
-              className="flex-1"
+              className="flex-1 min-w-0"
               value={url}
               onChange={setUrl}
               isDisabled={busy}

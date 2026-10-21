@@ -774,6 +774,13 @@
   word-break: break-word;
 }
 
+/* HeroUI's input-group lays out flex children with min-width:auto, so an
+   <input>'s intrinsic size (default size=20) pins the row wider than a phone
+   viewport and the text paints past the edge. Let the field shrink. */
+.input-group__input {
+  min-width: 0;
+}
+
 /* ------------------------------ welcome ----------------------------- */
 .welcome {
   width: 100%;
@@ -784,6 +791,8 @@
   flex-direction: column;
   gap: 20px;
   overflow-y: auto;
+  /* Nothing on the home screen may paint past the viewport (phone widths). */
+  overflow-x: clip;
 }
 @media (max-width: 639px) {
   .welcome {

@@ -13,6 +13,11 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- The web app is dark from the first frame: Capacitor paints every
+             region the WebView does not cover (and the status-bar area) from
+             this value — a light default surfaced as a white "title bar" strip
+             over the dark UI. -->
+        <item name="android:windowBackground">@color/domino_window</item>
     </style>
 
 
