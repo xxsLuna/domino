@@ -1258,7 +1258,32 @@ export function Runtime({
     }
   }, [hasNav])
 
+  // Phones: the floating menu lives behind an edge handle — hidden by default,
+  // revealed on handle press, gone again after a pick or a short idle spell.
+  const [pillRevealed, setPillRevealed] = useState(false)
+  const pillTimer = useRef<number | null>(null)
+  const revealPill = (): void => {
+    if (pillTimer.current !== null) window.clearTimeout(pillTimer.current)
+    setPillRevealed(true)
+    setScrolled('up') // the scroll-away rule must not hide it right back
+    pillTimer.current = window.setTimeout(() => setPillRevealed(false), 5000)
+  }
+  const hidePill = (): void => {
+    if (pillTimer.current !== null) {
+      window.clearTimeout(pillTimer.current)
+      pillTimer.current = null
+    }
+    setPillRevealed(false)
+  }
+  useEffect(
+    () => () => {
+      if (pillTimer.current !== null) window.clearTimeout(pillTimer.current)
+    },
+    []
+  )
+
   const menuAction = (key: React.Key): void => {
+    hidePill()
     if (key === 'back') goBack()
     else if (key === 'forward') goForward()
     else if (key === 'edit') setEditOpen(true)
@@ -1275,6 +1300,7 @@ export function Runtime({
       data-density={domino.ui.density}
       data-style={domino.ui.style}
       data-scrolled={scrolled}
+      data-pill={pillRevealed ? 'on' : undefined}
     >
       {progress !== null ? (
         <div
@@ -1394,9 +1420,28 @@ export function Runtime({
         </div>
       </header>
 
+      {/* Phones: a slim edge handle is the only always-visible entry; pressing
+          it slides the menu button in (auto-hides, or collapses after a pick). */}
+      <button
+        type="button"
+        className="runtime-handle phone-only"
+        aria-label="메뉴 열기"
+        aria-expanded={pillRevealed}
+        onClick={revealPill}
+      >
+        <Icon name="more" size={14} />
+      </button>
+
       {/* Phones: the runtime controls shrink to one floating button. */}
       <div className="runtime-pill phone-only">
-        <Dropdown>
+        <Dropdown
+          onOpenChange={(open) => {
+            // Open: refresh the idle timer (the menu must not vanish under it);
+            // close: tuck the button away at once, picked or dismissed alike.
+            if (open) revealPill()
+            else hidePill()
+          }}
+        >
           <Button isIconOnly variant="secondary" aria-label="Domino UI 메뉴">
             {streaming ? <Spinner size="sm" /> : <Icon name="more" size={18} />}
           </Button>

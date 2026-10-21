@@ -191,6 +191,10 @@
   top: calc(var(--sat) + 10px);
   right: calc(var(--sar) + 10px);
   z-index: 30;
+  /* Phones keep the menu tucked away: off-canvas until the edge handle asks. */
+  transform: translateX(calc(100% + var(--sar) + 24px));
+  opacity: 0;
+  pointer-events: none;
   transition:
     transform 0.2s ease,
     opacity 0.2s ease;
@@ -200,9 +204,46 @@
   box-shadow: var(--overlay-shadow);
   backdrop-filter: blur(8px);
 }
+.runtime[data-pill='on'] .runtime-pill {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
 .runtime[data-scrolled='down'] .runtime-pill {
   transform: translateY(calc(-100% - 12px - var(--sat)));
   opacity: 0;
+  pointer-events: none;
+}
+/* The edge handle is the only entry that shows on phones by default: a slim
+   sliver on the side, clear of every header action. */
+.runtime-handle {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 64px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px 0 0 12px;
+  background: color-mix(in oklab, var(--surface) 65%, transparent);
+  color: var(--muted);
+  backdrop-filter: blur(6px);
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+.runtime-handle:active,
+.runtime-handle:focus-visible {
+  opacity: 1;
+}
+.runtime[data-pill='on'] .runtime-handle {
+  opacity: 0;
+  pointer-events: none;
 }
 @media (max-width: 639px) {
   .app-bar {
