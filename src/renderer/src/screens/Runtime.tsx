@@ -1286,32 +1286,43 @@ export function Runtime({
   const handleDrag = useRef<{ id: number; startY: number; moved: boolean } | null>(null)
   const onHandlePointerDown = (e: React.PointerEvent<HTMLButtonElement>): void => {
     handleDrag.current = { id: e.pointerId, startY: e.clientY, moved: false }
-    e.currentTarget.setPointerCapture(e.pointerId)
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    // A native capture-phase listener at the target fires BEFORE React's
+    // root-delegated synthetic dispatch: swallowing pointerup there stops the
+    // trigger's press entirely, so a drag can never open the menu. A plain tap
+    // isn't swallowed and opens it through the normal press path.
+    const onUp = (ev: PointerEvent): void => {
+      const d = handleDrag.current
+      handleDrag.current = null
+      el.removeEventListener('pointerup', onUp, true)
+      el.removeEventListener('pointercancel', onUp, true)
+      try {
+        el.releasePointerCapture(ev.pointerId)
+      } catch {
+        /* capture already gone */
+      }
+      if (!d?.moved) return
+      ev.stopImmediatePropagation()
+      void storage.set('domino:handle-pos', JSON.stringify(handlePosRef.current))
+    }
+    el.addEventListener('pointerup', onUp, true)
+    el.addEventListener('pointercancel', onUp, true)
   }
   const onHandlePointerMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
     const d = handleDrag.current
     if (!d || d.id !== e.pointerId) return
     if (Math.abs(e.clientY - d.startY) > 6) d.moved = true
     if (!d.moved) return
-    // Glued to a wall at all times: the nearest wall follows the finger,
-    // vertical position is free within on-screen bounds.
+    // Vertical only: the wall never changes mid-drag (an inward horizontal
+    // swipe from the edge is the SYSTEM back gesture on gesture-nav phones —
+    // side switching lives in the menu instead). Glued top-to-bottom bounds.
     const next = {
-      side: e.clientX < window.innerWidth / 2 ? ('left' as const) : ('right' as const),
+      side: handlePosRef.current.side,
       y: Math.min(0.94, Math.max(0.06, e.clientY / window.innerHeight))
     }
     handlePosRef.current = next
     setHandlePos(next)
-  }
-  const onHandlePointerUp = (e: React.PointerEvent<HTMLButtonElement>): void => {
-    const d = handleDrag.current
-    handleDrag.current = null
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    } catch {
-      /* capture already gone */
-    }
-    if (!d?.moved) return // a tap — the menu opens through the normal press
-    void storage.set('domino:handle-pos', JSON.stringify(handlePosRef.current))
   }
 
   const menuAction = (key: React.Key): void => {
@@ -1320,6 +1331,17 @@ export function Runtime({
     else if (key === 'edit') setEditOpen(true)
     else if (key === 'rebuild') setRebuildOpen(true)
     else if (key === 'history') setHistoryOpen(true)
+    else if (key === 'handle-side') {
+      // Cross-wall moves live here: swiping horizontally from the very edge
+      // belongs to the system back gesture, so the wall flips via the menu.
+      const next = {
+        side: handlePosRef.current.side === 'right' ? ('left' as const) : ('right' as const),
+        y: handlePosRef.current.y
+      }
+      handlePosRef.current = next
+      setHandlePos(next)
+      void storage.set('domino:handle-pos', JSON.stringify(next))
+    }
     else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
     else if (key === 'settings') onOpenSettings()
     else if (key === 'home') onHome()
@@ -1464,8 +1486,6 @@ export function Runtime({
           style={{ top: `${handlePos.y * 100}%` }}
           onPointerDown={onHandlePointerDown}
           onPointerMove={onHandlePointerMove}
-          onPointerUp={onHandlePointerUp}
-          onPointerCancel={onHandlePointerUp}
         >
           {streaming ? <Spinner size="sm" /> : <Icon name="more" size={16} />}
         </Button>
@@ -1506,6 +1526,13 @@ export function Runtime({
               <Dropdown.Item id="history" textValue="화면 히스토리">
                 <Icon name="history" />
                 <Label>화면 히스토리</Label>
+              </Dropdown.Item>
+              <Dropdown.Item
+                id="handle-side"
+                textValue={handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}
+              >
+                <Icon name={handlePos.side === 'right' ? 'arrow-left' : 'arrow-right'} />
+                <Label>{handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}</Label>
               </Dropdown.Item>
             </Dropdown.Section>
             <Dropdown.Item id="inspect" textValue="구조 보기">
