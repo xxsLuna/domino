@@ -16,8 +16,8 @@ public class MainActivity extends BridgeActivity {
         // scrim. The web still refines the style per opened app via SystemBars.
         EdgeToEdge.enable(
             this,
-            SystemBarStyle.dark(Color.TRANSPARENT, Color.TRANSPARENT),
-            SystemBarStyle.dark(Color.TRANSPARENT, Color.TRANSPARENT)
+            SystemBarStyle.dark(Color.TRANSPARENT),
+            SystemBarStyle.dark(Color.TRANSPARENT)
         );
         super.onCreate(savedInstanceState);
     }
