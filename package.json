@@ -60,7 +60,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "dist": "npm run build && electron-builder --publish never",
-    "android:sync": "npm run build:web && cap sync android"
+    "android:sync": "npm run build:web && cap sync android",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
@@ -81,6 +82,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

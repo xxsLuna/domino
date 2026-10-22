@@ -3,6 +3,8 @@ release
 node_modules
 package-lock.json
 android/app/src/main/assets
+playwright-report
+test-results
 *.apk
 *.dmg
 *.exe

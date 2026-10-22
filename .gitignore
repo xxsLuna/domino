@@ -11,6 +11,9 @@ release/
 *.tsbuildinfo
 .DS_Store
 dist-web
+# Playwright E2E artifacts (traces/screenshots on failure).
+playwright-report/
+test-results/
 # Capacitor: commit the generated android/ project, ignore its build outputs.
 android/.gradle/
 android/build/

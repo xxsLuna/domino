@@ -74,6 +74,29 @@ jobs:
           name: domino-web
           path: dist-web/
 
+  # End-to-end flows against the mock server (Playwright boots both via
+  # webServer: build:web + vite preview + samples/mock-server.mjs).
+  e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-results
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+
   # Android: the web build in the Capacitor shell. Signed with the release key
   # from repository secrets when configured; otherwise a debug-signed APK
   # (installable, but each new key requires uninstalling the previous build).

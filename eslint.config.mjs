@@ -15,6 +15,8 @@ export default tseslint.config(
       'release/**',
       'android/app/src/main/assets/**',
       'node_modules/**',
+      'playwright-report/**',
+      'test-results/**',
       '**/*.d.ts'
     ]
   },
