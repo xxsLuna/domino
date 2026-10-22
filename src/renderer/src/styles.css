@@ -647,6 +647,57 @@
   }
 }
 
+/* Last turn's token cost — transient chip in the app bar. */
+.usage-chip {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+/* Drawer header: session cumulative token total. */
+.history-total {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Drawer section: recent call_api results (status · path · duration). */
+.history-api {
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  border-top: 1px solid var(--separator);
+}
+.history-api .history-panel-head {
+  padding-block: 8px;
+}
+.history-api .history-list {
+  flex: none;
+}
+.api-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.api-badge {
+  min-width: 34px;
+  padding: 0 4px;
+  border-radius: 6px;
+  text-align: center;
+  font-size: 11px;
+  background: color-mix(in oklab, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.api-badge[data-ok='true'] {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent-foreground);
+}
+
 /* Post-turn result chip (undo / background-edit notice) — rides above the
    in-flight edit chip so both stay readable. */
 .result-toast {

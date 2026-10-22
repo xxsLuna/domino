@@ -90,6 +90,7 @@ export function createAnthropicAdapter(config: LLMConfig): LLMAdapter {
           type?: string
           content_block?: { type?: string; id?: string; name?: string }
           delta?: { type?: string; text?: string; partial_json?: string }
+          usage?: { input_tokens?: number; output_tokens?: number }
         }
         try {
           event = JSON.parse(payload)
@@ -123,6 +124,21 @@ export function createAnthropicAdapter(config: LLMConfig): LLMAdapter {
           }
           case 'error': {
             yield { type: 'error', message: 'anthropic stream error' }
+            break
+          }
+          case 'message_delta': {
+            const usage = event.usage
+            if (usage && (usage.input_tokens || usage.output_tokens)) {
+              yield {
+                type: 'usage',
+                usage: {
+                  prompt: usage.input_tokens,
+                  completion: usage.output_tokens,
+                  total:
+                    (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) || undefined
+                }
+              }
+            }
             break
           }
           default:

@@ -21,6 +21,14 @@ test.describe('screen history drawer', () => {
     const panel = page.locator('.history-panel.is-open')
     await expect(panel).toBeVisible()
 
+    // The login flow's call_api is logged with timing in the drawer's API section.
+    await expect(panel.locator('.history-api')).toBeVisible()
+    await expect(panel.locator('.api-item').first()).toContainText('/leads')
+    await expect(panel.locator('.api-item').first().locator('.api-badge')).toHaveAttribute(
+      'data-ok',
+      'true'
+    )
+
     const rows = panel.locator('.history-item')
     expect(await rows.count()).toBeGreaterThanOrEqual(3)
     await expect(rows.first()).toHaveAttribute('aria-current', 'true')

@@ -23,6 +23,8 @@ export interface ApiResult {
   path: string
   status: number
   data: unknown
+  /** Wall time of the call — surfaced in the API inspector. */
+  ms?: number
 }
 
 /** The methods the call_api tool schema declares — nothing else leaves. */
@@ -157,6 +159,7 @@ export async function executeApi(
   api: ApiRuntime,
   req: { path: string; method?: string; body?: unknown }
 ): Promise<ApiResult> {
+  const started = Date.now()
   const method = (req.method ?? 'GET').toUpperCase()
   if (!ALLOWED_METHODS.has(method)) {
     return {
@@ -197,10 +200,10 @@ export async function executeApi(
     } catch {
       /* keep raw text */
     }
-    return { path: req.path, status: res.status, data }
+    return { path: req.path, status: res.status, data, ms: Date.now() - started }
   } catch (err) {
     const message =
       (err as Error).name === 'TimeoutError' ? 'request timed out' : (err as Error).message
-    return { path: req.path, status: 0, data: { error: message } }
+    return { path: req.path, status: 0, data: { error: message }, ms: Date.now() - started }
   }
 }

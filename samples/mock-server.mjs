@@ -493,8 +493,15 @@ function pickSpec(messages) {
 
 function planToolCalls(messages) {
   const last = latestUserText(messages)
-  const hasToolResult = messages.some((m) => m.role === 'tool')
-  if (last.includes('Authentication SUCCEEDED') && !hasToolResult) {
+  // Fresh data after login: one /leads call, then render. The guard is
+  // call_api-specific — render_ui results from earlier turns already put
+  // tool messages in history and used to suppress this forever.
+  // On the wire a tool result is {role, tool_call_id, content}; call_api
+  // results serialize {status, data, …} first, so that prefix identifies them.
+  const apiCalled = messages.some(
+    (m) => m.role === 'tool' && typeof m.content === 'string' && m.content.startsWith('{"status"')
+  )
+  if (last.includes('Authentication SUCCEEDED') && !apiCalled) {
     return [{ name: 'call_api', args: { path: '/leads', method: 'GET' } }]
   }
   return [{ name: 'render_ui', args: { spec: pickSpec(messages) } }]

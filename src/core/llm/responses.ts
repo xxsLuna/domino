@@ -49,6 +49,7 @@ interface ResponsesEvent {
   delta?: string
   item?: { id?: string; call_id?: string; name?: string; type?: string }
   item_id?: string
+  response?: { usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } }
 }
 
 export function createResponsesAdapter(config: LLMConfig): LLMAdapter {
@@ -131,6 +132,20 @@ export function createResponsesAdapter(config: LLMConfig): LLMAdapter {
           }
           case 'response.failed': {
             yield { type: 'error', message: 'responses API reported a failed response' }
+            break
+          }
+          case 'response.completed': {
+            const usage = event.response?.usage
+            if (usage && (usage.input_tokens || usage.output_tokens)) {
+              yield {
+                type: 'usage',
+                usage: {
+                  prompt: usage.input_tokens,
+                  completion: usage.output_tokens,
+                  total: usage.total_tokens
+                }
+              }
+            }
             break
           }
           default:

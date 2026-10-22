@@ -25,6 +25,8 @@ export type AgentUpdate =
   | { type: 'navigated'; page: string }
   /** Streaming render_ui argument size — drives the top rendering gauge. */
   | { type: 'progress'; chars: number }
+  /** Terminal token accounting from the provider, when it reports one. */
+  | { type: 'usage'; usage: { prompt?: number; completion?: number; total?: number } }
   | { type: 'error'; message: string }
   | { type: 'done' }
 
@@ -130,6 +132,9 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           case 'error':
             reported = true
             yield { type: 'error', message: delta.message }
+            break
+          case 'usage':
+            yield { type: 'usage', usage: delta.usage }
             break
           case 'done':
             break

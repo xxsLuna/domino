@@ -411,6 +411,15 @@ export function Runtime({
     []
   )
 
+  /* ------------------- token usage + API call inspection ------------------- */
+  /** Last turn's token total (transient chip); session cumulative (drawer). */
+  const [lastUsage, setLastUsage] = useState<number | null>(null)
+  const [usageTotal, setUsageTotal] = useState(0)
+  const lastUsageInTurn = useRef(0)
+  const usageChipTimer = useRef<number | null>(null)
+  /** Recent call_api results (newest first) — the drawer's API section. */
+  const apiLogRef = useRef<Array<{ at: number; path: string; status: number; ms: number }>>([])
+
   const finalizeSpec = useCallback(
     (spec: UiSpec, cacheKey: string | null, kindHint?: HistoryKind) => {
       // What the history panel shows as this moment's badge.
@@ -544,6 +553,14 @@ export function Runtime({
       // …and let the next settled screen re-arm it: one interruption used to
       // disable pre-generation for the rest of the session.
       pregenScheduled.current = false
+      // A new turn owns a fresh usage window: drop the previous chip and the
+      // per-turn baseline (the session total keeps what it accumulated).
+      lastUsageInTurn.current = 0
+      setLastUsage(null)
+      if (usageChipTimer.current !== null) {
+        window.clearTimeout(usageChipTimer.current)
+        usageChipTimer.current = null
+      }
       turnActiveRef.current = true
       turnDepsRef.current = {}
       // An ordinary turn replaces the screen the edit glow was tracking.
@@ -637,6 +654,14 @@ export function Runtime({
               break
             case 'api_result':
               setStatus(`API ${update.result.status} · ${update.result.path}`)
+              // Keep a bounded, newest-first log for the drawer's API section.
+              apiLogRef.current.unshift({
+                at: Date.now(),
+                path: update.result.path,
+                status: update.result.status,
+                ms: update.result.ms ?? 0
+              })
+              if (apiLogRef.current.length > 50) apiLogRef.current.pop()
               if (update.schema) {
                 schemaBookRef.current = rememberSchema(
                   schemaBookRef.current,
@@ -650,6 +675,24 @@ export function Runtime({
             case 'progress':
               progressChars.current = update.chars
               break
+            case 'usage': {
+              const t =
+                update.usage.total ?? ((update.usage.prompt ?? 0) + (update.usage.completion ?? 0))
+              if (t > 0) {
+                // Provider totals are cumulative within one response: add only
+                // the delta so a repeated chunk can't double-count the session.
+                const add = Math.max(0, t - lastUsageInTurn.current)
+                lastUsageInTurn.current = t
+                setUsageTotal((prev) => prev + add)
+                setLastUsage(t)
+                if (usageChipTimer.current !== null) window.clearTimeout(usageChipTimer.current)
+                usageChipTimer.current = window.setTimeout(() => {
+                  usageChipTimer.current = null
+                  setLastUsage(null)
+                }, 8_000)
+              }
+              break
+            }
             case 'navigated': {
               // "history:<index>" restores that exact moment (time travel);
               // the agent's own turn is spared — if it renders after, that wins.
@@ -1572,6 +1615,11 @@ export function Runtime({
               <span className="status-text hide-phone">{status || '생성 중…'}</span>
             </span>
           ) : null}
+          {lastUsage !== null ? (
+            <span className="usage-chip" role="status">
+              이번 턴 {fmtTokens(lastUsage)} 토큰
+            </span>
+          ) : null}
           {needsKey ? (
             <Button size="sm" variant="outline" className="text-warning" onPress={onOpenSettings}>
               <Icon name="key" />
@@ -1919,6 +1967,7 @@ export function Runtime({
       <aside className={`history-panel${historyOpen ? ' is-open' : ''}`} aria-label="화면 히스토리">
         <div className="history-panel-head">
           <span className="history-panel-title">화면 히스토리</span>
+          <span className="history-total">{fmtTokens(usageTotal)} 토큰</span>
           <Button
             isIconOnly
             size="sm"
@@ -1949,6 +1998,25 @@ export function Runtime({
             </li>
           ))}
         </ul>
+        {apiLogRef.current.length > 0 ? (
+          <div className="history-api">
+            <div className="history-panel-head">
+              <span className="history-panel-title">API 호출</span>
+              <span className="history-total">{apiLogRef.current.length}건</span>
+            </div>
+            <ul className="history-list">
+              {apiLogRef.current.map((entry, i) => (
+                <li key={`${entry.at}-${i}`} className="api-item">
+                  <span className="api-badge" data-ok={entry.status < 400 ? 'true' : undefined}>
+                    {entry.status}
+                  </span>
+                  <span className="history-label">{entry.path}</span>
+                  <time className="history-time">{entry.ms}ms</time>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </aside>
     </div>
   )
@@ -1961,6 +2029,9 @@ const HISTORY_KIND_LABEL: Record<HistoryKind, string> = {
   edit: '수정',
   restore: '복원'
 }
+
+/** Compact token counts for chips ("1.2k"). */
+const fmtTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 
 function BarButton({
   label,

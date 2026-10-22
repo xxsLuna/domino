@@ -80,6 +80,8 @@ export type StreamDelta =
   | { type: 'tool_call_end'; id: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
+  /** Terminal token accounting — only providers that report it emit this. */
+  | { type: 'usage'; usage: { prompt?: number; completion?: number; total?: number } }
 
 export interface ChatRequest {
   messages: ChatMessage[]

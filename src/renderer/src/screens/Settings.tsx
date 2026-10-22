@@ -102,11 +102,34 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               <Label>Base URL</Label>
               <Input placeholder={meta.defaultBaseUrl} />
             </TextField>
+            <p className="-mt-2 text-xs text-muted">
+              이 주소는 LLM 호출 전용입니다 — 앱이 직접 부르는 비즈니스 API 주소는 .domino 파일의
+              [api] base_url을 따릅니다.
+            </p>
 
             <TextField value={draft.model} onChange={(v) => edit({ model: v })} fullWidth>
               <Label>모델</Label>
               <Input placeholder={meta.defaultModel} />
             </TextField>
+
+            <div className="flex flex-col gap-1">
+              <span className="text-sm">
+                Temperature <span className="text-muted">({(draft.temperature ?? 0.7).toFixed(1)})</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={2}
+                step={0.1}
+                value={draft.temperature ?? 0.7}
+                onChange={(e) => edit({ temperature: Number(e.target.value) })}
+                aria-label="Temperature"
+                className="h-2 w-full cursor-pointer accent-[var(--accent)]"
+              />
+              <span className="text-xs text-muted">
+                낮을수록 일관되고 높을수록 다양해집니다 (0–2).
+              </span>
+            </div>
 
             <TextField
               type={showKey ? 'text' : 'password'}

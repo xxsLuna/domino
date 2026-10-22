@@ -48,6 +48,9 @@ export function createOpenAIAdapter(config: LLMConfig): LLMAdapter {
         stream: true,
         temperature: config.temperature ?? 0.7,
         messages: toOpenAIMessages(req.messages),
+        // Ask for the terminal usage chunk (OpenAI-compatible servers ignore
+        // the flag; those that never send usage simply never emit a delta).
+        stream_options: { include_usage: true },
         ...(req.tools?.length
           ? { tools: req.tools.map((t) => ({ type: 'function', function: t })) }
           : {})
@@ -77,11 +80,22 @@ export function createOpenAIAdapter(config: LLMConfig): LLMAdapter {
             }
             finish_reason?: string | null
           }>
+          usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
         }
         try {
           json = JSON.parse(payload)
         } catch {
           continue
+        }
+        if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
+          yield {
+            type: 'usage',
+            usage: {
+              prompt: json.usage.prompt_tokens,
+              completion: json.usage.completion_tokens,
+              total: json.usage.total_tokens
+            }
+          }
         }
         const choice = json.choices?.[0]
         if (!choice) continue
