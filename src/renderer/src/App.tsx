@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Spinner } from '@heroui/react'
+import { App as CapacitorApp } from '@capacitor/app'
+import type { PluginListenerHandle } from '@capacitor/core'
 import { defaultLlmConfig, loadLlmConfig, pushRecent, type DominoSource } from '@core/session/prefs'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import type { LLMConfig } from '@core/llm'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from './loadDomino'
 import { useBackHandler } from './backStack'
-import { getStorage, syncSystemBars } from './platform'
+import { getStorage, isNativeMobile, syncSystemBars } from './platform'
 import { useFileDrop } from './useFileDrop'
 import { useSystemTheme } from './useSystemTheme'
 import { Maker } from './screens/Maker'
@@ -87,6 +89,25 @@ export function App(): React.JSX.Element {
     openFileRegistered = true
     bridge.onOpenFile((filePath) => void openSource({ type: 'file', path: filePath }))
   }, [openSource, storage])
+
+  // Android/iOS deep links: domino://… arrives through the intent-filter and
+  // opens via the same path as files and drops — loadDomino decodes or
+  // rewrites the URL (inline ?c= payloads and hosted .domino files alike).
+  useEffect(() => {
+    if (!isNativeMobile()) return
+    let live = true
+    let handle: PluginListenerHandle | undefined
+    void CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      void openSource({ type: 'url', url })
+    }).then((h) => {
+      if (live) handle = h
+      else void h.remove()
+    })
+    return () => {
+      live = false
+      void handle?.remove()
+    }
+  }, [openSource])
 
   if (!config) {
     return (

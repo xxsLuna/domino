@@ -1,4 +1,5 @@
 import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core'
+import { SecureStorage } from '@aparajita/capacitor-secure-storage'
 import { bridgedFetch, setHttpFetch, type NetTransport } from '@core/net'
 import type { KeyValueStorage } from '@core/session/prefs'
 
@@ -87,6 +88,54 @@ function localStorageAdapter(): KeyValueStorage {
   }
 }
 
+/**
+ * Native shells store domino:* values encrypted (Android Keystore / iOS
+ * Keychain) instead of plain WebView localStorage. First use migrates every
+ * existing key across — copying, VERIFYING the copy, and only then deleting
+ * the original; a failed copy keeps the legacy value readable forever via the
+ * get() fallback, so the LLM key can never be lost by this upgrade.
+ */
+function secureAdapter(): KeyValueStorage {
+  const legacy = localStorageAdapter()
+  let migrated: Promise<void> | null = null
+  const ensureMigrated = (): Promise<void> => {
+    if (!migrated) {
+      migrated = (async () => {
+        try {
+          const keys = Object.keys(window.localStorage).filter((k) => k.startsWith('domino:'))
+          for (const key of keys) {
+            const value = window.localStorage.getItem(key)
+            if (value === null) continue
+            await SecureStorage.setItem(key, value)
+            if ((await SecureStorage.getItem(key)) === value) {
+              window.localStorage.removeItem(key)
+            }
+          }
+        } catch {
+          /* secure store unavailable — legacy fallback keeps serving reads */
+        }
+      })()
+    }
+    return migrated
+  }
+  return {
+    async get(key) {
+      await ensureMigrated()
+      const value = await SecureStorage.getItem(key)
+      return value !== null ? value : legacy.get(key)
+    },
+    async set(key, value) {
+      await ensureMigrated()
+      await SecureStorage.setItem(key, value)
+    },
+    async remove(key) {
+      await ensureMigrated()
+      await SecureStorage.removeItem(key)
+      await legacy.remove(key)
+    }
+  }
+}
+
 let cached: KeyValueStorage | null = null
 
 export function getStorage(): KeyValueStorage {
@@ -98,6 +147,8 @@ export function getStorage(): KeyValueStorage {
       set: (key, value) => bridge.secure!.set(key, value),
       remove: (key) => bridge.secure!.remove(key)
     }
+  } else if (isNativeMobile()) {
+    cached = secureAdapter()
   } else {
     cached = localStorageAdapter()
   }

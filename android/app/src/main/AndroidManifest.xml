@@ -25,6 +25,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- domino://app.example.com/x.domino and domino://?c=<payload>
+                 open straight into the app (same path as file drops). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="domino" />
+            </intent-filter>
+
         </activity>
 
         <provider
