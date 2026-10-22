@@ -128,6 +128,67 @@ describe('SessionStore history entries', () => {
   })
 })
 
+describe('SessionStore persistence', () => {
+  const memStorage = () => {
+    const m = new Map<string, string>()
+    return {
+      async get(k: string) {
+        return m.get(k) ?? null
+      },
+      async set(k: string, v: string) {
+        m.set(k, v)
+      },
+      async remove(k: string) {
+        m.delete(k)
+      }
+    }
+  }
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 900))
+
+  it('round-trips the stack, kinds and edit notes across instances', async () => {
+    const storage = memStorage()
+    const first = new SessionStore()
+    first.attach(storage, 'domino:history:test')
+    first.push(spec('one'), { kind: 'edit', note: 'do the thing' })
+    first.push(spec('two'))
+    await flush()
+
+    const second = new SessionStore()
+    second.attach(storage, 'domino:history:test')
+    expect(await second.load()).toBe(true)
+    expect(second.historySize).toBe(2)
+    const entries = second.entries()
+    expect(entries[0]).toMatchObject({ kind: 'edit', note: 'do the thing', pageId: 'one' })
+    expect(entries[1].current).toBe(true)
+    // navigation continues from the restored position
+    expect(second.back()?.spec.page).toBe('one')
+    expect(second.canForward).toBe(true)
+  })
+
+  it('reset persists the cleared stack', async () => {
+    const storage = memStorage()
+    const a = new SessionStore()
+    a.attach(storage, 'domino:history:reset')
+    a.push(spec('gone'))
+    await flush()
+    a.reset()
+    await flush()
+    const b = new SessionStore()
+    b.attach(storage, 'domino:history:reset')
+    expect(await b.load()).toBe(false) // empty stack = nothing to restore
+    expect(b.historySize).toBe(0)
+  })
+
+  it('a corrupt payload starts fresh instead of crashing', async () => {
+    const storage = memStorage()
+    await storage.set('domino:history:bad', '{not json')
+    const s = new SessionStore()
+    s.attach(storage, 'domino:history:bad')
+    expect(await s.load()).toBe(false)
+    expect(s.historySize).toBe(0)
+  })
+})
+
 describe('hashContext', () => {
   it('is stable for equal input and differs otherwise', () => {
     expect(hashContext({ a: 1 })).toBe(hashContext({ a: 1 }))

@@ -44,5 +44,25 @@ test.describe('screen history drawer', () => {
     await page.getByRole('button', { name: '화면 히스토리' }).click()
     await expect(panel.locator('.history-item').nth(1)).toHaveAttribute('aria-current', 'true')
     await expect(page.getByRole('button', { name: '다음 화면 (⌘])' })).toBeEnabled()
+
+    // The edit row carries the request itself…
+    await expect(panel.locator('.history-item').first().locator('.history-note')).toContainText(
+      'tweak the dashboard wording'
+    )
+    await panel.locator('.history-item').first().click() // close back onto the edited moment
+
+    // …and the stack survives a restart: reload lands on home (nothing
+    // auto-reopens), so reopen the app — the runtime restores the view AND
+    // the persisted stack.
+    await page.reload()
+    await page.getByLabel('domino URL').fill('http://localhost:8787/app.domino')
+    await page.getByRole('button', { name: '열기' }).click()
+    await expect(page.getByRole('button', { name: '화면 히스토리' })).toBeVisible({ timeout: 20_000 })
+    await page.getByRole('button', { name: '화면 히스토리' }).click()
+    const restoredRows = page.locator('.history-panel.is-open .history-item')
+    await expect(restoredRows.first()).toBeVisible({ timeout: 20_000 })
+    expect(await restoredRows.count()).toBeGreaterThanOrEqual(3)
+    // The moment we jumped to before the reload is still the current one.
+    await expect(restoredRows.first()).toHaveAttribute('aria-current', 'true')
   })
 })

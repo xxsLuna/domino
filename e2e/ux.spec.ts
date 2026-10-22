@@ -39,6 +39,31 @@ test.describe('turn UX affordances', () => {
     await expect(desc).not.toContainText('· edit')
   })
 
+  test('the command palette jumps to pages and opens screens', async ({ page }) => {
+    await seedMockLlm(page)
+    await openExample(page)
+    await login(page)
+
+    await page.keyboard.press('Control+k')
+    const input = page.getByLabel('명령 검색')
+    await expect(input).toBeVisible()
+    await input.fill('설정')
+    await input.press('Enter')
+    // Settings opens as a modal over the runtime.
+    await expect(page.getByRole('dialog', { name: '설정' })).toBeVisible()
+  })
+
+  test('export downloads the open .domino source', async ({ page }) => {
+    await seedMockLlm(page)
+    await openExample(page)
+    await login(page)
+
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'domino 내보내기' }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toMatch(/\.domino$/)
+  })
+
   test('a failed turn shows a banner with a working retry', async ({ page }) => {
     // Point the chat endpoint at a dead port: boot fails before anything renders.
     await page.addInitScript(() => {

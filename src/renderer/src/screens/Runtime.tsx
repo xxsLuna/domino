@@ -59,8 +59,9 @@ import {
   type UiSpec
 } from '@core/spec'
 import { resolvePageId } from '@core/pageLinks'
+import { getCachedText } from '@core/session/registry'
 import { isModalPresentation } from '@core/ui/presentation'
-import type { LoadedDomino } from '../loadDomino'
+import { loadDominoText, type LoadedDomino } from '../loadDomino'
 import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
 
@@ -87,6 +88,8 @@ export function Runtime({
   const historyRef = useRef<ChatMessage[]>([])
   /** The most recent turn — its prompt is what "retry" re-runs after a failure. */
   const lastTurnRef = useRef<{ prompt: string; cacheKey: string | null } | null>(null)
+  /** The edit request text — stamped onto the history entry its turn pushes. */
+  const pendingEditNoteRef = useRef<string | undefined>(undefined)
   /** Bumped when history is wiped (rebuild): an orphaned turn must not append back. */
   const historyEpochRef = useRef(0)
   const turnSeq = useRef(0)
@@ -432,7 +435,12 @@ export function Runtime({
             : /^(init|auth-ok|signed-out)::/.test(cacheKey)
               ? 'start'
               : 'action')
-      session.push(spec, { kind })
+      // An edit's history row carries the request itself — what changed, at a glance.
+      const note =
+        kind === 'edit' && pendingEditNoteRef.current
+          ? pendingEditNoteRef.current.split('\n')[0].slice(0, 120)
+          : undefined
+      session.push(spec, { kind, ...(note ? { note } : {}) })
       // Post-edit: offer a one-tap undo back to the moment BEFORE this edit.
       // Any other new moment retires the offer — its baseline has moved on.
       if (kind === 'edit') {
@@ -808,6 +816,7 @@ export function Runtime({
       if (pregenSeq.current !== seq || needsApiKey(config)) return
       const base = knownRef.current
       if (!base) return
+      let builtCount = 0
       for (const pageId of pregenTargets(domino, base, loggedInRef.current)) {
         if (pregenSeq.current !== seq) return
         // The user may have reached this page while earlier targets were
@@ -823,14 +832,21 @@ export function Runtime({
         // pollution), no showSpec (the user's screen never flickers).
         knownRef.current = mergeKnownPage(knownRef.current, built, pageId)
         setCurrentSpec((prev) => (prev ? mergeKnownPage(prev, built, pageId) : prev))
+        builtCount++
       }
       // The view snapshot now carries the background pages too — reopening keeps them.
       const known = knownRef.current
       if (pregenSeq.current === seq && known) {
         void screensRef.current?.saveView(loggedInRef.current, { page: known.page, known })
+        // Idle continuation: a run that made progress arms the next batch until
+        // every target is warm; an all-failures run just re-arms on the next turn.
+        pregenScheduled.current = false
+        if (builtCount > 0 && pregenTargets(domino, known, loggedInRef.current).length > 0) {
+          schedulePreGen()
+        }
       }
     },
-    [config, domino, pregenOne]
+    [config, domino, pregenOne, schedulePreGen]
   )
   pregenRunnerRef.current = maybeRunPreGen
 
@@ -846,12 +862,25 @@ export function Runtime({
       const screens = await ScreenStore.open(storage, domino.id)
       screensRef.current = screens
       if (cancelled) return
+      // The stack rides along too: reopening lands on the very moment the
+      // user left, not a one-entry stand-in.
+      session.attach(storage, `domino:history:${domino.id}`)
 
       // Reopen lands exactly where the app was left — restored, not re-generated.
       const view = await screens.loadView(loggedInRef.current)
       if (cancelled) return
       if (view && findPage(view.known, view.page)) {
-        finalizeSpec({ ...view.known, page: view.page }, null)
+        const restoredHistory = await session.load()
+        if (cancelled) return
+        if (restoredHistory && session.historySize > 0) {
+          // The restored stack already holds this moment — show it without
+          // pushing a duplicate entry in front of it.
+          showSpec({ ...view.known, page: view.page })
+          syncNav()
+          schedulePreGen()
+        } else {
+          finalizeSpec({ ...view.known, page: view.page }, null)
+        }
         return
       }
 
@@ -936,6 +965,9 @@ export function Runtime({
       } else if (e.key === ']') {
         e.preventDefault()
         goForward()
+      } else if (e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -1184,6 +1216,7 @@ export function Runtime({
    */
   const processEdit = useCallback(
     async (item: { text: string; pageId: string }): Promise<TurnOutcome> => {
+      pendingEditNoteRef.current = item.text
       historyRef.current.push({
         role: 'user',
         content: `EDIT REQUEST (page "${item.pageId}"): ${item.text}`
@@ -1310,6 +1343,25 @@ export function Runtime({
       `init::${target}::auth:${loggedInRef.current}`
     )
   }, [clearEditHighlight, clearResultToast, interruptTurn, runTurn, session, syncNav])
+
+  /**
+   * Download the open .domino source — the exact text the app was built from
+   * (cached at load; re-fetched only if the cache entry is gone).
+   */
+  const exportDomino = useCallback((): void => {
+    void (async () => {
+      try {
+        const text = (await getCachedText(storage, loaded.source)) ?? (await loadDominoText(loaded.source))
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = `${loaded.name || 'app'}.domino`
+        a.click()
+      } catch {
+        setError('현재 domino를 내보내지 못했습니다 — 원본 소스를 다시 불러올 수 없습니다.')
+      }
+    })()
+  }, [loaded, storage])
 
   /**
    * Re-render the CURRENT page from scratch: one INITIAL-style turn for this
@@ -1499,12 +1551,73 @@ export function Runtime({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- attach-once listeners read refs and stable setters only
   }, [])
 
+  /* ------------------------- command palette (⌘K) ------------------------- */
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [paletteQuery, setPaletteQuery] = useState('')
+  const [paletteSel, setPaletteSel] = useState(0)
+  useEffect(() => {
+    if (!paletteOpen) {
+      setPaletteQuery('')
+      setPaletteSel(0)
+    }
+  }, [paletteOpen])
+
+  interface PaletteItem {
+    key: string
+    label: string
+    icon?: string
+    hint?: string
+    run: () => void
+  }
+  const paletteItems: PaletteItem[] = [
+    ...(currentSpec
+      ? [
+          { key: 'edit', label: '화면 수정', icon: 'edit', run: () => setEditOpen(true) },
+          { key: 'refresh', label: '화면 다시 그리기', icon: 'refresh', run: refreshPage },
+          { key: 'rebuild', label: '처음부터 다시 만들기', icon: 'sparkles', run: () => setRebuildOpen(true) }
+        ]
+      : []),
+    { key: 'back', label: '이전 화면', icon: 'back', run: goBack },
+    { key: 'forward', label: '다음 화면', icon: 'arrow-right', run: goForward },
+    { key: 'export', label: 'domino 내보내기', icon: 'download', run: exportDomino },
+    { key: 'history', label: '화면 히스토리', icon: 'history', run: () => setHistoryOpen(true) },
+    {
+      key: 'inspect',
+      label: chrome === 'app' ? '구조 보기' : '앱처럼 보기',
+      icon: 'layers',
+      run: () => setChrome(chrome === 'app' ? 'inspect' : 'app')
+    },
+    { key: 'settings', label: '설정', icon: 'settings', run: onOpenSettings },
+    { key: 'home', label: 'domino 닫기', icon: 'close', run: onHome },
+    ...(currentSpec?.pages ?? [])
+      .filter((p) => p.id !== currentSpec?.page)
+      .map((p) => ({
+        key: `page:${p.id}`,
+        label: p.name,
+        hint: '페이지',
+        run: () => {
+          if (!currentSpec) return
+          interruptTurn()
+          finalizeSpec({ ...currentSpec, page: p.id }, null)
+        }
+      }))
+  ]
+  const paletteFiltered = paletteItems.filter((it) =>
+    it.label.toLowerCase().includes(paletteQuery.trim().toLowerCase())
+  )
+  const paletteActive = Math.min(paletteSel, Math.max(0, paletteFiltered.length - 1))
+  const runPalette = (item: PaletteItem): void => {
+    setPaletteOpen(false)
+    item.run()
+  }
+
   const menuAction = (key: React.Key): void => {
     if (key === 'back') goBack()
     else if (key === 'forward') goForward()
     else if (key === 'edit') setEditOpen(true)
     else if (key === 'rebuild') setRebuildOpen(true)
     else if (key === 'refresh') refreshPage()
+    else if (key === 'export') exportDomino()
     else if (key === 'history') setHistoryOpen(true)
     else if (key === 'handle-side') {
       // Cross-wall moves live here: swiping horizontally from the very edge
@@ -1641,6 +1754,12 @@ export function Runtime({
             className="hide-phone"
           />
           <BarButton
+            label="domino 내보내기"
+            icon="download"
+            onPress={exportDomino}
+            className="hide-phone"
+          />
+          <BarButton
             label="화면 히스토리"
             icon="history"
             onPress={() => setHistoryOpen((v) => !v)}
@@ -1722,6 +1841,10 @@ export function Runtime({
               <Dropdown.Item id="refresh" textValue="화면 다시 그리기">
                 <Icon name="refresh" />
                 <Label>화면 다시 그리기</Label>
+              </Dropdown.Item>
+              <Dropdown.Item id="export" textValue="domino 내보내기">
+                <Icon name="download" />
+                <Label>domino 내보내기</Label>
               </Dropdown.Item>
               <Dropdown.Item id="history" textValue="화면 히스토리">
                 <Icon name="history" />
@@ -1837,6 +1960,68 @@ export function Runtime({
           </AlertDialog.Dialog>
         </AlertDialog.Container>
       </AlertDialog.Backdrop>
+
+      {/* Command palette (⌘/Ctrl K): every runtime action plus a jump to any
+          page of the current screen. Enter runs the highlighted row. */}
+      <Modal.Backdrop
+        isOpen={paletteOpen}
+        onOpenChange={(open) => {
+          if (!open) setPaletteOpen(false)
+        }}
+        variant="blur"
+      >
+        <Modal.Container size="sm" placement="top" scroll="inside">
+          <Modal.Dialog aria-label="명령 팔레트">
+            <Modal.CloseTrigger />
+            <Modal.Body className="flex flex-col gap-2">
+              <input
+                className="w-full rounded-lg border border-[var(--separator)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                value={paletteQuery}
+                placeholder="명령 또는 페이지 검색…"
+                aria-label="명령 검색"
+                autoFocus
+                onChange={(e) => {
+                  setPaletteQuery(e.target.value)
+                  setPaletteSel(0)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    setPaletteSel((s) => s + 1)
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setPaletteSel((s) => Math.max(0, s - 1))
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault()
+                    const item = paletteFiltered[paletteActive]
+                    if (item) runPalette(item)
+                  }
+                }}
+              />
+              <ul className="flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
+                {paletteFiltered.length === 0 ? (
+                  <li className="px-2 py-3 text-sm text-muted">일치하는 명령이 없습니다.</li>
+                ) : (
+                  paletteFiltered.map((item, i) => (
+                    <li key={item.key}>
+                      <button
+                        type="button"
+                        className={`palette-item${i === paletteActive ? ' is-active' : ''}`}
+                        onMouseEnter={() => setPaletteSel(i)}
+                        onClick={() => runPalette(item)}
+                      >
+                        {item.icon ? <Icon name={item.icon} size={16} /> : null}
+                        <span className="flex-1 truncate">{item.label}</span>
+                        {item.hint ? <span className="palette-hint">{item.hint}</span> : null}
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </Modal.Body>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
       {/* Short forms arrive as a full-screen sheet over the page they were
           opened from; closing it (X, Escape, Android back, Cancel) = goBack. */}
@@ -1994,6 +2179,7 @@ export function Runtime({
                 </span>
                 <span className="history-label">{e.label}</span>
                 <time className="history-time">{new Date(e.at).toTimeString().slice(0, 5)}</time>
+                {e.note ? <span className="history-note">{e.note}</span> : null}
               </button>
             </li>
           ))}

@@ -1,4 +1,5 @@
 import type { UiSpec } from '../spec'
+import type { KeyValueStorage } from './prefs'
 
 /**
  * SessionStore — in-memory only by design.
@@ -17,6 +18,8 @@ export interface Snapshot {
   at: number
   kind: HistoryKind
   label: string
+  /** First line of the edit request, when this moment came from one. */
+  note?: string
 }
 
 /** One row of the history panel / the agent's injected screen-history line. */
@@ -27,11 +30,13 @@ export interface HistoryEntry {
   kind: HistoryKind
   at: number
   current: boolean
+  note?: string
 }
 
 export interface SnapshotMeta {
   kind: HistoryKind
   label?: string
+  note?: string
 }
 
 /**
@@ -44,6 +49,10 @@ export class SessionStore {
   private stack: Snapshot[] = []
   private idx = -1
   private readonly cache = new Map<string, UiSpec>()
+  /** Optional cross-restart persistence (attach() wires it; debounced). */
+  private storage: KeyValueStorage | null = null
+  private historyKey: string | null = null
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
   get current(): Snapshot | null {
     return this.idx >= 0 ? this.stack[this.idx] : null
@@ -69,7 +78,8 @@ export class SessionStore {
       spec,
       at: Date.now(),
       kind: meta?.kind ?? 'action',
-      label: meta?.label ?? page?.name ?? spec.page
+      label: meta?.label ?? page?.name ?? spec.page,
+      ...(meta?.note !== undefined ? { note: meta.note } : {})
     })
     this.idx = this.stack.length - 1
     if (this.stack.length > MAX_HISTORY) {
@@ -77,17 +87,20 @@ export class SessionStore {
       this.stack.splice(0, drop)
       this.idx = Math.max(0, this.idx - drop)
     }
+    this.schedulePersist()
   }
 
   back(): Snapshot | null {
     if (!this.canBack) return null
     this.idx -= 1
+    this.schedulePersist()
     return this.stack[this.idx]
   }
 
   forward(): Snapshot | null {
     if (!this.canForward) return null
     this.idx += 1
+    this.schedulePersist()
     return this.stack[this.idx]
   }
 
@@ -95,6 +108,7 @@ export class SessionStore {
   jumpTo(index: number): Snapshot | null {
     if (!Number.isInteger(index) || index < 0 || index >= this.stack.length) return null
     this.idx = index
+    this.schedulePersist()
     return this.stack[index]
   }
 
@@ -106,8 +120,55 @@ export class SessionStore {
       label: s.label,
       kind: s.kind,
       at: s.at,
-      current: i === this.idx
+      current: i === this.idx,
+      ...(s.note !== undefined ? { note: s.note } : {})
     }))
+  }
+
+  /**
+   * Opt into cross-restart persistence: called once at boot with the app's
+   * storage and a per-domino key; without it the store stays in-memory.
+   */
+  attach(storage: KeyValueStorage, historyKey: string): void {
+    this.storage = storage
+    this.historyKey = historyKey
+  }
+
+  /** Restore a previously persisted stack (any parse failure = fresh start). */
+  async load(): Promise<boolean> {
+    if (!this.storage || !this.historyKey) return false
+    try {
+      const raw = await this.storage.get(this.historyKey)
+      if (!raw) return false
+      const parsed = JSON.parse(raw) as { stack?: Snapshot[]; idx?: number }
+      if (!Array.isArray(parsed.stack) || parsed.stack.length === 0) return false
+      if (!parsed.stack.every((s) => s && s.kind && s.label && s.spec?.pages)) return false
+      this.stack = parsed.stack.slice(-MAX_HISTORY)
+      const idx = typeof parsed.idx === 'number' ? parsed.idx : this.stack.length - 1
+      this.idx = Math.min(Math.max(idx, 0), this.stack.length - 1)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Debounced write — 50 full specs are far too big to save per keystroke-ish navigation. */
+  private schedulePersist(): void {
+    if (!this.storage || !this.historyKey) return
+    if (this.saveTimer !== null) clearTimeout(this.saveTimer)
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      void this.persist()
+    }, 800)
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.storage || !this.historyKey) return
+    try {
+      await this.storage.set(this.historyKey, JSON.stringify({ v: 1, stack: this.stack, idx: this.idx }))
+    } catch {
+      /* persistence is best-effort — the session keeps working in memory */
+    }
   }
 
   /** Session-scoped render cache (cleared when the program restarts). */
@@ -125,9 +186,14 @@ export class SessionStore {
 
   /** Drop the back stack and every cached render ("rebuild from scratch"). */
   reset(): void {
+    if (this.saveTimer !== null) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
     this.stack = []
     this.idx = -1
     this.cache.clear()
+    this.schedulePersist() // persist the cleared stack too
   }
 }
 
