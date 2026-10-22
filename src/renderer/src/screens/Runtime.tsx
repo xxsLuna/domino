@@ -1273,7 +1273,9 @@ export function Runtime({
       try {
         const v = JSON.parse(String(raw)) as { side?: string; y?: unknown }
         if ((v.side === 'left' || v.side === 'right') && typeof v.y === 'number' && Number.isFinite(v.y)) {
-          setHandlePos({ side: v.side, y: Math.min(0.94, Math.max(0.06, v.y)) })
+          const pos = { side: v.side, y: Math.min(0.94, Math.max(0.06, v.y)) } as const
+          handlePosRef.current = pos
+          setHandlePos(pos)
         }
       } catch {
         /* corrupted placement — keep the default */
@@ -1283,47 +1285,88 @@ export function Runtime({
       live = false
     }
   }, [storage])
-  const handleDrag = useRef<{ id: number; startY: number; moved: boolean } | null>(null)
-  const onHandlePointerDown = (e: React.PointerEvent<HTMLButtonElement>): void => {
-    handleDrag.current = { id: e.pointerId, startY: e.clientY, moved: false }
-    const el = e.currentTarget
-    el.setPointerCapture(e.pointerId)
-    // A native capture-phase listener at the target fires BEFORE React's
-    // root-delegated synthetic dispatch: swallowing pointerup there stops the
-    // trigger's press entirely, so a drag can never open the menu. A plain tap
-    // isn't swallowed and opens it through the normal press path.
-    const onUp = (ev: PointerEvent): void => {
-      const d = handleDrag.current
-      handleDrag.current = null
-      el.removeEventListener('pointerup', onUp, true)
-      el.removeEventListener('pointercancel', onUp, true)
+  // Native listeners only: react-aria's press handling drops pointer moves on
+  // its Button mid-drag (mouse path — touch differs), so the drag tracks on
+  // window-level capture listeners installed at pointerdown: target
+  // independent, starts before React/react-aria see the press, and the release
+  // swallow at window-capture kills the event before any root dispatch — a
+  // drag can never open the menu, a plain tap flows through untouched.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuOpenRef = useRef(false)
+  const dragCloseRef = useRef(false)
+  const handleRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    const el = handleRef.current
+    if (!el) return
+    let pointerId = -1
+    let startY = 0
+    let moved = false
+    const cleanup = (): void => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onUp, true)
       try {
-        el.releasePointerCapture(ev.pointerId)
+        el.releasePointerCapture(pointerId)
       } catch {
-        /* capture already gone */
+        /* capture already released */
       }
-      if (!d?.moved) return
-      ev.stopImmediatePropagation()
+      pointerId = -1
+    }
+    const onMove = (e: PointerEvent): void => {
+      if (e.pointerId !== pointerId) return
+      if (Math.abs(e.clientY - startY) > 6) moved = true
+      if (!moved) return
+      // First drag movement: close the menu if the trigger already opened it
+      // (menus may open on press-start), and block any further open attempts
+      // until the next press. Letting events flow keeps react-aria's press
+      // bookkeeping balanced — swallowing them left a stuck pressed state
+      // that ate the next tap.
+      dragCloseRef.current = true
+      if (menuOpenRef.current) {
+        menuOpenRef.current = false
+        setMenuOpen(false)
+      }
+      // Vertical only: the wall never changes mid-drag (an inward horizontal
+      // swipe from the edge is the SYSTEM back gesture — the menu flips walls
+      // instead). Bounds keep the whole handle on screen.
+      const next = {
+        side: handlePosRef.current.side,
+        y: Math.min(0.94, Math.max(0.06, e.clientY / window.innerHeight))
+      }
+      handlePosRef.current = next
+      setHandlePos(next)
+    }
+    const onUp = (e: PointerEvent): void => {
+      if (e.pointerId !== pointerId) return
+      const wasDrag = moved
+      cleanup()
+      if (!wasDrag) return
       void storage.set('domino:handle-pos', JSON.stringify(handlePosRef.current))
     }
-    el.addEventListener('pointerup', onUp, true)
-    el.addEventListener('pointercancel', onUp, true)
-  }
-  const onHandlePointerMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
-    const d = handleDrag.current
-    if (!d || d.id !== e.pointerId) return
-    if (Math.abs(e.clientY - d.startY) > 6) d.moved = true
-    if (!d.moved) return
-    // Vertical only: the wall never changes mid-drag (an inward horizontal
-    // swipe from the edge is the SYSTEM back gesture on gesture-nav phones —
-    // side switching lives in the menu instead). Glued top-to-bottom bounds.
-    const next = {
-      side: handlePosRef.current.side,
-      y: Math.min(0.94, Math.max(0.06, e.clientY / window.innerHeight))
+    const onDown = (e: PointerEvent): void => {
+      if (pointerId !== -1) return
+      dragCloseRef.current = false
+      pointerId = e.pointerId
+      startY = e.clientY
+      moved = false
+      try {
+        el.setPointerCapture(e.pointerId)
+      } catch {
+        /* capture unsupported — window listeners still track */
+      }
+      window.addEventListener('pointermove', onMove, true)
+      window.addEventListener('pointerup', onUp, true)
+      window.addEventListener('pointercancel', onUp, true)
     }
-    handlePosRef.current = next
-    setHandlePos(next)
-  }
+    // Capture phase at the element: runs before React's root dispatch and
+    // before react-aria's press handlers, so tracking always starts first.
+    el.addEventListener('pointerdown', onDown, true)
+    return () => {
+      el.removeEventListener('pointerdown', onDown, true)
+      cleanup()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- attach-once listeners read refs and stable setters only
+  }, [])
 
   const menuAction = (key: React.Key): void => {
     if (key === 'back') goBack()
@@ -1475,8 +1518,18 @@ export function Runtime({
       {/* Phones: the menu lives behind a slim handle docked to the right edge;
           the handle IS the trigger — tapping it opens the menu directly, no
           square button in between. */}
-      <Dropdown>
+      <Dropdown
+        isOpen={menuOpen}
+        onOpenChange={(open) => {
+          // A just-finished drag may try to open (press-end and/or click):
+          // decline while the flag stands, until the next press re-arms it.
+          const next = open && dragCloseRef.current ? false : open
+          menuOpenRef.current = next
+          setMenuOpen(next)
+        }}
+      >
         <Button
+          ref={handleRef}
           isIconOnly
           size="sm"
           variant="secondary"
@@ -1484,8 +1537,6 @@ export function Runtime({
           aria-label="Domino UI 메뉴"
           data-side={handlePos.side}
           style={{ top: `${handlePos.y * 100}%` }}
-          onPointerDown={onHandlePointerDown}
-          onPointerMove={onHandlePointerMove}
         >
           {streaming ? <Spinner size="sm" /> : <Icon name="more" size={16} />}
         </Button>
