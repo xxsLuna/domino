@@ -614,6 +614,9 @@
   .edit-toast {
     animation: none;
   }
+  .result-toast {
+    animation: none;
+  }
   .render-gauge,
   .render-gauge-fill {
     transition: none;
@@ -642,6 +645,25 @@
     opacity: 0;
     transform: translateY(6px);
   }
+}
+
+/* Post-turn result chip (undo / background-edit notice) — rides above the
+   in-flight edit chip so both stay readable. */
+.result-toast {
+  position: absolute;
+  right: calc(var(--sar) + 16px);
+  bottom: calc(var(--bottom-nav-h, 0px) + 72px);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 16px;
+  font-size: 13px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  box-shadow: var(--overlay-shadow);
+  animation: toast-in 0.2s ease-out;
 }
 
 /* ------------------------- screen history drawer ------------------------- */

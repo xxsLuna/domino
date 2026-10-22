@@ -1,7 +1,7 @@
 import { createElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Button, Checkbox, Form, Input, RadioGroup, Select, Switch, Textarea } from './components'
+import { Alert, Button, Checkbox, Form, Input, RadioGroup, Select, Switch, Textarea } from './components'
 import type { CardNode } from '../spec'
 
 const render = <P extends object>(c: ComponentType<P>, props: P): string =>
@@ -120,5 +120,28 @@ describe('a form with fields always renders a submit action', () => {
     const html = formHtml([inputNode])
     expect(submitCount(html)).toBe(1)
     expect(html).toContain('저장')
+  })
+})
+
+describe('Alert recovery action', () => {
+  it('renders the runtime action button next to the dismiss control', () => {
+    const html = renderToStaticMarkup(
+      createElement(Alert, {
+        variant: 'danger',
+        title: '화면을 만들지 못했습니다',
+        message: 'boom',
+        action: { label: '다시 시도', onPress: () => {} },
+        onClose: () => {}
+      })
+    )
+    expect(html).toContain('다시 시도')
+    expect(html).toContain('Dismiss')
+    expect(html).toContain('boom')
+  })
+
+  it('renders without an action when none is given', () => {
+    const html = renderToStaticMarkup(createElement(Alert, { variant: 'info', message: 'hi' }))
+    expect(html).not.toContain('다시 시도')
+    expect(html).toContain('hi')
   })
 })

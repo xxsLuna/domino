@@ -85,6 +85,8 @@ export function Runtime({
 
   const sessionRef = useRef(new SessionStore())
   const historyRef = useRef<ChatMessage[]>([])
+  /** The most recent turn — its prompt is what "retry" re-runs after a failure. */
+  const lastTurnRef = useRef<{ prompt: string; cacheKey: string | null } | null>(null)
   /** Bumped when history is wiped (rebuild): an orphaned turn must not append back. */
   const historyEpochRef = useRef(0)
   const turnSeq = useRef(0)
@@ -358,6 +360,57 @@ export function Runtime({
     [applyNav]
   )
 
+  /**
+   * A failed turn keeps the app usable: show the error, and when we have a
+   * cached screen for the very same action, keep it on stage ("stale but
+   * there") instead of leaving an empty page behind the banner.
+   */
+  const failTurn = useCallback(
+    (message: string, cacheKey: string | null): void => {
+      const fallback = cacheKey ? screensRef.current?.get(cacheKey, schemaHashes()) : null
+      if (fallback) {
+        showSpec(withTargetPage(fallback.spec, knownRef.current))
+        setError(`${message}\n이전에 만들어둔 화면을 그대로 보여 주고 있습니다.`)
+      } else {
+        setError(message)
+      }
+    },
+    [schemaHashes, showSpec]
+  )
+
+  /* --------------------- result toast (undo / notice) --------------------- */
+  const [resultToast, setResultToast] = useState<{
+    kind: 'undo' | 'notice'
+    text: string
+    target: number | null
+    pageId?: string
+  } | null>(null)
+  const resultToastTimer = useRef<number | null>(null)
+  const clearResultToast = useCallback((): void => {
+    if (resultToastTimer.current !== null) {
+      window.clearTimeout(resultToastTimer.current)
+      resultToastTimer.current = null
+    }
+    setResultToast(null)
+  }, [])
+  const armResultToast = useCallback(
+    (toast: NonNullable<typeof resultToast>, ms: number): void => {
+      if (resultToastTimer.current !== null) window.clearTimeout(resultToastTimer.current)
+      setResultToast(toast)
+      resultToastTimer.current = window.setTimeout(() => {
+        resultToastTimer.current = null
+        setResultToast(null)
+      }, ms)
+    },
+    []
+  )
+  useEffect(
+    () => () => {
+      if (resultToastTimer.current !== null) window.clearTimeout(resultToastTimer.current)
+    },
+    []
+  )
+
   const finalizeSpec = useCallback(
     (spec: UiSpec, cacheKey: string | null, kindHint?: HistoryKind) => {
       // What the history panel shows as this moment's badge.
@@ -371,6 +424,16 @@ export function Runtime({
               ? 'start'
               : 'action')
       session.push(spec, { kind })
+      // Post-edit: offer a one-tap undo back to the moment BEFORE this edit.
+      // Any other new moment retires the offer — its baseline has moved on.
+      if (kind === 'edit') {
+        const undoTo = session.historySize - 2
+        if (undoTo >= 0) {
+          armResultToast({ kind: 'undo', text: '수정이 반영되었습니다', target: undoTo }, 8_000)
+        }
+      } else {
+        setResultToast((prev) => (prev?.kind === 'undo' ? null : prev))
+      }
       if (cacheKey) session.cacheSet(cacheKey, spec)
       // The model's state is the truth when it sends one (its own declarations
       // plus any explicit changes); when it omits the field, keep the live
@@ -386,7 +449,7 @@ export function Runtime({
       syncNav()
       schedulePreGen()
     },
-    [clearEditHighlight, schedulePreGen, session, showSpec, syncNav]
+    [armResultToast, clearEditHighlight, schedulePreGen, session, showSpec, syncNav]
   )
 
   const apiRuntime = useCallback(
@@ -419,8 +482,14 @@ export function Runtime({
       // Keep the page the user is looking at; every page the model returned
       // (one page, or all of them for an app-wide edit) still wins.
       showSpec({ ...spec, page: visible?.page ?? spec.page })
+      // The user is elsewhere: landing silently felt like a lost request —
+      // say so, and let the chip jump straight to the changed page.
+      armResultToast(
+        { kind: 'notice', text: `수정 완료 · ${findPage(spec, pageId)?.name ?? pageId}`, target: null, pageId },
+        8_000
+      )
     },
-    [finalizeSpec, session, showSpec]
+    [armResultToast, finalizeSpec, session, showSpec]
   )
 
   /**
@@ -468,6 +537,7 @@ export function Runtime({
     async (prompt: string, cacheKey: string | null): Promise<TurnOutcome> => {
       const isEdit = Boolean(cacheKey?.startsWith('edit::'))
       const editPageId = isEdit && cacheKey ? cacheKey.slice('edit::'.length).split('::')[0] : null
+      lastTurnRef.current = { prompt, cacheKey }
       const myTurn = ++turnSeq.current
       turnKindRef.current = isEdit ? 'edit' : 'user'
       pregenSeq.current++ // a live request outranks background building
@@ -601,14 +671,14 @@ export function Runtime({
               break
             }
             case 'error':
-              setError(update.message)
+              failTurn(update.message, cacheKey)
               break
             case 'done':
               break
           }
         }
       } catch (err) {
-        if (turnSeq.current === myTurn) setError((err as Error).message)
+        if (turnSeq.current === myTurn) failTurn((err as Error).message, cacheKey)
       } finally {
         // Hand our messages back even when superseded: an already-executed
         // tool call must reach the next turn's history. Append-only, so a turn
@@ -645,6 +715,7 @@ export function Runtime({
       clearEditHighlight,
       config,
       domino,
+      failTurn,
       finalizeSpec,
       landEdit,
       restoreAt,
@@ -1160,6 +1231,7 @@ export function Runtime({
     editQueueRef.current = []
     setEditCount(0)
     clearEditHighlight()
+    clearResultToast()
     turnKindRef.current = null
     interruptTurn()
     historyEpochRef.current++
@@ -1194,7 +1266,23 @@ export function Runtime({
       `INITIAL SCREEN.${auth} Show the "${target}" page following the screen patterns.`,
       `init::${target}::auth:${loggedInRef.current}`
     )
-  }, [clearEditHighlight, interruptTurn, runTurn, session, syncNav])
+  }, [clearEditHighlight, clearResultToast, interruptTurn, runTurn, session, syncNav])
+
+  /**
+   * Re-render the CURRENT page from scratch: one INITIAL-style turn for this
+   * page (fresh data via call_api) while the stack, caches and every other
+   * page stay untouched — a refresh, not a reset (see rebuildApp).
+   */
+  const refreshPage = useCallback((): void => {
+    const spec = currentSpecRef.current
+    if (!spec) return
+    const target = spec.page
+    const auth = domino.auth.required ? ` Logged in: ${loggedInRef.current ? 'yes' : 'no'}.` : ''
+    void runTurn(
+      `INITIAL SCREEN.${auth} Show the "${target}" page following the screen patterns.`,
+      `init::${target}::auth:${loggedInRef.current}`
+    )
+  }, [domino, runTurn])
 
   /* -------------------------------- render -------------------------------- */
   const view = useMemo(
@@ -1373,6 +1461,7 @@ export function Runtime({
     else if (key === 'forward') goForward()
     else if (key === 'edit') setEditOpen(true)
     else if (key === 'rebuild') setRebuildOpen(true)
+    else if (key === 'refresh') refreshPage()
     else if (key === 'history') setHistoryOpen(true)
     else if (key === 'handle-side') {
       // Cross-wall moves live here: swiping horizontally from the very edge
@@ -1497,6 +1586,13 @@ export function Runtime({
             className="hide-phone"
           />
           <BarButton
+            label="화면 다시 그리기"
+            icon="refresh"
+            onPress={refreshPage}
+            isDisabled={!currentSpec}
+            className="hide-phone"
+          />
+          <BarButton
             label="화면 히스토리"
             icon="history"
             onPress={() => setHistoryOpen((v) => !v)}
@@ -1505,7 +1601,7 @@ export function Runtime({
           />
           <BarButton
             label="처음부터 다시 만들기"
-            icon="refresh"
+            icon="sparkles"
             onPress={() => setRebuildOpen(true)}
             isDisabled={!currentSpec}
             className="hide-phone"
@@ -1549,6 +1645,7 @@ export function Runtime({
               ...(canForward ? [] : ['forward']),
               ...(currentSpec ? [] : ['edit']),
               ...(currentSpec ? [] : ['rebuild']),
+              ...(currentSpec ? [] : ['refresh']),
               ...(currentSpec ? [] : ['history'])
             ]}
           >
@@ -1571,8 +1668,12 @@ export function Runtime({
                 <Label>다음 화면</Label>
               </Dropdown.Item>
               <Dropdown.Item id="rebuild" textValue="처음부터 다시 만들기">
-                <Icon name="refresh" />
+                <Icon name="sparkles" />
                 <Label>처음부터 다시 만들기</Label>
+              </Dropdown.Item>
+              <Dropdown.Item id="refresh" textValue="화면 다시 그리기">
+                <Icon name="refresh" />
+                <Label>화면 다시 그리기</Label>
               </Dropdown.Item>
               <Dropdown.Item id="history" textValue="화면 히스토리">
                 <Icon name="history" />
@@ -1736,6 +1837,17 @@ export function Runtime({
                 variant="danger"
                 title="화면을 만들지 못했습니다"
                 message={error}
+                action={
+                  lastTurnRef.current
+                    ? {
+                        label: '다시 시도',
+                        onPress: () => {
+                          const last = lastTurnRef.current
+                          if (last) void runTurn(last.prompt, last.cacheKey)
+                        }
+                      }
+                    : undefined
+                }
                 onClose={() => setError(null)}
               />
             </div>
@@ -1765,6 +1877,40 @@ export function Runtime({
           <span>
             {editCount > 1 ? `화면 수정 요청 ${editCount}건 처리 중…` : '화면 수정 요청 처리 중…'}
           </span>
+        </div>
+      ) : null}
+
+      {/* Post-turn result chip: one-tap undo right after an edit lands, or a
+          jump-to-page notice when the edit finished while browsing elsewhere. */}
+      {resultToast ? (
+        <div className="result-toast" role="status" aria-live="polite">
+          <span>{resultToast.text}</span>
+          {resultToast.kind === 'undo' && resultToast.target !== null ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                if (restoreAt(resultToast.target!, true)) clearResultToast()
+              }}
+            >
+              되돌리기
+            </Button>
+          ) : resultToast.pageId ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                const cur = currentSpecRef.current
+                const known = knownRef.current
+                if (cur && known && findPage(known, resultToast.pageId!)) {
+                  finalizeSpec({ ...cur, page: resultToast.pageId! }, null)
+                }
+                clearResultToast()
+              }}
+            >
+              보기
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

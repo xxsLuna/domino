@@ -1571,13 +1571,16 @@ export function Alert({
   title,
   message,
   variant,
-  onClose
+  onClose,
+  action
 }: {
   title?: string
   message?: string
   variant?: string
   /** Runtime-only: renders a dismiss button. */
   onClose?: () => void
+  /** Runtime-only: renders a primary recovery action (e.g. retry). */
+  action?: { label: string; onPress: () => void }
 }) {
   const status = tone(variant)
   return (
@@ -1591,6 +1594,13 @@ export function Alert({
           ) : (
             <HAlert.Title>{text(message)}</HAlert.Title>
           )
+        ) : null}
+        {action ? (
+          <div className="mt-2 flex justify-end">
+            <HButton size="sm" variant={status === 'danger' ? 'primary' : 'secondary'} onPress={action.onPress}>
+              {text(action.label)}
+            </HButton>
+          </div>
         ) : null}
       </HAlert.Content>
       {onClose ? <CloseButton aria-label="Dismiss" onPress={onClose} /> : null}
