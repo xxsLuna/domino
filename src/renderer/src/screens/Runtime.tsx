@@ -73,7 +73,8 @@ import { loadDominoText, type LoadedDomino } from '../loadDomino'
 import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
 import { PageGraphDialog } from './PageGraphDialog'
-import { t } from '../i18n'
+import { activeLang, LANG_ENGLISH, LANG_NATIVE, t, type Lang } from '../i18n'
+import { detectSpecLanguage } from '@core/specLang'
 
 interface RuntimeProps {
   loaded: LoadedDomino
@@ -378,6 +379,13 @@ export function Runtime({
       // back/forward snapshots show current values, not their capture-time ones.
       const live = Object.keys(stateRef.current).length > 0 ? stateRef.current : undefined
       const applied = live ? { ...spec, state: { ...spec.state, ...live } } : spec
+      // First settled screen of this open: does the domino speak the UI language?
+      if (!langOfferAskedRef.current) {
+        langOfferAskedRef.current = true
+        const ui = activeLang()
+        const pageLang = detectSpecLanguage(applied)
+        if (pageLang && pageLang !== ui) setLangOffer({ from: pageLang, to: ui })
+      }
       // Back/forward snapshots may predate pages delivered since; keep those too.
       const known = withKnownPages(applied, knownRef.current)
       knownRef.current = known
@@ -447,6 +455,15 @@ export function Runtime({
   /** Session budget guard: threshold from settings; the banner shows once. */
   const tokenWarnRef = useRef(0)
   const [tokenWarned, setTokenWarned] = useState(false)
+  /**
+   * One-shot language offer: the first settled screen of an open is checked
+   * against the UI language; a mismatched domino offers a text-only
+   * re-translation exactly once per open. The action runs through a ref
+   * because the edit queue's submit lives further down the component.
+   */
+  const langOfferAskedRef = useRef(false)
+  const [langOffer, setLangOffer] = useState<{ from: Lang; to: Lang } | null>(null)
+  const langTranslateRef = useRef<((to: Lang) => void) | null>(null)
   const lastUsageInTurn = useRef(0)
   const usageChipTimer = useRef<number | null>(null)
   /** Recent call_api results (newest first) — the drawer's API section. */
@@ -1589,6 +1606,21 @@ export function Runtime({
   editDrainRef.current = drainEditQueue
 
   /**
+   * "Change language" on the one-shot banner: a TEXT-ONLY app-wide edit —
+   * every screen keeps its ids, layout and bindings; only the written words
+   * move to the UI language. Rides the queued edit lane so it survives
+   * navigation and lands page by page wherever the user browses.
+   */
+  langTranslateRef.current = (to: Lang): void => {
+    submitEdit(
+      `Translate all user-visible text in EVERY page of this app into ${LANG_ENGLISH[to]}. ` +
+        `Change ONLY the text strings (titles, descriptions, labels, button texts, placeholders, option labels, nav labels, empty-state and alert copy). ` +
+        `Do NOT change any id, layout, grid, component, icon, number, URL, code, or {"$data"}/{"$state"} binding — everything except the language of the text must stay exactly as it is. ` +
+        `Re-render every page with the translated text.`
+    )
+  }
+
+  /**
    * "Change what I'm looking at": the request is queued and applied by
    * drainEditQueue in the background — it survives page navigation, stacks
    * with further requests, and each result becomes its page's canonical
@@ -2546,6 +2578,27 @@ export function Runtime({
           onScroll={onBodyScroll}
           data-centered={navItems.length === 0 && !sheetMode ? 'true' : undefined}
         >
+          {langOffer ? (
+            <div className="runtime-banner">
+              <Alert
+                variant="warning"
+                title={t('rt.langDiffTitle')}
+                message={t('rt.langDiffBody', {
+                  page: LANG_NATIVE[langOffer.from],
+                  ui: LANG_NATIVE[langOffer.to]
+                })}
+                action={{
+                  label: t('rt.langChange'),
+                  onPress: () => {
+                    const target = langOffer.to
+                    setLangOffer(null)
+                    langTranslateRef.current?.(target)
+                  }
+                }}
+                onClose={() => setLangOffer(null)}
+              />
+            </div>
+          ) : null}
           {tokenWarned ? (
             <div className="runtime-banner">
               <Alert

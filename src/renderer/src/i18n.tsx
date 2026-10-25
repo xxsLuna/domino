@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { MESSAGES, type Lang } from './i18nMessages'
+
+export type { Lang }
 import { getStorage } from './platform'
 
 /**
@@ -12,6 +14,24 @@ import { getStorage } from './platform'
 export type LangPref = 'auto' | Lang
 
 const LANG_KEY = 'domino:lang'
+
+/** Native labels for showing a language inside a sentence (any UI language). */
+export const LANG_NATIVE: Record<Lang, string> = {
+  ko: '한국어',
+  en: 'English',
+  zh: '中文',
+  ja: '日本語',
+  ru: 'Русский'
+}
+
+/** English names — the language re-translation prompt targets the model. */
+export const LANG_ENGLISH: Record<Lang, string> = {
+  ko: 'Korean',
+  en: 'English',
+  zh: 'Chinese (Simplified)',
+  ja: 'Japanese',
+  ru: 'Russian'
+}
 
 export const LANGUAGES: Array<{ id: Lang; label: string }> = [
   { id: 'ko', label: '한국어' },

@@ -216,6 +216,10 @@ const ko = {
   'rt.kindEdit': '수정',
   'rt.kindRestore': '복원',
   'rt.tokenWarnTitle': '세션 토큰 예산 초과',
+  'rt.langDiffTitle': '설정된 언어와 다른 domino입니다',
+  'rt.langDiffBody':
+    '화면 문구가 {page}(으)로 작성되어 있고, 현재 설정 언어는 {ui}입니다. 화면 문구의 언어를 바꿀까요?',
+  'rt.langChange': '변경',
   'rt.tokenWarnBody':
     '이번 세션에서 {n} 토큰을 사용했습니다 — 예산을 확인하세요. (설정에서 임계값 조정)',
   'rt.gauge': '렌더링 진행률',
@@ -452,6 +456,10 @@ const en: Record<MessageKey, string> = {
   'rt.kindEdit': 'edit',
   'rt.kindRestore': 'restore',
   'rt.tokenWarnTitle': 'Session token budget exceeded',
+  'rt.langDiffTitle': 'This domino is in a different language',
+  'rt.langDiffBody':
+    'Its screens are written in {page}, while your language is set to {ui}. Translate the screen text?',
+  'rt.langChange': 'Translate',
   'rt.tokenWarnBody':
     'This session has used {n} tokens — check your budget. (Adjust the threshold in Settings.)',
   'rt.gauge': 'Rendering progress',
@@ -675,6 +683,9 @@ const zh: Record<MessageKey, string> = {
   'rt.kindEdit': '修改',
   'rt.kindRestore': '恢复',
   'rt.tokenWarnTitle': '会话令牌超预算',
+  'rt.langDiffTitle': '此 domino 的语言不同',
+  'rt.langDiffBody': '画面文案以{page}编写，而当前语言设置为{ui}。要转换画面文案的语言吗？',
+  'rt.langChange': '转换',
   'rt.tokenWarnBody': '本会话已使用 {n} 令牌 — 请确认预算。（可在设置中调整阈值。）',
   'rt.gauge': '渲染进度',
   'rt.loginFail': '登录请求失败：{msg}',
@@ -901,6 +912,10 @@ const ja: Record<MessageKey, string> = {
   'rt.kindEdit': '編集',
   'rt.kindRestore': '復元',
   'rt.tokenWarnTitle': 'セッショントークンが予算を超えました',
+  'rt.langDiffTitle': 'この domino は別の言語です',
+  'rt.langDiffBody':
+    '画面の文言は{page}で書かれ、現在の表示言語は{ui}です。画面の言語を変えますか？',
+  'rt.langChange': '変換',
   'rt.tokenWarnBody':
     'このセッションで {n} トークンを使用しました — 予算を確認してください。（しきい値は設定で変更できます。）',
   'rt.gauge': 'レンダリング進捗',
@@ -1135,6 +1150,10 @@ const ru: Record<MessageKey, string> = {
   'rt.kindEdit': 'правка',
   'rt.kindRestore': 'возврат',
   'rt.tokenWarnTitle': 'Бюджет токенов превышен',
+  'rt.langDiffTitle': 'Этот domino на другом языке',
+  'rt.langDiffBody':
+    'Текст экранов написан на {page}, а текущий язык интерфейса — {ui}. Перевести текст экранов?',
+  'rt.langChange': 'Перевести',
   'rt.tokenWarnBody':
     'В этом сеансе использовано {n} токенов — проверьте бюджет. (Порог меняется в настройках.)',
   'rt.gauge': 'Прогресс отрисовки',

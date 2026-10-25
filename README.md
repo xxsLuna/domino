@@ -251,6 +251,10 @@ More samples: [`samples/`](samples/) — login required, no-auth, and conditiona
   or wipe-all (LLM key and preferences always stay).
 - **Token budget guard** — set a session warning threshold (설정 → 세션 토큰 경고); crossing
   it shows a dismissible banner so runaway generations can't drain a BYOK key unnoticed.
+- **Language-aware screens** — the UI ships in Korean, English, Chinese, Japanese and Russian
+  (auto-follows the browser, or set it manually — applies live). Opening a domino whose built
+  screens are in a different language shows a one-time offer; accepting re-translates ONLY the
+  screen text (ids, layouts and data bindings stay untouched) in a single edit pass.
 - **Untrusted content** — call_api responses, ACTION data and guide text are framed as data,
   never instructions; network calls are origin- and path-allow-listed, bodies and streamed
   tool arguments are size-capped, and recursion/list rendering is bounded.
