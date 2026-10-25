@@ -251,6 +251,10 @@ More samples: [`samples/`](samples/) — login required, no-auth, and conditiona
   or wipe-all (LLM key and preferences always stay).
 - **Token budget guard** — set a session warning threshold (설정 → 세션 토큰 경고); crossing
   it shows a dismissible banner so runaway generations can't drain a BYOK key unnoticed.
+- **Installable & offline (PWA)** — the web build ships a manifest, an app icon and a
+  service worker: install it on any phone or desktop, and the shell plus every screen you
+  opened keep loading with no connection (LLM and API calls still need the network).
+
 - **Language-aware screens** — the UI ships in Korean, English, Chinese, Japanese and Russian
   (auto-follows the browser, or set it manually — applies live). Opening a domino whose built
   screens are in a different language shows a one-time offer; accepting re-translates ONLY the

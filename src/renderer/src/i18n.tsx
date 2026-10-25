@@ -78,6 +78,7 @@ export function I18nProvider({ children }: { children: ReactNode }): React.JSX.E
   // During render, not in an effect: this pass must already see the new
   // language, or translated children lag one render behind the switch.
   currentLang = lang
+  if (typeof document !== 'undefined') document.documentElement.lang = lang
 
   useEffect(() => {
     void (async () => {

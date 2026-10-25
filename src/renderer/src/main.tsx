@@ -7,6 +7,18 @@ import './styles.css'
 
 installPlatformFetch()
 
+// Production web build only: cache the shell so the app (and every screen
+// already opened) keeps working offline. Dev/preview keeps live reloading.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register(new URL('sw.js', document.baseURI).href, { scope: './' })
+      .catch(() => {
+        /* a failed SW registration must never block the app */
+      })
+  })
+}
+
 const root = document.getElementById('root')
 if (!root) throw new Error('#root missing')
 createRoot(root).render(

@@ -55,6 +55,13 @@ export default tseslint.config(
         fetch: 'readonly',
         AbortSignal: 'readonly',
         AbortController: 'readonly',
+        // service worker (src/renderer/public/sw.js)
+        self: 'readonly',
+        caches: 'readonly',
+        clients: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        Headers: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',
