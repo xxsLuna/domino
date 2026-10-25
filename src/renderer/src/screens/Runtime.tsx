@@ -2146,7 +2146,7 @@ export function Runtime({
               aria-live="polite"
             >
               <Spinner size="sm" />
-              <span className="status-text">{status || t('rt.composing')}</span>
+              <span className="status-text hide-phone">{status || t('rt.generating')}</span>
             </span>
           ) : null}
           {lastUsage !== null ? (
@@ -2216,6 +2216,14 @@ export function Runtime({
           />
         </div>
       </header>
+      {/* Phones: the bar is too narrow for a status line — a floating pill
+          under it carries the same live text so a 15s turn never looks dead. */}
+      {streaming ? (
+        <div className="turn-status phone-only" role="status" aria-live="polite">
+          <Spinner size="sm" />
+          <span>{status || t('rt.generating')}</span>
+        </div>
+      ) : null}
 
       {/* Phones: the menu lives behind a slim handle docked to the right edge;
           the handle IS the trigger — tapping it opens the menu directly, no
