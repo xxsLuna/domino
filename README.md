@@ -255,6 +255,10 @@ More samples: [`samples/`](samples/) — login required, no-auth, and conditiona
   service worker: install it on any phone or desktop, and the shell plus every screen you
   opened keep loading with no connection (LLM and API calls still need the network).
 
+- **Per-domino LLM settings** — pin a different provider, base URL, model or key to one
+  domino only (설정 → 이 domino에만 적용); the override lives on the device, never in the
+  shared file, and other apps keep the global default.
+
 - **Language-aware screens** — the UI ships in Korean, English, Chinese, Japanese and Russian
   (auto-follows the browser, or set it manually — applies live). Opening a domino whose built
   screens are in a different language shows a one-time offer; accepting re-translates ONLY the

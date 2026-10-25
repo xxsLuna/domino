@@ -8,11 +8,15 @@ import {
   ListBox,
   Modal,
   Select,
+  Switch,
   TextField
 } from '@heroui/react'
 import { PROVIDER_META, type LLMConfig, type ProviderId } from '@core/llm/types'
 import {
   DEFAULT_TOKEN_WARN,
+  clearDominoLlmConfig,
+  loadDominoLlmConfig,
+  saveDominoLlmConfig,
   defaultLlmConfig,
   loadTokenWarn,
   saveLlmConfig,
@@ -33,7 +37,11 @@ import type { MessageKey } from '../i18nMessages'
 
 interface SettingsProps {
   config: LLMConfig
+  /** Open domino — enables the per-domino LLM override section. */
+  dominoId?: string | null
   onSaved: (config: LLMConfig) => void
+  /** Called after the per-domino override is saved or cleared. */
+  onDominoChanged?: () => void
   onClose: () => void
 }
 
@@ -129,7 +137,13 @@ function DominoRow({
   )
 }
 
-export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX.Element {
+export function Settings({
+  config,
+  dominoId,
+  onSaved,
+  onDominoChanged,
+  onClose
+}: SettingsProps): React.JSX.Element {
   const [draft, setDraft] = useState<LLMConfig>({ ...config })
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -137,6 +151,10 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
   const [tokenWarn, setTokenWarn] = useState<number>(DEFAULT_TOKEN_WARN)
   const [audit, setAudit] = useState<StorageAudit | null>(null)
   const [busy, setBusy] = useState(false)
+  // Per-domino override: independent draft so saving the global tab never
+  // accidentally rewrites the override (and vice versa).
+  const [useOverride, setUseOverride] = useState(false)
+  const [ovDraft, setOvDraft] = useState<LLMConfig | null>(null)
   const meta = PROVIDER_META[draft.provider]
   const { pref, setPref } = useI18n()
 
@@ -145,8 +163,45 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
     void (async () => {
       setTokenWarn(await loadTokenWarn(storage))
       setAudit(await readStorageAudit(storage))
+      if (dominoId) {
+        const existing = await loadDominoLlmConfig(storage, dominoId)
+        if (existing) {
+          setUseOverride(true)
+          setOvDraft(existing)
+        } else {
+          setOvDraft({ ...config })
+        }
+      }
     })()
-  }, [])
+    // Only when the dialog (re)opens for a domino — config edits don't re-read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dominoId])
+
+  const toggleOverride = (on: boolean): void => {
+    setUseOverride(on)
+    if (!dominoId) return
+    if (on) {
+      setOvDraft((d) => d ?? { ...config })
+      return
+    }
+    void (async () => {
+      await clearDominoLlmConfig(getStorage(), dominoId)
+      onDominoChanged?.()
+    })()
+  }
+
+  const saveOverride = async (): Promise<void> => {
+    if (!dominoId || !ovDraft) return
+    setSaveError(null)
+    try {
+      await saveDominoLlmConfig(getStorage(), dominoId, ovDraft)
+      onDominoChanged?.()
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 2_000)
+    } catch (err) {
+      setSaveError(t('set.saveFail', { msg: (err as Error).message }))
+    }
+  }
 
   const refreshAudit = async (): Promise<void> => {
     setAudit(await readStorageAudit(getStorage()))
@@ -324,6 +379,84 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               <Input type="number" min={0} step={10000} />
               <Description>{t('set.tokenWarnNote')}</Description>
             </TextField>
+
+            {dominoId ? (
+              <section aria-label={t('set.dominoLlmTitle')} className="storage-section">
+                <Switch
+                  isSelected={useOverride}
+                  onChange={toggleOverride}
+                  aria-label={t('set.dominoLlmTitle')}
+                >
+                  <Switch.Content className="flex w-full items-center justify-between gap-4">
+                    <span className="flex min-w-0 flex-col">
+                      <span className="text-sm font-medium">{t('set.dominoLlmTitle')}</span>
+                      <span className="text-xs text-muted">{t('set.dominoLlmNote')}</span>
+                    </span>
+                    <Switch.Control>
+                      <Switch.Thumb />
+                    </Switch.Control>
+                  </Switch.Content>
+                </Switch>
+                {useOverride && ovDraft ? (
+                  <div className="storage-row storage-row--override">
+                    <Select
+                      value={ovDraft.provider}
+                      onChange={(key) =>
+                        key && setOvDraft((d) => d && { ...d, provider: key as ProviderId })
+                      }
+                      fullWidth
+                    >
+                      <Label>{t('set.provider')}</Label>
+                      <Select.Trigger>
+                        <Select.Value>{({ selectedText }) => selectedText}</Select.Value>
+                        <Select.Indicator />
+                      </Select.Trigger>
+                      <Select.Popover>
+                        <ListBox>
+                          {(Object.keys(PROVIDER_META) as ProviderId[]).map((id) => (
+                            <ListBox.Item key={id} id={id} textValue={PROVIDER_META[id].label}>
+                              <span>{PROVIDER_META[id].label}</span>
+                              <ListBox.ItemIndicator />
+                            </ListBox.Item>
+                          ))}
+                        </ListBox>
+                      </Select.Popover>
+                    </Select>
+                    <TextField
+                      value={ovDraft.baseUrl ?? ''}
+                      onChange={(v) => setOvDraft((d) => d && { ...d, baseUrl: v })}
+                      fullWidth
+                    >
+                      <Label>{t('set.baseUrl')}</Label>
+                      <Input placeholder={PROVIDER_META[ovDraft.provider].defaultBaseUrl} />
+                    </TextField>
+                    <TextField
+                      value={ovDraft.model}
+                      onChange={(v) => setOvDraft((d) => d && { ...d, model: v })}
+                      fullWidth
+                    >
+                      <Label>{t('set.model')}</Label>
+                      <Input placeholder={PROVIDER_META[ovDraft.provider].defaultModel} />
+                    </TextField>
+                    <TextField
+                      value={ovDraft.apiKey ?? ''}
+                      onChange={(v) => setOvDraft((d) => d && { ...d, apiKey: v })}
+                      type="password"
+                      autoComplete="off"
+                      fullWidth
+                    >
+                      <Label>{t('set.apiKey')}</Label>
+                      <Input placeholder={t('set.ovKeyHint')} />
+                    </TextField>
+                    <div className="flex justify-end">
+                      <Button size="sm" onPress={() => void saveOverride()}>
+                        {t('set.dominoLlmSave')}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             {/* ------------------------ domino 관리 ------------------------ */}
             <section aria-label="domino 관리" className="storage-section">

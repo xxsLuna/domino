@@ -36,7 +36,8 @@ const KEYS = {
   recents: 'domino:recents',
   token: (id: string) => `domino:token:${id}`,
   welcomeHint: 'domino:welcome-hint',
-  tokenWarn: 'domino:token-warn'
+  tokenWarn: 'domino:token-warn',
+  dominoLlm: (id: string) => `domino:llm-config:${id}`
 } as const
 
 export function defaultLlmConfig(): LLMConfig {
@@ -124,6 +125,64 @@ export async function setToken(
   token: string
 ): Promise<void> {
   await storage.set(KEYS.token(dominoId), token)
+}
+
+/**
+ * Per-domino LLM override: one domino may run on a different provider or
+ * model than the global default (a test app on a local Ollama, a heavy app
+ * on a bigger model…). Stored alongside — never inside — the .domino file,
+ * so a shared file never carries a key.
+ */
+export async function loadDominoLlmConfig(
+  storage: KeyValueStorage,
+  dominoId: string
+): Promise<LLMConfig | null> {
+  let raw: string | null
+  try {
+    raw = await storage.get(KEYS.dominoLlm(dominoId))
+  } catch {
+    return null
+  }
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<LLMConfig>
+    if (!parsed || typeof parsed !== 'object') return null
+    if (typeof parsed.provider !== 'string' || !Object.hasOwn(PROVIDER_META, parsed.provider)) {
+      return null
+    }
+    return {
+      provider: parsed.provider as ProviderId,
+      model: typeof parsed.model === 'string' ? parsed.model : defaultLlmConfig().model,
+      ...(parsed.apiKey !== undefined ? { apiKey: parsed.apiKey } : {}),
+      ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
+      ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {})
+    }
+  } catch {
+    return null
+  }
+}
+
+/** true when the domino runs on its own override. */
+export async function hasDominoLlmConfig(
+  storage: KeyValueStorage,
+  dominoId: string
+): Promise<boolean> {
+  return (await loadDominoLlmConfig(storage, dominoId)) !== null
+}
+
+export async function saveDominoLlmConfig(
+  storage: KeyValueStorage,
+  dominoId: string,
+  config: LLMConfig
+): Promise<void> {
+  await storage.set(KEYS.dominoLlm(dominoId), JSON.stringify(config))
+}
+
+export async function clearDominoLlmConfig(
+  storage: KeyValueStorage,
+  dominoId: string
+): Promise<void> {
+  await storage.remove(KEYS.dominoLlm(dominoId))
 }
 
 /**

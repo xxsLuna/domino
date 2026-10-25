@@ -2,7 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { Spinner } from '@heroui/react'
 import { App as CapacitorApp } from '@capacitor/app'
 import type { PluginListenerHandle } from '@capacitor/core'
-import { defaultLlmConfig, loadLlmConfig, pushRecent, type DominoSource } from '@core/session/prefs'
+import {
+  defaultLlmConfig,
+  loadDominoLlmConfig,
+  loadLlmConfig,
+  pushRecent,
+  type DominoSource
+} from '@core/session/prefs'
 import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import type { LLMConfig } from '@core/llm'
@@ -30,8 +36,24 @@ export function App(): React.JSX.Element {
   const [makerOpen, setMakerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // A domino may run on its own provider/model (kept next to, never inside,
+  // the .domino file). The open domino's override wins over the global one.
+  const [dominoLlm, setDominoLlm] = useState<LLMConfig | null>(null)
+  const refreshDominoLlm = useCallback(() => {
+    if (!loaded) {
+      setDominoLlm(null)
+      return
+    }
+    void loadDominoLlmConfig(storage, loaded.domino.id)
+      .then(setDominoLlm)
+      .catch(() => setDominoLlm(null))
+  }, [loaded, storage])
   const systemTheme = useSystemTheme()
   useI18n() // re-render everything when the language changes
+
+  useEffect(() => {
+    refreshDominoLlm()
+  }, [refreshDominoLlm])
 
   // Explicit domino theme wins; theme=auto (and the shell screens) follow the OS.
   const effectiveTheme =
@@ -138,7 +160,7 @@ export function App(): React.JSX.Element {
         <Runtime
           key={openSeq}
           loaded={loaded}
-          config={config}
+          config={dominoLlm ?? config}
           onHome={() => setLoaded(null)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -172,7 +194,9 @@ export function App(): React.JSX.Element {
       {settingsOpen ? (
         <Settings
           config={config}
+          dominoId={loaded?.domino.id ?? null}
           onSaved={(next) => setConfig(next)}
+          onDominoChanged={refreshDominoLlm}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}

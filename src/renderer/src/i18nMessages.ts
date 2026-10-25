@@ -112,6 +112,11 @@ const ko = {
   'set.lang': '언어 / Language',
   'set.langAuto': '자동 (시스템)',
   'set.langNote': '화면 언어를 선택합니다. 앱을 다시 열지 않아도 바로 적용됩니다.',
+  'set.dominoLlmTitle': '이 domino에만 LLM 설정 적용',
+  'set.dominoLlmNote':
+    '이 앱에서만 다른 프로바이더·모델을 씁니다. 키는 .domino 파일이 아니라 이 기기에 저장됩니다.',
+  'set.dominoLlmSave': '이 domino 설정 저장',
+  'set.ovKeyHint': '비워두면 전역 API 키를 사용합니다.',
   'set.tokenWarn': '세션 토큰 경고 임계값 (0 = 끔)',
   'set.tokenWarnNote':
     '한 세션에서 누적 사용 토큰이 이 값을 넘으면 앱 화면에 경고 배너를 띄웁니다.',
@@ -351,6 +356,11 @@ const en: Record<MessageKey, string> = {
   'set.lang': 'Language / 언어',
   'set.langAuto': 'Auto (system)',
   'set.langNote': 'Chooses the UI language. Applies immediately.',
+  'set.dominoLlmTitle': 'Use a different LLM setting for this domino only',
+  'set.dominoLlmNote':
+    'This app runs on its own provider/model. The key stays on this device — never in the .domino file.',
+  'set.dominoLlmSave': 'Save this domino setting',
+  'set.ovKeyHint': 'Leave empty to keep using the global API key.',
   'set.tokenWarn': 'Session token warning threshold (0 = off)',
   'set.tokenWarnNote':
     'Shows a warning banner in the app once a session\u2019s cumulative tokens cross this value.',
@@ -582,6 +592,10 @@ const zh: Record<MessageKey, string> = {
   'set.lang': '语言 / Language',
   'set.langAuto': '自动（跟随系统）',
   'set.langNote': '选择界面语言，立即生效。',
+  'set.dominoLlmTitle': '仅对此 domino 使用 LLM 设置',
+  'set.dominoLlmNote': '此应用使用独立的提供商/模型。密钥保存在本设备 — 永不写入 .domino 文件。',
+  'set.dominoLlmSave': '保存此 domino 设置',
+  'set.ovKeyHint': '留空则继续使用全局 API 密钥。',
   'set.tokenWarn': '会话令牌警告阈值（0 = 关闭）',
   'set.tokenWarnNote': '一个会话累计使用的令牌超过该值时，在应用界面显示警告横幅。',
   'set.mgmtTitle': 'domino 管理',
@@ -810,6 +824,11 @@ const ja: Record<MessageKey, string> = {
   'set.lang': '言語 / Language',
   'set.langAuto': '自動（システム）',
   'set.langNote': 'UI の言語を選択します。即時反映されます。',
+  'set.dominoLlmTitle': 'この domino にだけ LLM 設定を適用',
+  'set.dominoLlmNote':
+    'このアプリ専用のプロバイダー・モデルを使います。キーは .domino ファイルではなく端末内に保存されます。',
+  'set.dominoLlmSave': 'この domino の設定を保存',
+  'set.ovKeyHint': '空欄ならグローバルの API キーを使用します。',
   'set.tokenWarn': 'セッショントークン警告しきい値（0 = オフ）',
   'set.tokenWarnNote': '1 セッションの累積トークンがこの値を超えると警告バナーを表示します。',
   'set.mgmtTitle': 'domino 管理',
@@ -1046,6 +1065,11 @@ const ru: Record<MessageKey, string> = {
   'set.lang': 'Язык / Language',
   'set.langAuto': 'Авто (системный)',
   'set.langNote': 'Выбор языка интерфейса. Применяется сразу.',
+  'set.dominoLlmTitle': 'Применять LLM-настройки только к этому domino',
+  'set.dominoLlmNote':
+    'Это приложение использует свой провайдер/модель. Ключ хранится на устройстве — никогда в файле .domino.',
+  'set.dominoLlmSave': 'Сохранить настройку этого domino',
+  'set.ovKeyHint': 'Оставьте пустым — будет использоваться общий API-ключ.',
   'set.tokenWarn': 'Порог предупреждения по токенам (0 = выкл.)',
   'set.tokenWarnNote': 'Показывает баннер, когда суммарные токены сеанса превысят это значение.',
   'set.mgmtTitle': 'Управление domino',
