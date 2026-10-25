@@ -741,7 +741,7 @@ export function Runtime({
       pendingStateWrites.current = {}
       setStreaming(true)
       setError(null)
-      setStatus('생성 중…')
+      setStatus(t('rt.generating'))
       startGauge()
 
       // The engine splices history back into the array it is given, and a newer
@@ -2146,7 +2146,7 @@ export function Runtime({
               aria-live="polite"
             >
               <Spinner size="sm" />
-              <span className="status-text hide-phone">{status || '생성 중…'}</span>
+              <span className="status-text">{status || t('rt.composing')}</span>
             </span>
           ) : null}
           {lastUsage !== null ? (
