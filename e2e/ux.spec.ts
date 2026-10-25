@@ -60,6 +60,8 @@ test.describe('turn UX affordances', () => {
 
     const downloadPromise = page.waitForEvent('download')
     await page.getByRole('button', { name: 'domino 내보내기' }).click()
+    // Export opens a chooser: definition-only (default) vs with the built app.
+    await page.getByRole('dialog', { name: 'domino 내보내기' }).getByRole('button', { name: /정의만 내보내기/ }).click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toMatch(/\.domino$/)
   })
@@ -77,9 +79,10 @@ test.describe('turn UX affordances', () => {
           apiKey: 'e2e-key'
         })
       )
+      localStorage.setItem('domino:lang', 'ko')
     })
     await page.goto('/')
-    await page.getByLabel('domino URL').fill('http://localhost:8787/app.domino')
+    await page.getByLabel('domino URL').fill('http://localhost:8790/app.domino')
     await page.getByRole('button', { name: '열기' }).click()
 
     const alert = page.locator('[role="alert"]')

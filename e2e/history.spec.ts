@@ -55,7 +55,7 @@ test.describe('screen history drawer', () => {
     // auto-reopens), so reopen the app — the runtime restores the view AND
     // the persisted stack.
     await page.reload()
-    await page.getByLabel('domino URL').fill('http://localhost:8787/app.domino')
+    await page.getByLabel('domino URL').fill('http://localhost:8790/app.domino')
     await page.getByRole('button', { name: '열기' }).click()
     await expect(page.getByRole('button', { name: '화면 히스토리' })).toBeVisible({ timeout: 20_000 })
     await page.getByRole('button', { name: '화면 히스토리' }).click()

@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 /**
  * E2E runs against the built web app + the mock server. Locally an already
- * running dev server (port 5173) and mock (8787) are reused; in CI both are
+ * running dev server (port 5173) and mock (8790) are reused; in CI both are
  * started fresh (build:web + vite preview).
  */
 export default defineConfig({
@@ -21,8 +21,8 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'node samples/mock-server.mjs',
-      url: 'http://127.0.0.1:8787/stats',
+      command: 'PORT=8790 node samples/mock-server.mjs',
+      url: 'http://127.0.0.1:8790/stats',
       reuseExistingServer: !process.env.CI,
       timeout: 30_000
     },

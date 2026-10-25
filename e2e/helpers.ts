@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext, type Page } from '@playwright/test'
 
-export const MOCK_STATS = 'http://127.0.0.1:8787/stats'
-export const APP_DOMINO = 'http://localhost:8787/app.domino'
+export const MOCK_STATS = 'http://127.0.0.1:8790/stats'
+export const APP_DOMINO = 'http://localhost:8790/app.domino'
 
 export interface Stats {
   llm: number
@@ -55,11 +55,14 @@ export async function seedMockLlm(page: Page): Promise<void> {
         'domino:llm-config',
         JSON.stringify({
           provider: 'chat_completions',
-          baseUrl: 'http://127.0.0.1:8787/v1',
+          baseUrl: 'http://127.0.0.1:8790/v1',
           model: 'mock',
           apiKey: 'e2e-key'
         })
       )
+      // The suite's labels are Korean; pin the UI language so every spec
+      // stays deterministic regardless of the runner's locale.
+      localStorage.setItem('domino:lang', 'ko')
     }
   })
 }
