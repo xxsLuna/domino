@@ -232,6 +232,9 @@ const ko = {
   'rt.loginBadEndpoint': '로그인 엔드포인트를 확인할 수 없습니다 ([api] base_url을 확인해 주세요)',
   'rt.loginBusy': '로그인 중…',
   'rt.exportFail': '현재 domino를 내보내지 못했습니다 — 원본 소스를 다시 불러올 수 없습니다.',
+  'rt.share': '링크 복사',
+  'rt.shareDone': '공유 링크를 복사했습니다 — 붙여넣기로 열 수 있습니다.',
+  'rt.shareFail': '링크를 만들지 못했습니다: {msg}',
   'rt.staleFallback': '이전에 만들어둔 화면을 그대로 보여 주고 있습니다.',
 
   'load.desktopOnly': '파일 접근은 데스크톱 앱에서만 가능합니다. 파일을 업로드해 주세요.',
@@ -477,6 +480,9 @@ const en: Record<MessageKey, string> = {
   'rt.loginBadEndpoint': 'Could not resolve the login endpoint (check [api] base_url)',
   'rt.loginBusy': 'Signing in…',
   'rt.exportFail': 'Could not export this domino — the original source is unavailable.',
+  'rt.share': 'Copy link',
+  'rt.shareDone': 'Share link copied — paste it to open.',
+  'rt.shareFail': 'Could not build the link: {msg}',
   'rt.staleFallback': 'Showing the last successfully built screen.',
 
   'load.desktopOnly': 'File access is desktop-only. Please upload the file instead.',
@@ -706,6 +712,9 @@ const zh: Record<MessageKey, string> = {
   'rt.loginBadEndpoint': '无法解析登录端点（请检查 [api] base_url）',
   'rt.loginBusy': '登录中…',
   'rt.exportFail': '导出失败 — 无法重新加载原始定义。',
+  'rt.share': '复制链接',
+  'rt.shareDone': '已复制分享链接 — 粘贴即可打开。',
+  'rt.shareFail': '无法生成链接：{msg}',
   'rt.staleFallback': '正在显示上次成功生成的画面。',
 
   'load.desktopOnly': '仅桌面版可直接访问文件，请改为上传。',
@@ -943,6 +952,9 @@ const ja: Record<MessageKey, string> = {
     'ログインエンドポイントを解決できません（[api] base_url を確認してください）',
   'rt.loginBusy': 'ログイン中…',
   'rt.exportFail': '書き出せませんでした — 元のソースを再取得できません。',
+  'rt.share': 'リンクをコピー',
+  'rt.shareDone': '共有リンクをコピーしました — 貼り付けて開けます。',
+  'rt.shareFail': 'リンクを作成できませんでした: {msg}',
   'rt.staleFallback': '前回生成した画面をそのまま表示しています。',
 
   'load.desktopOnly':
@@ -1185,6 +1197,9 @@ const ru: Record<MessageKey, string> = {
   'rt.loginBadEndpoint': 'Не удалось определить адрес входа (проверьте [api] base_url)',
   'rt.loginBusy': 'Вход…',
   'rt.exportFail': 'Не удалось экспортировать domino — исходник недоступен.',
+  'rt.share': 'Скопировать ссылку',
+  'rt.shareDone': 'Ссылка скопирована — вставьте, чтобы открыть.',
+  'rt.shareFail': 'Не удалось создать ссылку: {msg}',
   'rt.staleFallback': 'Показываем последний успешно созданный экран.',
 
   'load.desktopOnly': 'Доступ к файлам только в настольном приложении. Загрузите файл.',

@@ -1706,6 +1706,25 @@ export function Runtime({
   )
 
   /**
+   * Copy a shareable inline link (domino://<name>?c=<payload>): the receiver
+   * pastes it into the URL box — or a native shell opens it as a deep link —
+   * and the whole definition runs with no upload step.
+   */
+  const shareLink = useCallback((): void => {
+    void (async () => {
+      try {
+        const text =
+          (await getCachedText(storage, loaded.source)) ?? (await loadDominoText(loaded.source))
+        const link = `domino://${encodeURIComponent(loaded.name || 'app')}?c=${encodeURIComponent(text)}`
+        await navigator.clipboard.writeText(link)
+        armResultToast({ kind: 'notice', text: t('rt.shareDone'), target: null }, 5_000)
+      } catch (err) {
+        setError(t('rt.shareFail', { msg: (err as Error).message }))
+      }
+    })()
+  }, [loaded, storage])
+
+  /**
    * Export: the definition alone, or the definition WITH the built app
    * embedded in a [screens] section — pages, live state and the observed
    * action graph travel inside the file, so anyone opening it runs the app
@@ -1979,6 +1998,7 @@ export function Runtime({
     { key: 'back', label: t('rt.back'), icon: 'back', run: goBack },
     { key: 'forward', label: t('rt.forward'), icon: 'arrow-right', run: goForward },
     { key: 'export', label: t('rt.export'), icon: 'download', run: () => setExportOpen(true) },
+    { key: 'share', label: t('rt.share'), icon: 'link', run: () => shareLink() },
     { key: 'history', label: t('rt.history'), icon: 'history', run: () => setHistoryOpen(true) },
     {
       key: 'inspect',
@@ -2018,6 +2038,7 @@ export function Runtime({
     else if (key === 'rebuild') setRebuildOpen(true)
     else if (key === 'refresh') refreshPage()
     else if (key === 'export') setExportOpen(true)
+    else if (key === 'share') shareLink()
     else if (key === 'history') setHistoryOpen(true)
     else if (key === 'handle-side') {
       // Cross-wall moves live here: swiping horizontally from the very edge
@@ -2166,6 +2187,7 @@ export function Runtime({
             onPress={() => setExportOpen(true)}
             className="hide-phone"
           />
+          <BarButton label={t('rt.share')} icon="link" onPress={shareLink} className="hide-phone" />
           <BarButton
             label={t('rt.history')}
             icon="history"
@@ -2259,6 +2281,10 @@ export function Runtime({
               <Dropdown.Item id="refresh" textValue={t('rt.regen')}>
                 <Icon name="refresh" />
                 <Label>{t('rt.regen')}</Label>
+              </Dropdown.Item>
+              <Dropdown.Item id="share" textValue={t('rt.share')}>
+                <Icon name="link" />
+                <Label>{t('rt.share')}</Label>
               </Dropdown.Item>
               <Dropdown.Item id="export" textValue={t('rt.export')}>
                 <Icon name="download" />
