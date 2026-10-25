@@ -28,20 +28,13 @@ import {
 } from '@core/session/storageAudit'
 import { Icon } from '@core/ui/icons'
 import { getStorage, isElectron } from '../platform'
+import { t, useI18n, LANGUAGES, type LangPref } from '../i18n'
+import type { MessageKey } from '../i18nMessages'
 
 interface SettingsProps {
   config: LLMConfig
   onSaved: (config: LLMConfig) => void
   onClose: () => void
-}
-
-const PART_LABELS: Record<string, string> = {
-  screens: '화면 캐시',
-  views: '마지막 화면',
-  history: '기록',
-  graph: '관계도',
-  schemas: 'API 스키마',
-  token: '로그인 토큰'
 }
 
 function fmtBytes(n: number): string {
@@ -94,7 +87,7 @@ function DangerConfirm({
         }
       }}
     >
-      {armed ? '확인' : label}
+      {armed ? t('common.confirm') : label}
     </Button>
   )
 }
@@ -120,16 +113,18 @@ function DominoRow({
         <div className="storage-parts">
           {parts.map(([part]) => (
             <span key={part} className="storage-part">
-              {PART_LABELS[part] ?? part}
+              {t(`set.part${part[0].toUpperCase()}${part.slice(1)}` as MessageKey)}
             </span>
           ))}
           <span className="storage-size">{fmtBytes(domino.bytes)}</span>
           {domino.lastUsed ? (
-            <span className="text-xs text-muted">마지막 사용 {fmtWhen(domino.lastUsed)}</span>
+            <span className="text-xs text-muted">
+              {t('set.lastUsed', { when: fmtWhen(domino.lastUsed) })}
+            </span>
           ) : null}
         </div>
       </div>
-      <DangerConfirm label="데이터 초기화" onConfirm={onCleared} busy={busy} />
+      <DangerConfirm label={t('set.mgmtClear')} onConfirm={onCleared} busy={busy} />
     </div>
   )
 }
@@ -143,6 +138,7 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
   const [audit, setAudit] = useState<StorageAudit | null>(null)
   const [busy, setBusy] = useState(false)
   const meta = PROVIDER_META[draft.provider]
+  const { pref, setPref } = useI18n()
 
   useEffect(() => {
     const storage = getStorage()
@@ -190,23 +186,20 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
       setSaved(true)
     } catch (err) {
       // e.g. a corrupt secure store refuses to be overwritten
-      setSaveError(`설정을 저장하지 못했습니다: ${(err as Error).message}`)
+      setSaveError(t('set.saveFail', { msg: (err as Error).message }))
     }
   }
 
   return (
     <Modal.Backdrop isOpen onOpenChange={(open) => !open && onClose()} variant="blur">
       <Modal.Container size="md" placement="auto" scroll="inside">
-        <Modal.Dialog aria-label="설정">
+        <Modal.Dialog aria-label={t('common.settings')}>
           <Modal.CloseTrigger />
           <Modal.Header>
-            <Modal.Heading>설정</Modal.Heading>
+            <Modal.Heading>{t('common.settings')}</Modal.Heading>
             <p className="text-sm text-muted">
-              LLM Provider (BYOK) — 직접 발급한 API 키를 사용합니다. 키는{' '}
-              {isElectron()
-                ? 'OS 키체인 기반 safeStorage로 암호화 저장되며'
-                : '이 기기의 브라우저 저장소에만 저장되며(공용 PC 주의)'}{' '}
-              서버로 전송되지 않습니다.
+              LLM Provider (BYOK) — {isElectron() ? t('set.llmDescElectron') : t('set.llmDescWeb')}{' '}
+              {t('set.llmDescTail')}
             </p>
           </Modal.Header>
           <Modal.Body className="flex flex-col gap-4">
@@ -215,7 +208,7 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               onChange={(key) => key && pickProvider(key as ProviderId)}
               fullWidth
             >
-              <Label>Provider</Label>
+              <Label>{t('set.provider')}</Label>
               <Select.Trigger>
                 <Select.Value>{({ selectedText }) => selectedText}</Select.Value>
                 <Select.Indicator />
@@ -237,22 +230,19 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
             </Select>
 
             <TextField value={draft.baseUrl ?? ''} onChange={(v) => edit({ baseUrl: v })} fullWidth>
-              <Label>Base URL</Label>
+              <Label>{t('set.baseUrl')}</Label>
               <Input placeholder={meta.defaultBaseUrl} />
             </TextField>
-            <p className="-mt-2 text-xs text-muted">
-              이 주소는 LLM 호출 전용입니다 — 앱이 직접 부르는 비즈니스 API 주소는 .domino 파일의
-              [api] base_url을 따릅니다.
-            </p>
+            <p className="-mt-2 text-xs text-muted">{t('set.baseUrlNote')}</p>
 
             <TextField value={draft.model} onChange={(v) => edit({ model: v })} fullWidth>
-              <Label>모델</Label>
+              <Label>{t('set.model')}</Label>
               <Input placeholder={meta.defaultModel} />
             </TextField>
 
             <div className="flex flex-col gap-1">
               <span className="text-sm">
-                Temperature{' '}
+                {t('set.temp')}{' '}
                 <span className="text-muted">({(draft.temperature ?? 0.7).toFixed(1)})</span>
               </span>
               <input
@@ -262,12 +252,10 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
                 step={0.1}
                 value={draft.temperature ?? 0.7}
                 onChange={(e) => edit({ temperature: Number(e.target.value) })}
-                aria-label="Temperature"
+                aria-label={t('set.temp')}
                 className="h-2 w-full cursor-pointer accent-[var(--accent)]"
               />
-              <span className="text-xs text-muted">
-                낮을수록 일관되고 높을수록 다양해집니다 (0–2).
-              </span>
+              <span className="text-xs text-muted">{t('set.tempNote')}</span>
             </div>
 
             <TextField
@@ -277,7 +265,7 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               autoComplete="off"
               fullWidth
             >
-              <Label>API 키 (BYOK)</Label>
+              <Label>{t('set.apiKey')}</Label>
               <InputGroup fullWidth>
                 <InputGroup.Prefix>
                   <Icon name="key" className="text-muted" />
@@ -288,7 +276,7 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
                     isIconOnly
                     size="sm"
                     variant="ghost"
-                    aria-label={showKey ? '키 숨기기' : '키 보기'}
+                    aria-label={showKey ? t('set.hideKey') : t('set.showKey')}
                     onPress={() => setShowKey((v) => !v)}
                   >
                     <Icon name="eye" />
@@ -296,6 +284,29 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
                 </InputGroup.Suffix>
               </InputGroup>
             </TextField>
+
+            <Select value={pref} onChange={(key) => key && setPref(key as LangPref)} fullWidth>
+              <Label>{t('set.lang')}</Label>
+              <Select.Trigger>
+                <Select.Value>{({ selectedText }) => selectedText}</Select.Value>
+                <Select.Indicator />
+              </Select.Trigger>
+              <Description>{t('set.langNote')}</Description>
+              <Select.Popover>
+                <ListBox>
+                  <ListBox.Item key="auto" id="auto" textValue={t('set.langAuto')}>
+                    <span>{t('set.langAuto')}</span>
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                  {LANGUAGES.map((l) => (
+                    <ListBox.Item key={l.id} id={l.id} textValue={l.label}>
+                      <span>{l.label}</span>
+                      <ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </Select.Popover>
+            </Select>
 
             <TextField
               value={String(tokenWarn)}
@@ -309,33 +320,28 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               }}
               fullWidth
             >
-              <Label>세션 토큰 경고 임계값 (0 = 끔)</Label>
+              <Label>{t('set.tokenWarn')}</Label>
               <Input type="number" min={0} step={10000} />
-              <Description>
-                한 세션에서 누적 사용 토큰이 이 값을 넘으면 앱 화면에 경고 배너를 띄웁니다.
-              </Description>
+              <Description>{t('set.tokenWarnNote')}</Description>
             </TextField>
 
             {/* ------------------------ domino 관리 ------------------------ */}
             <section aria-label="domino 관리" className="storage-section">
-              <h4 className="storage-heading">domino 관리</h4>
-              <p className="text-xs text-muted">
-                기기에 저장된 각 domino의 데이터(화면 캐시 · 마지막 화면 · 기록 · 관계도 · API
-                스키마 · 로그인 토큰)를 확인하고 지웁니다. LLM 설정과 원본 정의는 유지되며, 지운
-                앱은 다음 실행 때 처음부터 다시 만들어집니다.
-              </p>
+              <h4 className="storage-heading">{t('set.mgmtTitle')}</h4>
+              <p className="text-xs text-muted">{t('set.mgmtDesc')}</p>
 
               {audit === null ? (
-                <p className="text-xs text-muted">
-                  이 환경의 저장소에서는 용량 조회를 지원하지 않습니다.
-                </p>
+                <p className="text-xs text-muted">{t('set.mgmtUnsupported')}</p>
               ) : audit.dominoes.length === 0 ? (
-                <p className="text-xs text-muted">저장된 domino 데이터가 없습니다.</p>
+                <p className="text-xs text-muted">{t('set.mgmtNone')}</p>
               ) : (
                 <>
                   <p className="storage-summary">
-                    <Icon name="box" size={14} /> 도미노 {audit.dominoes.length}개 · 전체{' '}
-                    {fmtBytes(audit.totalBytes)}
+                    <Icon name="box" size={14} />{' '}
+                    {t('set.mgmtSummary', {
+                      n: audit.dominoes.length,
+                      size: fmtBytes(audit.totalBytes)
+                    })}
                   </p>
                   {audit.dominoes.map((d) => (
                     <DominoRow
@@ -352,16 +358,15 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
                 <div className="storage-row storage-row--maintenance">
                   <div className="storage-row-main">
                     <div className="storage-row-title">
-                      <strong>원본 캐시</strong>
+                      <strong>{t('set.textsTitle')}</strong>
                       <span className="storage-size">{fmtBytes(audit.texts.bytes)}</span>
                     </div>
                     <span className="text-xs text-muted">
-                      불러온 .domino 원문 {audit.texts.keys}건 — 지워도 최근 목록에서 다시
-                      불러옵니다.
+                      {t('set.textsDesc', { n: audit.texts.keys })}
                     </span>
                   </div>
                   <DangerConfirm
-                    label="캐시 정리"
+                    label={t('set.textsClear')}
                     onConfirm={() => runMaintenance(() => clearTextCache(getStorage()))}
                     busy={busy}
                   />
@@ -372,14 +377,12 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
                 <div className="storage-row storage-row--maintenance">
                   <div className="storage-row-main">
                     <div className="storage-row-title">
-                      <strong>전체 도미노 데이터 초기화</strong>
+                      <strong>{t('set.allTitle')}</strong>
                     </div>
-                    <span className="text-xs text-muted">
-                      모든 domino의 저장 데이터를 지웁니다 (LLM 키 · 설정은 유지).
-                    </span>
+                    <span className="text-xs text-muted">{t('set.allDesc')}</span>
                   </div>
                   <DangerConfirm
-                    label="전체 초기화"
+                    label={t('set.allBtn')}
                     onConfirm={() => runMaintenance(() => clearAllDominoData(getStorage()))}
                     busy={busy}
                   />
@@ -395,7 +398,7 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
                 setSaved(false)
               }}
             >
-              기본값 복원
+              {t('set.restore')}
             </Button>
             <div className="flex items-center gap-3">
               {saveError ? (
@@ -405,10 +408,10 @@ export function Settings({ config, onSaved, onClose }: SettingsProps): React.JSX
               ) : null}
               {saved ? (
                 <span className="flex items-center gap-1 text-sm text-success" role="status">
-                  <Icon name="check" /> 저장됨
+                  <Icon name="check" /> {t('set.saved')}
                 </span>
               ) : null}
-              <Button onPress={() => void save()}>저장</Button>
+              <Button onPress={() => void save()}>{t('set.save')}</Button>
             </div>
           </Modal.Footer>
         </Modal.Dialog>

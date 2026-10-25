@@ -3,6 +3,7 @@ import { Button, ProgressBar, Spinner } from '@heroui/react'
 import { Icon } from '@core/ui/icons'
 import { isNewer, RELEASES_REPO, RELEASES_URL } from '@core/version'
 import type { UpdateInfo, UpdateProgress } from '../platform'
+import { t } from '../i18n'
 
 declare const __APP_VERSION__: string
 
@@ -128,17 +129,17 @@ export function UpdateBanner(): React.JSX.Element | null {
       {state.kind === 'available' ? (
         <>
           <span className="update-text">
-            새 버전 <strong>v{info.version}</strong>이 나왔습니다 (현재 v{info.current},{' '}
-            {mb(info.size)})
+            {t('up.available', { v: info.version })} <strong>v{info.version}</strong> (
+            {t('up.current', { c: info.current })}, {mb(info.size)})
           </span>
           <Button size="sm" onPress={install}>
-            업데이트
+            {t('up.install')}
           </Button>
           <Button
             size="sm"
             variant="ghost"
             isIconOnly
-            aria-label="나중에"
+            aria-label={t('up.later')}
             onPress={() => setState({ kind: 'hidden' })}
           >
             <Icon name="close" size={14} />
@@ -147,10 +148,10 @@ export function UpdateBanner(): React.JSX.Element | null {
       ) : state.kind === 'downloading' ? (
         <>
           <span className="update-text">
-            v{info.version} 다운로드 중… {state.pct}%
+            {t('up.downloading', { v: info.version, p: state.pct })}
           </span>
           <ProgressBar
-            aria-label="다운로드"
+            aria-label={t('up.downloadAria')}
             value={state.pct}
             size="sm"
             className="update-progress"
@@ -162,18 +163,16 @@ export function UpdateBanner(): React.JSX.Element | null {
         </>
       ) : state.kind === 'installing' ? (
         <span className="update-text flex items-center gap-2">
-          <Spinner size="sm" color="current" /> 설치 후 다시 시작합니다…
+          <Spinner size="sm" color="current" /> {t('up.restart')}
         </span>
       ) : state.kind === 'handedOff' ? (
         <>
-          <span className="update-text">
-            v{info.version} APK를 내려받는 중입니다. 다운로드가 끝나면 열어서 설치해 주세요.
-          </span>
+          <span className="update-text">{t('up.apk', { v: info.version })}</span>
           <Button
             size="sm"
             variant="ghost"
             isIconOnly
-            aria-label="닫기"
+            aria-label={t('common.close')}
             onPress={() => setState({ kind: 'hidden' })}
           >
             <Icon name="close" size={14} />

@@ -73,6 +73,7 @@ import { loadDominoText, type LoadedDomino } from '../loadDomino'
 import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
 import { PageGraphDialog } from './PageGraphDialog'
+import { t } from '../i18n'
 
 interface RuntimeProps {
   loaded: LoadedDomino
@@ -401,7 +402,7 @@ export function Runtime({
       const fallback = cacheKey ? screensRef.current?.get(cacheKey, schemaHashes()) : null
       if (fallback) {
         showSpec(withTargetPage(fallback.spec, knownRef.current))
-        setError(`${message}\n이전에 만들어둔 화면을 그대로 보여 주고 있습니다.`)
+        setError(`${message}\n${t('rt.staleFallback')}`)
       } else {
         setError(message)
       }
@@ -512,7 +513,7 @@ export function Runtime({
       if (kind === 'edit') {
         const undoTo = session.historySize - 2
         if (undoTo >= 0) {
-          armResultToast({ kind: 'undo', text: '수정이 반영되었습니다', target: undoTo }, 8_000)
+          armResultToast({ kind: 'undo', text: t('rt.toastEdited'), target: undoTo }, 8_000)
         }
       } else {
         setResultToast((prev) => (prev?.kind === 'undo' ? null : prev))
@@ -626,7 +627,7 @@ export function Runtime({
       armResultToast(
         {
           kind: 'notice',
-          text: `수정 완료 · ${findPage(spec, pageId)?.name ?? pageId}`,
+          text: t('rt.editDone', { page: findPage(spec, pageId)?.name ?? pageId }),
           target: null,
           pageId
         },
@@ -1198,12 +1199,12 @@ export function Runtime({
   const handleLogin = useCallback(
     async (data: Record<string, unknown>): Promise<void> => {
       setStreaming(true)
-      setStatus('로그인 중…')
+      setStatus(t('rt.loginBusy'))
       setError(null)
       try {
         const loginUrl = resolveEndpoint(domino.auth.loginEndpoint!, domino.api.baseUrl)
         if (!loginUrl) {
-          throw new Error('로그인 엔드포인트를 확인할 수 없습니다 ([api] base_url을 확인해 주세요)')
+          throw new Error(t('rt.loginBadEndpoint'))
         }
         const res = await httpFetch(loginUrl, {
           method: 'POST',
@@ -1251,7 +1252,7 @@ export function Runtime({
         }
       } catch (err) {
         setStreaming(false)
-        setError(`로그인 요청 실패: ${(err as Error).message}`)
+        setError(t('rt.loginFail', { msg: (err as Error).message }))
       }
     },
     [domino, runTurn, storage]
@@ -1706,7 +1707,7 @@ export function Runtime({
           ].join('\n')
           downloadDomino(`${stripped}\n${embed}\n`, '-app')
         } catch {
-          setError('현재 domino를 내보내지 못했습니다 — 원본 소스를 다시 불러올 수 없습니다.')
+          setError(t('rt.exportFail'))
         }
       })()
     },
@@ -1933,35 +1934,35 @@ export function Runtime({
   const paletteItems: PaletteItem[] = [
     ...(currentSpec
       ? [
-          { key: 'edit', label: '화면 수정', icon: 'edit', run: () => setEditOpen(true) },
-          { key: 'refresh', label: '화면 다시 그리기', icon: 'refresh', run: refreshPage },
+          { key: 'edit', label: t('rt.editTitle'), icon: 'edit', run: () => setEditOpen(true) },
+          { key: 'refresh', label: t('rt.regen'), icon: 'refresh', run: refreshPage },
           {
             key: 'rebuild',
-            label: '처음부터 다시 만들기',
+            label: t('rt.rebuild'),
             icon: 'sparkles',
             run: () => setRebuildOpen(true)
           }
         ]
       : []),
-    { key: 'back', label: '이전 화면', icon: 'back', run: goBack },
-    { key: 'forward', label: '다음 화면', icon: 'arrow-right', run: goForward },
-    { key: 'export', label: 'domino 내보내기', icon: 'download', run: () => setExportOpen(true) },
-    { key: 'history', label: '화면 히스토리', icon: 'history', run: () => setHistoryOpen(true) },
+    { key: 'back', label: t('rt.back'), icon: 'back', run: goBack },
+    { key: 'forward', label: t('rt.forward'), icon: 'arrow-right', run: goForward },
+    { key: 'export', label: t('rt.export'), icon: 'download', run: () => setExportOpen(true) },
+    { key: 'history', label: t('rt.history'), icon: 'history', run: () => setHistoryOpen(true) },
     {
       key: 'inspect',
-      label: chrome === 'app' ? '구조 보기' : '앱처럼 보기',
+      label: chrome === 'app' ? t('rt.inspectOn') : t('rt.inspectOff'),
       icon: 'layers',
       run: () => setChrome(chrome === 'app' ? 'inspect' : 'app')
     },
-    { key: 'graph', label: '페이지 관계도', icon: 'chart', run: () => setGraphOpen(true) },
-    { key: 'settings', label: '설정', icon: 'settings', run: onOpenSettings },
-    { key: 'home', label: 'domino 닫기', icon: 'close', run: onHome },
+    { key: 'graph', label: t('rt.graph'), icon: 'chart', run: () => setGraphOpen(true) },
+    { key: 'settings', label: t('common.settings'), icon: 'settings', run: onOpenSettings },
+    { key: 'home', label: t('rt.closeDomino'), icon: 'close', run: onHome },
     ...(currentSpec?.pages ?? [])
       .filter((p) => p.id !== currentSpec?.page)
       .map((p) => ({
         key: `page:${p.id}`,
         label: p.name,
-        hint: '페이지',
+        hint: t('rt.palettePage'),
         run: () => {
           if (!currentSpec) return
           interruptTurn()
@@ -2013,7 +2014,7 @@ export function Runtime({
         <div
           className="render-gauge"
           role="progressbar"
-          aria-label="렌더링 진행률"
+          aria-label={t('rt.gauge')}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(progress)}
@@ -2023,9 +2024,9 @@ export function Runtime({
         </div>
       ) : null}
       <header className="app-bar">
-        <BarButton label="이전 화면 (⌘[)" icon="back" onPress={goBack} isDisabled={!canBack} />
+        <BarButton label={t('rt.back')} icon="back" onPress={goBack} isDisabled={!canBack} />
         <BarButton
-          label="다음 화면 (⌘])"
+          label={t('rt.forward')}
           icon="arrow-right"
           onPress={goForward}
           isDisabled={!canForward}
@@ -2064,7 +2065,7 @@ export function Runtime({
           <TextField
             value={editText}
             onChange={setEditText}
-            aria-label="현재 화면 수정 요청"
+            aria-label={t('rt.editAria')}
             isDisabled={!currentSpec}
             variant="secondary"
           >
@@ -2073,7 +2074,7 @@ export function Runtime({
                 <Icon name="edit" className="text-muted" size={14} />
               </InputGroup.Prefix>
               <InputGroup.Input
-                placeholder="이 화면 바꾸기… (예: 상태 컬럼 추가)"
+                placeholder={t('rt.editPlaceholder')}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault()
@@ -2097,58 +2098,68 @@ export function Runtime({
           ) : null}
           {lastUsage !== null ? (
             <span className="usage-chip" role="status">
-              이번 턴 {fmtTokens(lastUsage)} 토큰
+              {t('rt.usageTurn', { n: fmtTokens(lastUsage) })}
             </span>
           ) : null}
           {needsKey ? (
             <Button size="sm" variant="outline" className="text-warning" onPress={onOpenSettings}>
               <Icon name="key" />
-              <span className="hide-phone">BYOK 미설정</span>
+              <span className="hide-phone">{t('rt.byok')}</span>
             </Button>
           ) : null}
           <BarButton
-            label={chrome === 'app' ? '구조 보기 (컴포넌트 카드)' : '앱처럼 보기'}
+            label={chrome === 'app' ? t('rt.inspectOn') : t('rt.inspectOff')}
             icon="layers"
             onPress={() => setChrome(chrome === 'app' ? 'inspect' : 'app')}
             active={chrome === 'inspect'}
             className="hide-phone"
           />
           <BarButton
-            label="페이지 관계도"
+            label={t('rt.graph')}
             icon="chart"
             onPress={() => setGraphOpen(true)}
             isDisabled={!currentSpec}
             className="hide-phone"
           />
           <BarButton
-            label="화면 다시 그리기"
+            label={t('rt.regen')}
             icon="refresh"
             onPress={refreshPage}
             isDisabled={!currentSpec}
             className="hide-phone"
           />
           <BarButton
-            label="domino 내보내기"
+            label={t('rt.export')}
             icon="download"
             onPress={() => setExportOpen(true)}
             className="hide-phone"
           />
           <BarButton
-            label="화면 히스토리"
+            label={t('rt.history')}
             icon="history"
             onPress={() => setHistoryOpen((v) => !v)}
             active={historyOpen}
             className="hide-phone"
           />
           <BarButton
-            label="처음부터 다시 만들기"
+            label={t('rt.rebuild')}
             icon="sparkles"
             onPress={() => setRebuildOpen(true)}
             isDisabled={!currentSpec}
             className="hide-phone"
           />
-          <BarButton label="설정" icon="settings" onPress={onOpenSettings} className="hide-phone" />
-          <BarButton label="domino 닫기" icon="close" onPress={onHome} className="hide-phone" />
+          <BarButton
+            label={t('common.settings')}
+            icon="settings"
+            onPress={onOpenSettings}
+            className="hide-phone"
+          />
+          <BarButton
+            label={t('rt.closeDomino')}
+            icon="close"
+            onPress={onHome}
+            className="hide-phone"
+          />
         </div>
       </header>
 
@@ -2172,7 +2183,7 @@ export function Runtime({
           size="sm"
           variant="secondary"
           className="runtime-handle phone-only"
-          aria-label="Domino UI 메뉴"
+          aria-label={t('rt.menu')}
           data-side={handlePos.side}
           style={{ top: `${handlePos.y * 100}%` }}
         >
@@ -2201,47 +2212,47 @@ export function Runtime({
                 <Icon name="edit" />
                 <Label>화면 수정</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="back" textValue="이전 화면">
+              <Dropdown.Item id="back" textValue={t('rt.back')}>
                 <Icon name="back" />
-                <Label>이전 화면</Label>
+                <Label>{t('rt.back')}</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="forward" textValue="다음 화면">
+              <Dropdown.Item id="forward" textValue={t('rt.forward')}>
                 <Icon name="arrow-right" />
-                <Label>다음 화면</Label>
+                <Label>{t('rt.forward')}</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="rebuild" textValue="처음부터 다시 만들기">
+              <Dropdown.Item id="rebuild" textValue={t('rt.rebuild')}>
                 <Icon name="sparkles" />
-                <Label>처음부터 다시 만들기</Label>
+                <Label>{t('rt.rebuild')}</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="refresh" textValue="화면 다시 그리기">
+              <Dropdown.Item id="refresh" textValue={t('rt.regen')}>
                 <Icon name="refresh" />
-                <Label>화면 다시 그리기</Label>
+                <Label>{t('rt.regen')}</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="export" textValue="domino 내보내기">
+              <Dropdown.Item id="export" textValue={t('rt.export')}>
                 <Icon name="download" />
-                <Label>domino 내보내기</Label>
+                <Label>{t('rt.export')}</Label>
               </Dropdown.Item>
-              <Dropdown.Item id="history" textValue="화면 히스토리">
+              <Dropdown.Item id="history" textValue={t('rt.history')}>
                 <Icon name="history" />
-                <Label>화면 히스토리</Label>
+                <Label>{t('rt.history')}</Label>
               </Dropdown.Item>
               <Dropdown.Item
                 id="handle-side"
-                textValue={handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}
+                textValue={handlePos.side === 'right' ? t('rt.handleLeft') : t('rt.handleRight')}
               >
                 <Icon name={handlePos.side === 'right' ? 'arrow-left' : 'arrow-right'} />
                 <Label>
-                  {handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}
+                  {handlePos.side === 'right' ? t('rt.handleLeft') : t('rt.handleRight')}
                 </Label>
               </Dropdown.Item>
             </Dropdown.Section>
-            <Dropdown.Item id="settings" textValue="설정">
+            <Dropdown.Item id="settings" textValue={t('common.settings')}>
               <Icon name={needsKey ? 'key' : 'settings'} />
-              <Label>{needsKey ? '설정 (BYOK 미설정)' : '설정'}</Label>
+              <Label>{needsKey ? t('rt.settingsKey') : t('common.settings')}</Label>
             </Dropdown.Item>
-            <Dropdown.Item id="home" textValue="domino 닫기">
+            <Dropdown.Item id="home" textValue={t('rt.closeDomino')}>
               <Icon name="close" />
-              <Label>domino 닫기</Label>
+              <Label>{t('rt.closeDomino')}</Label>
             </Dropdown.Item>
           </Dropdown.Menu>
           {/* Developer tools live OUTSIDE the menu collection: pressing the
@@ -2270,7 +2281,7 @@ export function Runtime({
               }}
             >
               <Icon name="grid" />
-              <Label>개발자 메뉴</Label>
+              <Label>{t('rt.devMenu')}</Label>
               <span aria-hidden className="menu-submenu-chev">
                 {handlePos.side === 'right' ? '‹' : '›'}
               </span>
@@ -2279,7 +2290,7 @@ export function Runtime({
                 popover: nothing to clip, nothing outside the modal scope —
                 and the row (outside the menu collection) keeps the menu up. */}
             {devMenuOpen ? (
-              <div className="menu-submenu-items" role="menu" aria-label="개발자 메뉴">
+              <div className="menu-submenu-items" role="menu" aria-label={t('rt.devMenu')}>
                 <button
                   type="button"
                   role="menuitem"
@@ -2291,7 +2302,7 @@ export function Runtime({
                   }}
                 >
                   <Icon name="layers" />
-                  {chrome === 'app' ? '구조 보기' : '앱처럼 보기'}
+                  {chrome === 'app' ? t('rt.inspectOn') : t('rt.inspectOff')}
                 </button>
                 <button
                   type="button"
@@ -2304,7 +2315,7 @@ export function Runtime({
                   }}
                 >
                   <Icon name="chart" />
-                  페이지 관계도
+                  {t('rt.graph')}
                 </button>
               </div>
             ) : null}
@@ -2321,13 +2332,11 @@ export function Runtime({
         variant="blur"
       >
         <Modal.Container size="sm" placement="center">
-          <Modal.Dialog aria-label="화면 수정">
+          <Modal.Dialog aria-label={t('rt.editTitle')}>
             <Modal.CloseTrigger />
             <Modal.Header>
-              <Modal.Heading>화면 수정</Modal.Heading>
-              <p className="text-sm text-muted">
-                지금 보고 있는 화면에서 바뀌었으면 하는 것만 말해 주세요.
-              </p>
+              <Modal.Heading>{t('rt.editTitle')}</Modal.Heading>
+              <p className="text-sm text-muted">{t('rt.editDesc')}</p>
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-3">
               <TextField
@@ -2338,21 +2347,18 @@ export function Runtime({
                 variant="secondary"
                 fullWidth
               >
-                <TextArea
-                  rows={4}
-                  placeholder="예) 거래 상태 컬럼을 맨 앞에 추가하고, 금액은 천 단위 구분자로 표시해줘"
-                />
+                <TextArea rows={4} placeholder={t('rt.editPlaceholderModal')} />
               </TextField>
             </Modal.Body>
             <Modal.Footer className="flex justify-end gap-2">
               <Button variant="ghost" onPress={() => setEditOpen(false)}>
-                취소
+                {t('common.cancel')}
               </Button>
               <Button
                 isDisabled={!currentSpec || !editText.trim()}
                 onPress={() => submitEdit(editText)}
               >
-                수정 요청
+                {t('rt.editSubmit')}
               </Button>
             </Modal.Footer>
           </Modal.Dialog>
@@ -2371,19 +2377,17 @@ export function Runtime({
           <AlertDialog.Dialog>
             <AlertDialog.Header>
               <AlertDialog.Icon status="warning" />
-              <AlertDialog.Heading>앱을 처음부터 다시 만들까요?</AlertDialog.Heading>
+              <AlertDialog.Heading>{t('rt.rebuildTitle')}</AlertDialog.Heading>
             </AlertDialog.Header>
             <AlertDialog.Body>
               <p className="text-sm text-muted">
-                모든 화면과 대화 기록이 지워지고 현재 앱 상태에서 처음부터 다시 생성됩니다.{' '}
-                <strong className="text-warning">
-                  LLM에 다시 요청하므로 토큰을 많이 소모할 수 있습니다.
-                </strong>
+                {t('rt.rebuildBody')}{' '}
+                <strong className="text-warning">{t('rt.rebuildWarn')}</strong>
               </p>
             </AlertDialog.Body>
             <AlertDialog.Footer className="flex justify-end gap-2">
               <Button variant="ghost" onPress={() => setRebuildOpen(false)}>
-                취소
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="danger"
@@ -2392,7 +2396,7 @@ export function Runtime({
                   rebuildApp()
                 }}
               >
-                다시 만들기
+                {t('rt.rebuildGo')}
               </Button>
             </AlertDialog.Footer>
           </AlertDialog.Dialog>
@@ -2409,19 +2413,16 @@ export function Runtime({
         variant="blur"
       >
         <Modal.Container size="sm" placement="center">
-          <Modal.Dialog aria-label="domino 내보내기">
+          <Modal.Dialog aria-label={t('rt.export')}>
             <Modal.CloseTrigger />
             <Modal.Header>
-              <Modal.Heading>domino 내보내기</Modal.Heading>
-              <p className="text-sm text-muted">무엇을 포함해서 내보낼지 선택하세요.</p>
+              <Modal.Heading>{t('rt.exportTitle')}</Modal.Heading>
+              <p className="text-sm text-muted">{t('rt.exportDesc')}</p>
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-2">
               <button type="button" className="export-option" onClick={() => runExport(false)}>
-                <strong>정의만 내보내기</strong>
-                <span>
-                  원본 .domino 텍스트 그대로입니다. 화면 구조는 포함되지 않아, 여는 쪽에서 처음부터
-                  생성됩니다.
-                </span>
+                <strong>{t('rt.exportDefTitle')}</strong>
+                <span>{t('rt.exportDefDesc')}</span>
               </button>
               <button
                 type="button"
@@ -2429,10 +2430,11 @@ export function Runtime({
                 onClick={() => runExport(true)}
                 disabled={!currentSpec}
               >
-                <strong>완성된 앱 포함</strong>
+                <strong>{t('rt.exportAppTitle')}</strong>
                 <span>
-                  지금까지 만들어진 페이지 {currentSpec?.pages.length ?? 0}개와 액션 연결이 함께
-                  저장됩니다 — 받은 사람이 LLM·API 키 없이 바로 실행합니다.
+                  {t('rt.exportAppDesc', { n: currentSpec?.pages.length ?? 0 })}{' '}
+                  {currentSpec?.pages.length ?? 0}개와 액션 연결이 함께 저장됩니다 — 받은 사람이
+                  LLM·API 키 없이 바로 실행합니다.
                 </span>
               </button>
             </Modal.Body>
@@ -2450,14 +2452,14 @@ export function Runtime({
         variant="blur"
       >
         <Modal.Container size="sm" placement="top" scroll="inside">
-          <Modal.Dialog aria-label="명령 팔레트">
+          <Modal.Dialog aria-label={t('rt.palette')}>
             <Modal.CloseTrigger />
             <Modal.Body className="flex flex-col gap-2">
               <input
                 className="w-full rounded-lg border border-[var(--separator)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
                 value={paletteQuery}
-                placeholder="명령 또는 페이지 검색…"
-                aria-label="명령 검색"
+                placeholder={t('rt.palettePlaceholder')}
+                aria-label={t('rt.paletteSearch')}
                 autoFocus
                 onChange={(e) => {
                   setPaletteQuery(e.target.value)
@@ -2479,7 +2481,7 @@ export function Runtime({
               />
               <ul className="flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
                 {paletteFiltered.length === 0 ? (
-                  <li className="px-2 py-3 text-sm text-muted">일치하는 명령이 없습니다.</li>
+                  <li className="px-2 py-3 text-sm text-muted">{t('rt.paletteNone')}</li>
                 ) : (
                   paletteFiltered.map((item, i) => (
                     <li key={item.key}>
@@ -2548,9 +2550,9 @@ export function Runtime({
             <div className="runtime-banner">
               <Alert
                 variant="warning"
-                title="세션 토큰 예산 초과"
-                message={`이번 세션에서 ${fmtTokens(usageTotal)} 토큰을 사용했습니다 — 예산을 확인하세요. (설정에서 임계값 조정)`}
-                action={{ label: '설정', onPress: onOpenSettings }}
+                title={t('rt.tokenWarnTitle')}
+                message={`이번 세션에서 ${t('rt.usageTurn', { n: fmtTokens(usageTotal) })}을 사용했습니다 — 예산을 확인하세요. (설정에서 임계값 조정)`}
+                action={{ label: t('common.settings'), onPress: onOpenSettings }}
                 onClose={() => setTokenWarned(false)}
               />
             </div>
@@ -2559,12 +2561,12 @@ export function Runtime({
             <div className="runtime-banner">
               <Alert
                 variant="danger"
-                title="화면을 만들지 못했습니다"
+                title={t('rt.errorTitle')}
                 message={error}
                 action={
                   lastTurnRef.current
                     ? {
-                        label: '다시 시도',
+                        label: t('rt.retry'),
                         onPress: () => {
                           const last = lastTurnRef.current
                           if (last) void runTurn(last.prompt, last.cacheKey)
@@ -2600,7 +2602,7 @@ export function Runtime({
         <div className="edit-toast" role="status" aria-live="polite">
           <Spinner size="sm" />
           <span>
-            {editCount > 1 ? `화면 수정 요청 ${editCount}건 처리 중…` : '화면 수정 요청 처리 중…'}
+            {editCount > 1 ? t('rt.editQueueMany', { n: editCount }) : t('rt.editQueueOne')}
           </span>
         </div>
       ) : null}
@@ -2618,7 +2620,7 @@ export function Runtime({
                 if (restoreAt(resultToast.target!, true)) clearResultToast()
               }}
             >
-              되돌리기
+              {t('rt.undo')}
             </Button>
           ) : resultToast.pageId ? (
             <Button
@@ -2633,7 +2635,7 @@ export function Runtime({
                 clearResultToast()
               }}
             >
-              보기
+              {t('rt.view')}
             </Button>
           ) : null}
         </div>
@@ -2653,15 +2655,18 @@ export function Runtime({
 
       {/* Right-side screen history: every settled moment; click restores it. */}
       {historyOpen ? <div className="history-scrim" onClick={() => setHistoryOpen(false)} /> : null}
-      <aside className={`history-panel${historyOpen ? ' is-open' : ''}`} aria-label="화면 히스토리">
+      <aside
+        className={`history-panel${historyOpen ? ' is-open' : ''}`}
+        aria-label={t('rt.history')}
+      >
         <div className="history-panel-head">
-          <span className="history-panel-title">화면 히스토리</span>
-          <span className="history-total">{fmtTokens(usageTotal)} 토큰</span>
+          <span className="history-panel-title">{t('rt.history')}</span>
+          <span className="history-total">{t('rt.usageTurn', { n: fmtTokens(usageTotal) })}</span>
           <Button
             isIconOnly
             size="sm"
             variant="ghost"
-            aria-label="히스토리 닫기"
+            aria-label={t('rt.historyClose')}
             onPress={() => setHistoryOpen(false)}
           >
             <Icon name="close" size={16} />
@@ -2691,8 +2696,10 @@ export function Runtime({
         {apiLogRef.current.length > 0 ? (
           <div className="history-api">
             <div className="history-panel-head">
-              <span className="history-panel-title">API 호출</span>
-              <span className="history-total">{apiLogRef.current.length}건</span>
+              <span className="history-panel-title">{t('rt.apiCalls')}</span>
+              <span className="history-total">
+                {t('rt.apiCount', { n: apiLogRef.current.length })}
+              </span>
             </div>
             <ul className="history-list">
               {apiLogRef.current.map((entry, i) => (
@@ -2713,11 +2720,11 @@ export function Runtime({
 }
 
 const HISTORY_KIND_LABEL: Record<HistoryKind, string> = {
-  start: '시작',
-  action: '액션',
-  nav: '이동',
-  edit: '수정',
-  restore: '복원'
+  start: t('rt.kindStart'),
+  action: t('rt.kindAction'),
+  nav: t('rt.kindNav'),
+  edit: t('rt.kindEdit'),
+  restore: t('rt.kindRestore')
 }
 
 /** Compact token counts for chips ("1.2k"). */
@@ -2762,7 +2769,7 @@ function LoadingScreen(): React.JSX.Element {
     <div
       className="mx-auto flex max-w-[1360px] flex-col gap-4 p-4 sm:p-6"
       aria-busy="true"
-      aria-label="앱을 구성하는 중"
+      aria-label={t('rt.composing')}
     >
       <div className="flex flex-col gap-2">
         <Skeleton className="h-7 w-56 rounded-lg" />

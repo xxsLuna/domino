@@ -5,6 +5,7 @@ import type { DominoFile } from '@core/domino/types'
 import type { NavItem, UiSpec } from '@core/spec'
 import { Icon } from '@core/ui/icons'
 import { useSystemTheme } from '../useSystemTheme'
+import { t } from '../i18n'
 
 /**
  * 페이지 관계도 — the developer-menu mermaid view of the app the agent has
@@ -58,7 +59,7 @@ class GraphBoundary extends Component<{ children: ReactNode }, { error: string |
     if (this.state.error) {
       return (
         <div className="text-sm text-warning" role="alert">
-          관계도를 표시하지 못했습니다: {this.state.error}
+          {t('graph.boundaryFail', { msg: this.state.error })}
         </div>
       )
     }
@@ -372,14 +373,14 @@ export function PageGraphDialog({
         <Modal.Dialog aria-label="페이지 관계도">
           <Modal.CloseTrigger />
           <Modal.Header>
-            <Modal.Heading>페이지 관계도</Modal.Heading>
+            <Modal.Heading>{t('graph.title')}</Modal.Heading>
             <p className="text-sm text-muted">
               {model
-                ? `페이지 ${model.pages.length}개 · 액션 ${model.actions.length}개` +
+                ? t('graph.summary', { p: model.pages.length, a: model.actions.length }) +
                   (unresolved && unresolved.length > 0
-                    ? ` · 미연결 버튼 ${unresolved.length}개 (누르면 실시간 생성)`
+                    ? ` · ${t('graph.unresolved', { n: unresolved.length })}`
                     : '')
-                : '아직 만들어진 페이지가 없습니다.'}
+                : t('graph.none')}
             </p>
           </Modal.Header>
           <Modal.Body className="flex flex-col gap-3">
@@ -387,24 +388,24 @@ export function PageGraphDialog({
               <div className="graph-toolbar">
                 <ul className="graph-legend">
                   <li>
-                    <span className="graph-chip graph-chip--page" /> 페이지
+                    <span className="graph-chip graph-chip--page" /> {t('graph.legendPage')}
                   </li>
                   <li>
-                    <span className="graph-chip graph-chip--action" /> 액션 버튼
+                    <span className="graph-chip graph-chip--action" /> {t('graph.legendAction')}
                   </li>
                   <li>
-                    <span className="graph-chip graph-chip--live" /> 실시간 생성 (공갈버튼)
+                    <span className="graph-chip graph-chip--live" /> {t('graph.legendLive')}
                   </li>
                   <li>
-                    <span className="graph-chip graph-chip--tabs" /> 탭 바
+                    <span className="graph-chip graph-chip--tabs" /> {t('graph.legendTabs')}
                   </li>
                 </ul>
-                <div className="graph-zoom" role="group" aria-label="확대 축소">
+                <div className="graph-zoom" role="group" aria-label={t('graph.zoomGroup')}>
                   <Button
                     isIconOnly
                     size="sm"
                     variant="ghost"
-                    aria-label="축소"
+                    aria-label={t('graph.zoomOut')}
                     isDisabled={view.z <= MIN_ZOOM + 0.001}
                     onPress={() => zoomBy(1 / ZOOM_STEP)}
                   >
@@ -413,7 +414,7 @@ export function PageGraphDialog({
                   <button
                     type="button"
                     className="graph-zoom-level"
-                    aria-label="확대 수준 초기화"
+                    aria-label={t('graph.zoomReset')}
                     onClick={resetView}
                   >
                     {Math.round(view.z * 100)}%
@@ -422,7 +423,7 @@ export function PageGraphDialog({
                     isIconOnly
                     size="sm"
                     variant="ghost"
-                    aria-label="확대"
+                    aria-label={t('graph.zoomIn')}
                     isDisabled={view.z >= MAX_ZOOM - 0.001}
                     onPress={() => zoomBy(ZOOM_STEP)}
                   >
@@ -452,14 +453,14 @@ export function PageGraphDialog({
                   <div className="graph-host" ref={hostRef} aria-busy={rendering} />
                 </div>
               </div>
-              {rendering ? <div className="graph-status">그리는 중…</div> : null}
+              {rendering ? <div className="graph-status">{t('graph.working')}</div> : null}
               {error ? (
                 <div className="text-sm text-warning" role="alert">
-                  그래프를 그리지 못했습니다: {error}
+                  {t('graph.fail', { msg: error })}
                 </div>
               ) : null}
               <details className="graph-source">
-                <summary>머메이드 소스</summary>
+                <summary>{t('graph.source')}</summary>
                 <pre>{code}</pre>
                 <Button
                   size="sm"
@@ -472,7 +473,7 @@ export function PageGraphDialog({
                   }}
                 >
                   <Icon name="download" size={14} />
-                  {copied ? '복사됨' : '복사'}
+                  {copied ? t('common.copied') : t('common.copy')}
                 </Button>
               </details>
             </GraphBoundary>

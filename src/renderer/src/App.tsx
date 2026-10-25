@@ -11,6 +11,7 @@ import { useBackHandler } from './backStack'
 import { getStorage, isNativeMobile, syncSystemBars } from './platform'
 import { useFileDrop } from './useFileDrop'
 import { useSystemTheme } from './useSystemTheme'
+import { t, useI18n } from './i18n'
 import { Maker } from './screens/Maker'
 import { Settings } from './screens/Settings'
 import { UpdateBanner } from './screens/UpdateBanner'
@@ -30,6 +31,7 @@ export function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const systemTheme = useSystemTheme()
+  useI18n() // re-render everything when the language changes
 
   // Explicit domino theme wins; theme=auto (and the shell screens) follow the OS.
   const effectiveTheme =
@@ -69,7 +71,7 @@ export function App(): React.JSX.Element {
   // Drag a .domino file anywhere onto the window to open it.
   const dragging = useFileDrop((file) => {
     if (!/\.domino$/i.test(file.name)) {
-      setLoadError(`${file.name}: .domino 파일만 열 수 있습니다.`)
+      setLoadError(t('app.dropOnly', { name: file.name }))
       return
     }
     const path = window.dominoBridge?.pathForFile?.(file)
@@ -113,7 +115,7 @@ export function App(): React.JSX.Element {
     return (
       <div className="boot-state" role="status">
         <Spinner />
-        <p>불러오는 중…</p>
+        <p>{t('app.loading')}</p>
       </div>
     )
   }
@@ -122,7 +124,7 @@ export function App(): React.JSX.Element {
     <div className="mx-auto w-full max-w-[760px] px-4 pt-4">
       <Alert
         variant="danger"
-        title="domino를 열 수 없습니다"
+        title={t('app.openFailTitle')}
         message={loadError}
         onClose={() => setLoadError(null)}
       />
@@ -162,7 +164,7 @@ export function App(): React.JSX.Element {
         <div className="drop-overlay" aria-hidden>
           <div className="drop-overlay-card">
             <Icon name="file" size={28} />
-            <p className="text-base font-semibold">.domino 파일을 놓으면 바로 열립니다</p>
+            <p className="text-base font-semibold">{t('app.dropHint')}</p>
           </div>
         </div>
       ) : null}

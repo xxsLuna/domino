@@ -1,4 +1,5 @@
 import { parseDomino } from '@core/domino/parse'
+import { t } from './i18n'
 import type { DominoFile, ParseError } from '@core/domino/types'
 import type { DominoSource } from '@core/session/prefs'
 import { clearCachedText, getCachedText, putCachedText } from '@core/session/registry'
@@ -34,7 +35,7 @@ export async function loadDominoText(source: DominoSource): Promise<string> {
     case 'file': {
       if (source.text !== undefined) return source.text
       if (window.dominoBridge) return window.dominoBridge.readFile(source.path)
-      throw new DominoLoadError('파일 접근은 데스크톱 앱에서만 가능합니다. 파일을 업로드해 주세요.')
+      throw new DominoLoadError(t('load.desktopOnly'))
     }
     case 'url':
       return loadUrl(source.url)
@@ -51,16 +52,16 @@ async function loadUrl(raw: string): Promise<string> {
       const inline = parsed.searchParams.get('c')
       if (inline) return inline
     } catch {
-      throw new DominoLoadError(`잘못된 domino URL: ${url}`)
+      throw new DominoLoadError(t('load.badUrl', { url }))
     }
     // Remote: rewrite the custom scheme to https for fetch (web), or let
     // Electron's privileged scheme handle it natively.
     if (isElectron()) {
       const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
-      if (!res.ok) throw new DominoLoadError(`domino 프로토콜 요청 실패 (HTTP ${res.status})`)
+      if (!res.ok) throw new DominoLoadError(t('load.protoFail', { status: res.status }))
       const text = await readTextCapped(res, MAX_DOMINO_CHARS)
       if (text.length >= MAX_DOMINO_CHARS) {
-        throw new DominoLoadError(`.domino 파일이 너무 큽니다 (최대 ${MAX_DOMINO_CHARS}자)`)
+        throw new DominoLoadError(t('load.tooBig', { max: MAX_DOMINO_CHARS }))
       }
       return text
     }
@@ -84,12 +85,13 @@ async function fetchRemote(url: string): Promise<string> {
   try {
     res = await httpFetch(url, { signal: AbortSignal.timeout(30_000) })
   } catch (err) {
-    throw new DominoLoadError(`요청 실패: ${(err as Error).message}`)
+    throw new DominoLoadError(t('load.reqFail', { msg: (err as Error).message }))
   }
-  if (!res.ok) throw new DominoLoadError(`HTTP ${res.status} ${res.statusText} — ${url}`)
+  if (!res.ok)
+    throw new DominoLoadError(t('load.httpFail', { status: res.status, text: res.statusText, url }))
   const text = await readTextCapped(res, MAX_DOMINO_CHARS)
   if (text.length >= MAX_DOMINO_CHARS) {
-    throw new DominoLoadError(`.domino 파일이 너무 큽니다 (최대 ${MAX_DOMINO_CHARS}자) — ${url}`)
+    throw new DominoLoadError(t('load.tooBigUrl', { max: MAX_DOMINO_CHARS, url }))
   }
   return text
 }
@@ -130,9 +132,11 @@ export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> 
   const parsed = tryParse(text, source)
   if (!parsed) {
     const result = parseDomino(text)
-    const detail = result.errors.map((e) => `${e.line}행: ${e.message}`).join('\n')
+    const detail = result.errors
+      .map((e) => t('load.parseLine', { line: e.line, msg: e.message }))
+      .join('\n')
     throw new DominoLoadError(
-      `.domino 파일을 파싱할 수 없습니다.\n${detail || '알 수 없는 오류'}`,
+      `${t('load.parseFail', { name: '.domino', detail: detail || '' })}`,
       result.errors
     )
   }

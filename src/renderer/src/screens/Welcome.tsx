@@ -6,15 +6,14 @@ import { Icon } from '@core/ui/icons'
 import { DEMO_DOMINO_TEXT } from '../demoDomino'
 import { DominoLoadError, loadAndParse, type LoadedDomino } from '../loadDomino'
 import { getStorage } from '../platform'
+import { t } from '../i18n'
 
 declare const __APP_VERSION__: string
 declare const __GIT_HASH__: string
 
 // A release identifies its version and the commit it was cut from; a dev
 // build only needs the commit — the version is whatever the tree is headed to.
-const buildInfo = import.meta.env.DEV
-  ? __GIT_HASH__
-  : `v${__APP_VERSION__} · ${__GIT_HASH__}`
+const buildInfo = import.meta.env.DEV ? __GIT_HASH__ : `v${__APP_VERSION__} · ${__GIT_HASH__}`
 
 interface WelcomeProps {
   onLoaded: (loaded: LoadedDomino) => void
@@ -75,7 +74,7 @@ export function Welcome({
   const reopen = (entry: RecentEntry): void => {
     void (async () => {
       if (entry.source.type === 'file' && entry.source.text === undefined && !window.dominoBridge) {
-        setError('이 파일은 이 기기에 남아 있지 않습니다. 다시 업로드해 주세요.')
+        setError(t('welcome.fileGone'))
         return
       }
       await open(entry.source)
@@ -91,23 +90,26 @@ export function Welcome({
           </span>
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold tracking-tight">Domino UI</h1>
-            <p className="text-sm text-muted">
-              .domino 파일로 열리는, LLM이 실시간 만드는 앱 런타임
-            </p>
+            <p className="text-sm text-muted">{t('welcome.tagline')}</p>
           </div>
         </div>
         <Tooltip delay={600}>
-          <Button isIconOnly variant="secondary" aria-label="설정" onPress={onOpenSettings}>
+          <Button
+            isIconOnly
+            variant="secondary"
+            aria-label={t('common.settings')}
+            onPress={onOpenSettings}
+          >
             <Icon name="settings" size={18} />
           </Button>
-          <Tooltip.Content>설정</Tooltip.Content>
+          <Tooltip.Content>{t('common.settings')}</Tooltip.Content>
         </Tooltip>
       </header>
 
       <Card>
         <Card.Header>
-          <Card.Title>domino 열기</Card.Title>
-          <Card.Description>URL·파일로 열거나 예시로 바로 시작하세요.</Card.Description>
+          <Card.Title>{t('welcome.openTitle')}</Card.Title>
+          <Card.Description>{t('welcome.openDesc')}</Card.Description>
         </Card.Header>
         <Card.Content className="flex flex-col gap-3">
           <form
@@ -129,12 +131,12 @@ export function Welcome({
                 <InputGroup.Prefix>
                   <Icon name="link" className="text-muted" />
                 </InputGroup.Prefix>
-                <InputGroup.Input placeholder="domino://app.example.com/crm.domino 또는 https://…/app.domino" />
+                <InputGroup.Input placeholder={t('welcome.urlPlaceholder')} />
               </InputGroup>
             </TextField>
-            <Button type="submit" isDisabled={busy || !url.trim()} aria-label="열기">
+            <Button type="submit" isDisabled={busy || !url.trim()} aria-label={t('welcome.open')}>
               <Icon name="arrow-right" className="phone-only" />
-              <span className="hide-phone">열기</span>
+              <span className="hide-phone">{t('welcome.open')}</span>
             </Button>
           </form>
           <div className="flex flex-wrap gap-2">
@@ -144,7 +146,7 @@ export function Welcome({
               isDisabled={busy}
             >
               <Icon name="file" />
-              파일 선택
+              {t('welcome.pickFile')}
             </Button>
             <Button
               variant="tertiary"
@@ -152,7 +154,7 @@ export function Welcome({
               isDisabled={busy}
             >
               <Icon name="rocket" />
-              예시로 시작하기
+              {t('welcome.demo')}
             </Button>
             <input
               ref={fileInput}
@@ -168,13 +170,13 @@ export function Welcome({
           </div>
           {busy ? (
             <p className="flex items-center gap-2 text-sm text-muted" role="status">
-              <Spinner size="sm" /> 불러오는 중…
+              <Spinner size="sm" /> {t('welcome.loading')}
             </p>
           ) : null}
           {error ? (
             <Alert
               variant="danger"
-              title="열 수 없습니다"
+              title={t('welcome.errTitle')}
               message={error}
               onClose={() => setError(null)}
             />
@@ -190,30 +192,25 @@ export function Welcome({
             </span>
             <div className="min-w-0">
               <p className="font-semibold">domino maker</p>
-              <p className="text-sm text-muted">
-                만들고 싶은 앱을 자연어로 설명하면, 부족한 정보를 물어본 뒤 .domino 파일을 만들어
-                드립니다.
-              </p>
+              <p className="text-sm text-muted">{t('welcome.makerDesc')}</p>
             </div>
           </div>
           <Button onPress={onOpenMaker} isDisabled={busy}>
             <Icon name="plus" />
-            새로 만들기
+            {t('welcome.makeNew')}
           </Button>
         </Card.Content>
       </Card>
 
       <Card>
         <Card.Header>
-          <Card.Title>최근 domino</Card.Title>
+          <Card.Title>{t('welcome.recents')}</Card.Title>
         </Card.Header>
         <Card.Content>
           {recents.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted">
-              아직 사용한 domino가 없습니다. 위에서 열어보세요.
-            </p>
+            <p className="py-6 text-center text-sm text-muted">{t('welcome.recentsNone')}</p>
           ) : (
-            <ul className="-mx-2 flex flex-col" aria-label="최근 domino">
+            <ul className="-mx-2 flex flex-col" aria-label={t('welcome.recents')}>
               {recents.map((entry, i) => (
                 <li key={i}>
                   <button
@@ -232,7 +229,7 @@ export function Welcome({
                           ? entry.source.url
                           : entry.source.type === 'file'
                             ? entry.source.path
-                            : '직접 업로드/예시'}
+                            : t('welcome.uploaded')}
                       </span>
                     </span>
                     <span className="shrink-0 text-xs text-muted">
@@ -252,10 +249,9 @@ export function Welcome({
       </Card>
 
       <footer className="text-center text-xs text-muted">
-        데스크톱과 모바일에서 <code className="rounded bg-default px-1">.domino</code> 파일을 바로
-        열거나 <code className="rounded bg-default px-1">domino://</code> 링크를 클릭해 실행할 수
-        있습니다. 데스크톱에서는 파일을 창에 끌어다 놓아도 열립니다. 설정에서 LLM
-        Provider(BYOK)를 등록하세요.
+        {t('welcome.footerA')} <code className="rounded bg-default px-1">.domino</code>{' '}
+        {t('welcome.footerB')} <code className="rounded bg-default px-1">domino://</code>{' '}
+        {t('welcome.footerC')}
         <p className="mt-2">
           <code className="rounded bg-default px-1" aria-label="빌드 정보">
             {buildInfo}
