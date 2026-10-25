@@ -25,10 +25,53 @@ interface Round {
   answers: Record<string, string>
 }
 
-const EXAMPLES = [
-  '사내 비품 신청 앱. 직원이 로그인해서 비품을 신청하고, 관리자는 승인/반려한다. API는 https://api.example.com 에 있고 /login 은 email, password를 받아 access_token을 준다.',
-  '내 블로그 글 관리 화면. GET /posts 는 글 목록(id, title, status, updatedAt)을 주고, POST /posts 로 새 글을 만든다. 로그인은 없다.',
-  'A personal habit tracker: daily check-ins, streaks and a weekly summary chart. No backend yet.'
+/**
+ * One-tap starting points: a rich, well-specified description beats a blank
+ * textarea — picking a tile drops a complete brief into the composer.
+ */
+const TEMPLATES: Array<{ icon: string; title: string; desc: string; prompt: string }> = [
+  {
+    icon: 'list',
+    title: '할 일 · 업무 관리',
+    desc: '목록 · 상태 변경 · 담당자',
+    prompt:
+      '팀 할 일 관리 앱. GET /tasks 가 [{id, title, assignee, status(todo|doing|done), due}] 목록을 주고, POST /tasks {title, assignee} 로 새 할 일을 만들고, POST /tasks/:id/status {status} 로 상태를 바꾼다. 화면: 오늘 할 일 목록(상태 칩), 새 할 일 폼, 담당자별 필터. 로그인 없음.'
+  },
+  {
+    icon: 'inbox',
+    title: '실시간 RSS 리더',
+    desc: '주소 입력 → 라이브 피드 스택',
+    prompt:
+      '원하는 RSS 주소를 입력하면 그 피드가 실시간으로 갱신되는 구독 앱. [data] 로 feed = GET /feed?url={rssUrl} every 20s 를 선언하고, 입력 폼(id add-feed-form)은 [actions] 로 set rssUrl = form.url ; refresh feed ; goto feed 를 실행한다. 피드 화면의 기사 목록은 {"$data": "feed.items"} 로 바인딩하고 새로고침 버튼(id feed-refresh)은 refresh feed. 페이지: 구독 입력(main), 실시간 피드(feed), 저장함(saved).'
+  },
+  {
+    icon: 'chart',
+    title: '매출 대시보드',
+    desc: 'KPI · 추이 · 최근 주문',
+    prompt:
+      '소규모 쇼핑몰 매출 대시보드. GET /stats 가 {todayRevenue, orders, avgOrder, topProducts[{name, qty}]}를 주고 GET /orders?limit=10 이 최근 주문 [{id, customer, total, status}]를 준다. 화면: KPI 카드 4개, 상품별 BarChart/Progress, 최근 주문 표. 로그인 없음, 다크 톤 강조색 #0ea5e9.'
+  },
+  {
+    icon: 'file',
+    title: '게시판 · 문서',
+    desc: '목록 · 상세 · 새 글',
+    prompt:
+      '팀 공지 게시판. GET /posts 가 [{id, title, author, tags, updatedAt}] 목록, GET /posts/:id 가 {title, author, body, tags} 를 주고 POST /posts {title, body, tags} 로 새 글을 쓴다. 화면: 검색+태그 필터가 있는 목록, 글 상세, 새 글 작성 폼. 로그인 없음.'
+  },
+  {
+    icon: 'users',
+    title: '고객 관리 (CRM)',
+    desc: '리드 목록 · 상세 · 후속조치',
+    prompt:
+      '영업팀 리드 관리. 로그인 필수 — POST /login {email, password} → access_token. GET /leads 가 [{id, name, company, stage, value, owner}] 를 주고 POST /leads {name, company, value} 로 리드를 추가하며 POST /leads/:id/stage {stage} 로 단계를 옮긴다. 화면: 파이프라인 대시보드(KPI+단계별 표), 리드 상세(탭: 정보/활동), 새 리드 폼, 설정.'
+  },
+  {
+    icon: 'check',
+    title: '신청 · 승인 워크플로',
+    desc: '신청서 → 승인/반려',
+    prompt:
+      '사내 비품 신청 앱. 직원 로그인(POST /login {email, password} → access_token). GET /requests 가 내 신청 [{id, item, reason, status, createdAt}], POST /requests {item, reason} 로 신청, POST /requests/:id/decision {approve, note} 는 관리자만. 화면: 내 신청 목록, 새 신청 폼, 관리자 승인 대기 목록(승인/반려 버튼).'
+  }
 ]
 
 export function Maker({
@@ -83,7 +126,9 @@ export function Maker({
       if (run.current !== mine) return
       setError((err as Error).message)
       setPhase(
-        history.current.some((m) => m.role === 'assistant') ? { kind: 'failed' } : { kind: 'compose' }
+        history.current.some((m) => m.role === 'assistant')
+          ? { kind: 'failed' }
+          : { kind: 'compose' }
       )
     }
   }
@@ -97,6 +142,12 @@ export function Maker({
   const submitAnswers = (questions: MakerQuestion[]): void => {
     setRounds((r) => [...r, { questions, answers }])
     void step(formatAnswers(questions, answers))
+  }
+
+  /** Skip the questions: every blank already means "알아서" — send them all. */
+  const decideAll = (questions: MakerQuestion[]): void => {
+    setRounds((r) => [...r, { questions, answers: {} }])
+    void step(formatAnswers(questions, {}))
   }
 
   const reset = (): void => {
@@ -189,16 +240,20 @@ export function Maker({
                 placeholder="예) 우리 팀 휴가 신청 앱이야. /api/leaves 에 GET 하면 신청 목록이 오고…"
               />
             </TextField>
-            <div className="flex flex-wrap gap-2">
-              {EXAMPLES.map((ex, i) => (
+            <div className="maker-templates" aria-label="템플릿">
+              {TEMPLATES.map((t) => (
                 <button
-                  key={i}
+                  key={t.title}
                   type="button"
-                  className="max-w-full cursor-pointer truncate rounded-full bg-default px-3 py-1 text-left text-xs text-muted transition-colors hover:text-foreground"
-                  onClick={() => setDescription(ex)}
-                  title={ex}
+                  className="maker-template"
+                  onClick={() => setDescription(t.prompt)}
+                  title={t.prompt}
                 >
-                  예시 {i + 1}: {ex.slice(0, 28)}…
+                  <Icon name={t.icon} size={18} />
+                  <span className="maker-template-text">
+                    <strong>{t.title}</strong>
+                    <span>{t.desc}</span>
+                  </span>
                 </button>
               ))}
             </div>
@@ -314,7 +369,14 @@ export function Maker({
                   ) : null}
                 </div>
               ))}
-              <div className="flex justify-end">
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onPress={() => decideAll(phase.step.questions)}
+                >
+                  알아서 만들기
+                </Button>
                 <Button type="submit">
                   <Icon name="send" />
                   답변 보내기

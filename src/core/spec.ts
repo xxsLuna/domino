@@ -379,6 +379,91 @@ export function resolveStateBindings(node: CardNode, state: Record<string, unkno
   return replaced ? { ...node, props, children: children ?? node.children } : node
 }
 
+/** True for the single-key binding object `{"$data": "<key>.<path>"}`. */
+const dataBinding = (v: unknown): string | null =>
+  isRecord(v) &&
+  Object.keys(v).length === 1 &&
+  typeof v['$data'] === 'string' &&
+  (v['$data'] as string).length > 0
+    ? (v['$data'] as string)
+    : null
+
+/** Walk a `key.a.b` path into the source map (numeric segments index arrays). */
+function lookupDataPath(sources: Record<string, unknown>, path: string): unknown {
+  const [key, ...rest] = path.split('.')
+  let cur: unknown = sources[key]
+  for (const seg of rest) {
+    if (cur === null || cur === undefined) return undefined
+    if (Array.isArray(cur)) {
+      const idx = Number(seg)
+      cur = Number.isInteger(idx) ? cur[idx] : undefined
+    } else if (isRecord(cur)) {
+      cur = cur[seg]
+    } else {
+      return undefined
+    }
+  }
+  return cur
+}
+
+function resolveDataValue(v: unknown, sources: Record<string, unknown>): unknown {
+  const path = dataBinding(v)
+  if (path !== null) return lookupDataPath(sources, path)
+  if (Array.isArray(v)) return v.map((x) => resolveDataValue(x, sources))
+  if (isRecord(v)) {
+    let replaced = false
+    const out: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v)) {
+      const next = resolveDataValue(val, sources)
+      if (next !== val) replaced = true
+      out[k] = next
+    }
+    return replaced ? out : v
+  }
+  return v
+}
+
+/**
+ * Substitute `{"$data": "<key>.<path>"}` prop bindings with the latest
+ * snapshots of the domino's [data] sources — the runtime refreshes those
+ * without the model, so bound props stay live. Same identity contract as
+ * resolveStateBindings (original node when nothing was replaced).
+ */
+export function resolveDataBindings(node: CardNode, sources: Record<string, unknown>): CardNode {
+  let replaced = false
+  const props =
+    node.props === undefined
+      ? undefined
+      : (resolveDataValue(node.props, sources) as Record<string, unknown> | undefined)
+  if (props !== node.props) replaced = true
+  const children = node.children?.map((c) => {
+    const next = resolveDataBindings(c, sources)
+    if (next !== c) replaced = true
+    return next
+  })
+  return replaced ? { ...node, props, children: children ?? node.children } : node
+}
+
+/** Source keys a spec's props reference via `{"$data": "key.path"}` bindings. */
+export function referencedDataKeys(spec: UiSpec): Set<string> {
+  const keys = new Set<string>()
+  for (const page of spec.pages) {
+    for (const node of iterateNodes(page.layout)) {
+      const walk = (v: unknown): void => {
+        const path = dataBinding(v)
+        if (path !== null) {
+          keys.add(path.split('.')[0])
+          return
+        }
+        if (Array.isArray(v)) v.forEach(walk)
+        else if (isRecord(v)) Object.values(v).forEach(walk)
+      }
+      walk(node.props)
+    }
+  }
+  return keys
+}
+
 /** Stable key describing "which screen this is" for the session render cache. */
 export function screenCacheKey(pageId: string, contextHash: string): string {
   return `${pageId}::${contextHash}`

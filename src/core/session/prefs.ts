@@ -11,6 +11,12 @@ export interface KeyValueStorage {
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
   remove(key: string): Promise<void>
+  /**
+   * Enumerate every stored [key, value] — the storage-management settings
+   * need sizes per domino. Optional: adapters without enumeration simply
+   * leave it out and management UI degrades to "unsupported here".
+   */
+  entries?(): Promise<Array<[string, string]>>
 }
 
 export type DominoSource =
@@ -29,7 +35,8 @@ const KEYS = {
   llm: 'domino:llm-config',
   recents: 'domino:recents',
   token: (id: string) => `domino:token:${id}`,
-  welcomeHint: 'domino:welcome-hint'
+  welcomeHint: 'domino:welcome-hint',
+  tokenWarn: 'domino:token-warn'
 } as const
 
 export function defaultLlmConfig(): LLMConfig {
@@ -117,6 +124,29 @@ export async function setToken(
   token: string
 ): Promise<void> {
   await storage.set(KEYS.token(dominoId), token)
+}
+
+/**
+ * Session token-budget warning threshold: once cumulative usage crosses it
+ * the runtime shows a dismissible banner (0 disables the guard). BYOK means
+ * real money — the default keeps runaway sessions visible.
+ */
+export const DEFAULT_TOKEN_WARN = 200_000
+
+export async function loadTokenWarn(storage: KeyValueStorage): Promise<number> {
+  let raw: string | null
+  try {
+    raw = await storage.get(KEYS.tokenWarn)
+  } catch {
+    return DEFAULT_TOKEN_WARN
+  }
+  if (raw === null) return DEFAULT_TOKEN_WARN
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : DEFAULT_TOKEN_WARN
+}
+
+export async function saveTokenWarn(storage: KeyValueStorage, value: number): Promise<void> {
+  await storage.set(KEYS.tokenWarn, String(Math.max(0, Math.round(value))))
 }
 
 /** Extract a token from a login response body using the domino token_key. */

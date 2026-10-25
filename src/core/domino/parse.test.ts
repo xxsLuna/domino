@@ -196,9 +196,7 @@ allow = /orders
 
 describe('hardening', () => {
   it('rejects __proto__-style sections and keys without polluting extras', () => {
-    const res = parseDomino(
-      '[meta]\nname = X\n[__proto__]\npolluted = yes\n[ui]\n__proto__ = x\n'
-    )
+    const res = parseDomino('[meta]\nname = X\n[__proto__]\npolluted = yes\n[ui]\n__proto__ = x\n')
     expect(res.ok).toBe(true)
     expect(res.errors.some((e) => e.message.includes('unknown section'))).toBe(true)
     expect(res.errors.some((e) => e.message.includes('unsafe key'))).toBe(true)
@@ -258,5 +256,99 @@ describe('hardening', () => {
     expect(res.domino?.ui.success).toBe('rgb(10 20 30 / 50%)')
     expect(res.domino?.ui.warning).toBe('rebeccapurple')
     expect(res.errors.filter((e) => e.message.includes('plain CSS color'))).toHaveLength(2)
+  })
+})
+
+describe('[data] and [actions] sections', () => {
+  it('parses data sources with interpolation and an every-interval', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\nfeed = GET /feed?url={rssUrl} every 20s\nonce = POST /ping\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.data).toEqual([
+      { key: 'feed', method: 'GET', path: '/feed?url={rssUrl}', everySec: 20 },
+      { key: 'once', method: 'POST', path: '/ping' }
+    ])
+  })
+
+  it('reports malformed data declarations without dropping the rest', () => {
+    const res = parseDomino('[meta]\nname = X\n[data]\nbad = /no-method\ngood = GET /ok\n')
+    expect(res.domino?.data).toEqual([{ key: 'good', method: 'GET', path: '/ok' }])
+    expect(res.errors.some((e) => e.message.includes('[data] bad'))).toBe(true)
+  })
+
+  it('rejects non-identifier interpolations in a data path', () => {
+    const res = parseDomino('[meta]\nname = X\n[data]\nfeed = GET /f?u={a b}\n')
+    expect(res.domino?.data).toHaveLength(0)
+    expect(res.errors.some((e) => e.message.includes('interpolation'))).toBe(true)
+  })
+
+  it('parses action rules as ordered steps keyed by node id', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\nfeed = GET /feed\n[actions]\n' +
+        'add-feed-form = set rssUrl = form.url ; refresh feed ; goto feed\n' +
+        'feed-refresh = refresh feed\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.actions).toEqual([
+      {
+        id: 'add-feed-form',
+        steps: [
+          { kind: 'set', stateKey: 'rssUrl', formField: 'url' },
+          { kind: 'refresh', source: 'feed' },
+          { kind: 'goto', page: 'feed' }
+        ]
+      },
+      { id: 'feed-refresh', steps: [{ kind: 'refresh', source: 'feed' }] }
+    ])
+  })
+
+  it('flags refresh steps naming an undeclared source', () => {
+    const res = parseDomino('[meta]\nname = X\n[actions]\nrefresh-feed = refresh nope\n')
+    expect(res.errors.some((e) => e.message.includes('no such [data] source'))).toBe(true)
+  })
+
+  it('flags a bad action step but keeps the valid ones', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[actions]\nbad = explode everything\ngood = goto main\n'
+    )
+    expect(res.domino?.actions).toEqual([{ id: 'good', steps: [{ kind: 'goto', page: 'main' }] }])
+    expect(res.errors.some((e) => e.message.includes('bad step'))).toBe(true)
+  })
+})
+
+describe('[screens] embedded app export', () => {
+  const spec = { version: 1, page: 'main', pages: [{ id: 'main', name: '메인', layout: [] }] }
+
+  it('parses an embedded spec and action graph', () => {
+    const file = [
+      '[meta]',
+      'name = X',
+      '[screens]',
+      `spec = ${JSON.stringify(spec)}`,
+      `graph = ${JSON.stringify([
+        { from: 'main', to: 'saved', action: 'go-saved', label: '저장함', kind: 'action' }
+      ])}`,
+      '[guide]',
+      '가이드'
+    ].join('\n')
+    const res = parseDomino(file)
+    expect(res.errors).toEqual([])
+    expect(res.domino?.screens?.spec).toEqual(spec)
+    expect(res.domino?.screens?.graph).toHaveLength(1)
+    expect(res.domino?.guide).toBe('가이드')
+  })
+
+  it('rejects a broken spec JSON but keeps the rest of the file usable', () => {
+    const res = parseDomino('[meta]\nname = X\n[screens]\nspec = {not-json')
+    expect(res.ok).toBe(true)
+    expect(res.domino?.screens).toBeUndefined()
+    expect(res.errors.some((e) => e.message.includes('[screens] spec'))).toBe(true)
+  })
+
+  it('keeps JSON semicolons intact (raw collection, no comment stripping)', () => {
+    const withSemi = { ...spec, pages: [{ id: 'a;b', name: 'x', layout: [] }] }
+    const res = parseDomino(`[meta]\nname = X\n[screens]\nspec = ${JSON.stringify(withSemi)}`)
+    expect(res.domino?.screens?.spec.pages[0].id).toBe('a;b')
   })
 })

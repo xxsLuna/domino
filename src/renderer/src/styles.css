@@ -27,8 +27,14 @@
   }
   body {
     font-family:
-      'Inter', 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo',
-      'Noto Sans KR', sans-serif;
+      'Inter',
+      'Pretendard',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      'Apple SD Gothic Neo',
+      'Noto Sans KR',
+      sans-serif;
     background: var(--background);
     color: var(--foreground);
     font-size: 14px;
@@ -502,8 +508,7 @@
   z-index: 4;
 }
 /* When both show, drop the agent alert below the runtime banner. */
-.runtime-body[data-centered]:has(> .runtime-banner)
-  .grid-cell[data-node='Alert'] {
+.runtime-body[data-centered]:has(> .runtime-banner) .grid-cell[data-node='Alert'] {
   top: 72px;
 }
 
@@ -518,7 +523,9 @@
   min-height: 52px;
   padding-inline: 20px;
   border-radius: 18px;
-  box-shadow: var(--overlay-shadow), 0 6px 16px color-mix(in oklab, var(--accent) 30%, transparent);
+  box-shadow:
+    var(--overlay-shadow),
+    0 6px 16px color-mix(in oklab, var(--accent) 30%, transparent);
 }
 
 /* Phone forms: actions stay reachable at the bottom while filling in. */
@@ -569,7 +576,9 @@
   outline: 2px solid transparent;
   outline-offset: 2px;
   border-radius: var(--radius);
-  transition: outline-color 0.3s ease, box-shadow 0.3s ease;
+  transition:
+    outline-color 0.3s ease,
+    box-shadow 0.3s ease;
 }
 .grid-cell[data-changed] {
   outline-color: color-mix(in oklab, var(--accent) 65%, transparent);
@@ -955,7 +964,12 @@
   border-radius: calc(var(--radius) * 2);
   background: var(--default);
   color: var(--foreground);
-  font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font:
+    12.5px/1.6 ui-monospace,
+    'SF Mono',
+    Menlo,
+    Consolas,
+    monospace;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -985,4 +999,328 @@
     padding-top: 20px;
     padding-inline: 16px;
   }
+}
+
+/* --------------------------- page graph (dev) --------------------------- */
+/* The toolbar rides between the header and the canvas: legend on the left,
+   zoom controls on the right, breathing room all around. */
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 4px;
+}
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted-fg, #6b7280);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.graph-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.graph-chip {
+  width: 14px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1.5px solid currentColor;
+  display: inline-block;
+}
+.graph-chip--page {
+  border-radius: 2px;
+}
+.graph-chip--action {
+  border-radius: 999px;
+}
+.graph-chip--live {
+  transform: rotate(45deg);
+  border-style: dashed;
+  border-color: #f43f5e;
+}
+.graph-chip--tabs {
+  border-style: dashed;
+}
+.graph-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--separator);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+.graph-zoom-level {
+  min-width: 52px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.graph-zoom-level:hover {
+  background: color-mix(in oklab, var(--separator) 55%, transparent);
+}
+/* The canvas: a FIXED viewport (theme surface + padding) over a transformed
+   layer — zoom scales the diagram inside the view, drag/wheel/pinch pan it.
+   The svg keeps its 100% size; only the layer transform changes, so nothing
+   re-lays out and vector text stays crisp at any zoom. */
+.graph-viewport {
+  position: relative;
+  border: 1px solid var(--separator);
+  border-radius: 16px;
+  background: var(--surface);
+  padding: 20px;
+  margin-top: 4px;
+  min-height: 300px;
+  max-height: min(60vh, 560px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+.graph-viewport[data-panning] {
+  cursor: grabbing;
+}
+.graph-layer {
+  transform-origin: 0 0;
+  width: 100%;
+  will-change: transform;
+}
+.graph-host {
+  font-size: 13px;
+  width: 100%;
+}
+.graph-host svg {
+  display: block;
+  margin: 0;
+  max-width: none;
+}
+.graph-source {
+  margin-top: 6px;
+}
+.graph-source summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted-fg, #6b7280);
+}
+.graph-source pre {
+  margin: 8px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface) 8%, transparent);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre;
+}
+.graph-status {
+  font-size: 13px;
+  color: var(--muted-fg, #6b7280);
+  padding: 6px 2px 0;
+}
+
+/* Export chooser options */
+.export-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--separator);
+  border-radius: 14px;
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.export-option:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.export-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.export-option span {
+  font-size: 12.5px;
+  color: var(--muted-fg, #6b7280);
+  line-height: 1.45;
+}
+
+/* Developer submenu row + its flyout (phone handle menu). The row sits BELOW
+   the menu collection — pressing it never selects (which would close the
+   menu); it opens a second panel beside the popover instead. */
+.menu-submenu-row {
+  position: relative;
+  border-top: 1px solid var(--separator);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.menu-submenu-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.menu-submenu-chev {
+  margin-left: auto;
+  opacity: 0.7;
+  font-size: 15px;
+}
+.menu-submenu-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 6px 4px 26px;
+  margin-top: 2px;
+  animation: menu-flyout-in 140ms ease-out;
+}
+.menu-submenu-items button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-submenu-items button:hover,
+.menu-submenu-items button:focus-visible {
+  background: color-mix(in oklab, var(--separator) 45%, transparent);
+  outline: none;
+}
+@keyframes menu-flyout-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* --------------------- storage management (settings) --------------------- */
+.storage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--separator);
+}
+.storage-heading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.storage-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted-fg, #6b7280);
+}
+.storage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--separator);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.storage-row--maintenance {
+  border-style: dashed;
+}
+.storage-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.storage-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.storage-parts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.storage-part {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--separator);
+  color: var(--muted-fg, #6b7280);
+  white-space: nowrap;
+}
+.storage-size {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-fg, #6b7280);
+}
+
+/* ------------------------- maker template gallery ------------------------- */
+.maker-templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.maker-template {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--separator);
+  border-radius: 14px;
+  background: var(--surface);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+.maker-template:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.maker-template-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.maker-template-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.maker-template-text span {
+  font-size: 12px;
+  color: var(--muted-fg, #6b7280);
 }

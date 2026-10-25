@@ -1,8 +1,30 @@
-import type { AuthSection, ApiSection, DominoFile, ParseError, ParseResult, ScriptRule, ScriptCommand, UiSection } from './types'
+import type {
+  ActionDecl,
+  ActionStep,
+  ApiSection,
+  AuthSection,
+  DataSourceDecl,
+  DominoFile,
+  ParseError,
+  ParseResult,
+  ScriptRule,
+  ScriptCommand,
+  UiSection
+} from './types'
 import { validateCondition } from './conditions'
 import { isSafeCssColor } from '../ui/theme'
 
-const KNOWN_SECTIONS = new Set(['meta', 'auth', 'api', 'ui', 'script', 'guide'])
+const KNOWN_SECTIONS = new Set([
+  'meta',
+  'auth',
+  'api',
+  'ui',
+  'script',
+  'guide',
+  'data',
+  'actions',
+  'screens'
+])
 // A header may carry a trailing comment: `[api] ; endpoints`. Without this the
 // guide section never ends and swallows the rest of the file as prose.
 const SECTION_HEADER = /^\s*\[[A-Za-z0-9_-]+\]\s*(?:[;#].*)?$/
@@ -44,7 +66,10 @@ export function parseDomino(source: string): ParseResult {
     if (sectionMatch) {
       const name = sectionMatch[1].toLowerCase()
       if (!KNOWN_SECTIONS.has(name)) {
-        errors.push({ line, message: `unknown section [${name}] (allowed: ${[...KNOWN_SECTIONS].join(', ')})` })
+        errors.push({
+          line,
+          message: `unknown section [${name}] (allowed: ${[...KNOWN_SECTIONS].join(', ')})`
+        })
         // keep parsing so unknown keys land in extras
       }
       current = name
@@ -59,6 +84,24 @@ export function parseDomino(source: string): ParseResult {
 
     if (current === 'script') {
       scriptLines.push({ line, text })
+      continue
+    }
+    // [data]/[actions] values carry `;` as a STEP SEPARATOR ("a ; b ; c"), and
+    // [screens] values are single-line JSON that may contain `;` inside
+    // strings — collecting them verbatim keeps the comment stripper away.
+    if (current === 'data' || current === 'actions' || current === 'screens') {
+      const rawKv = raw.trim().match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/)
+      if (!rawKv) {
+        errors.push({ line, message: `expected "key = value", got "${text}"` })
+        continue
+      }
+      const rawKey = rawKv[1].toLowerCase()
+      if (UNSAFE_KEYS.has(rawKey)) {
+        errors.push({ line, message: `unsafe key "${rawKey}" is not allowed` })
+        continue
+      }
+      if (!sections.has(current)) sections.set(current, [])
+      sections.get(current)!.push({ line, key: rawKey, value: rawKv[2].trim() })
       continue
     }
 
@@ -104,7 +147,10 @@ export function parseDomino(source: string): ParseResult {
     skipIfLoggedIn: parseBool(get('auth', 'skip_if_logged_in'), true)
   }
   if (auth.required && !auth.loginEndpoint) {
-    errors.push({ line: getLine('auth', 'required'), message: '[auth] required = true needs login_endpoint' })
+    errors.push({
+      line: getLine('auth', 'required'),
+      message: '[auth] required = true needs login_endpoint'
+    })
   }
 
   /* -------------------------------- api ------------------------------- */
@@ -126,7 +172,10 @@ export function parseDomino(source: string): ParseResult {
   }
   const styleRaw = (get('ui', 'style') ?? 'soft').toLowerCase()
   if (styleRaw !== 'soft' && styleRaw !== 'sharp') {
-    errors.push({ line: getLine('ui', 'style'), message: `[ui] style must be soft or sharp, got "${styleRaw}"` })
+    errors.push({
+      line: getLine('ui', 'style'),
+      message: `[ui] style must be soft or sharp, got "${styleRaw}"`
+    })
   }
   const densityRaw = (get('ui', 'density') ?? 'comfortable').toLowerCase()
   if (densityRaw !== 'comfortable' && densityRaw !== 'compact') {
@@ -140,7 +189,10 @@ export function parseDomino(source: string): ParseResult {
   if (radiusRaw !== undefined) {
     const n = Number(radiusRaw)
     if (!Number.isFinite(n) || n < 0 || n > 99) {
-      errors.push({ line: getLine('ui', 'radius'), message: `[ui] radius must be a number 0-99, got "${radiusRaw}"` })
+      errors.push({
+        line: getLine('ui', 'radius'),
+        message: `[ui] radius must be a number 0-99, got "${radiusRaw}"`
+      })
     } else {
       radius = n
     }
@@ -174,7 +226,10 @@ export function parseDomino(source: string): ParseResult {
   for (const { line, text } of scriptLines) {
     const rule = parseScriptLine(text)
     if (!rule) {
-      errors.push({ line, message: `bad script rule "${text}" (expected: when <cond> -> <cmd>  or  on <event> -> <cmd>)` })
+      errors.push({
+        line,
+        message: `bad script rule "${text}" (expected: when <cond> -> <cmd>  or  on <event> -> <cmd>)`
+      })
       continue
     }
     if (rule.when !== undefined) {
@@ -189,11 +244,132 @@ export function parseDomino(source: string): ParseResult {
     script.push({ line, ...rule })
   }
 
+  /* ------------------------------- data ------------------------------- */
+  // `feed = GET /feed?url={rssUrl} every 20s` — one runtime-owned source.
+  const data: DataSourceDecl[] = []
+  for (const e of sections.get('data') ?? []) {
+    const m = e.value.match(/^(GET|POST|PUT|PATCH|DELETE)\s+(.+)$/i)
+    if (!m) {
+      errors.push({
+        line: e.line,
+        message: `[data] ${e.key}: expected "GET /path?query (every Ns)", got "${e.value}"`
+      })
+      continue
+    }
+    const rest = m[2].trim()
+    const ev = /\s+every\s+(\d+)\s*s?$/i.exec(rest)
+    const path = (ev ? rest.slice(0, ev.index) : rest).trim()
+    // `{state key}` segments may hold spaces; the rest of a path may not.
+    const spacesOutside = path.replace(/\{[^}]*\}/g, '').includes(' ')
+    if (spacesOutside || !/^(\/|https?:\/\/)/i.test(path)) {
+      errors.push({
+        line: e.line,
+        message: `[data] ${e.key}: the path must be "/…" (or an absolute http URL), got "${path}"`
+      })
+      continue
+    }
+    if (interpolationGap(path, e, errors)) continue
+    data.push({
+      key: e.key,
+      method: m[1].toUpperCase(),
+      path,
+      ...(ev ? { everySec: Math.min(600, Math.max(5, Number(ev[1]))) } : {})
+    })
+  }
+
+  /* ------------------------------ actions ------------------------------ */
+  // `add-feed = set rssUrl = form.url ; refresh feed ; goto feed` — runtime-
+  // owned steps for the widget with this node id.
+  const actions: ActionDecl[] = []
+  for (const e of sections.get('actions') ?? []) {
+    const steps: ActionStep[] = []
+    let bad = false
+    for (const rawStep of e.value
+      .split(';')
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      const refresh = rawStep.match(/^refresh\s+([A-Za-z0-9_-]+)$/)
+      if (refresh) {
+        steps.push({ kind: 'refresh', source: refresh[1] })
+        continue
+      }
+      const set = rawStep.match(/^set\s+([A-Za-z0-9_]+)\s*=\s*form\.([A-Za-z0-9_]+)$/)
+      if (set) {
+        steps.push({ kind: 'set', stateKey: set[1], formField: set[2] })
+        continue
+      }
+      const goto = rawStep.match(/^goto\s+([A-Za-z0-9_-]+)$/)
+      if (goto) {
+        steps.push({ kind: 'goto', page: goto[1] })
+        continue
+      }
+      errors.push({
+        line: e.line,
+        message: `[actions] ${e.key}: bad step "${rawStep}" (steps: set <key> = form.<field> | refresh <source> | goto <page>, joined by ";")`
+      })
+      bad = true
+    }
+    if (!bad && steps.length > 0) actions.push({ id: e.key, steps })
+  }
+
   if (!name) return { ok: false, errors }
+
+  /* ------------------------------ screens ------------------------------ */
+  // An export "with the app": the built UiSpec (one JSON line) plus the
+  // observed action graph, so a fresh device runs it without the model.
+  let screens: DominoFile['screens']
+  {
+    const entries = sections.get('screens') ?? []
+    const rawSpec = entries.find((e) => e.key === 'spec')?.value
+    const rawGraph = entries.find((e) => e.key === 'graph')?.value
+    if (rawSpec !== undefined) {
+      const line = entries.find((e) => e.key === 'spec')!.line
+      try {
+        const spec = JSON.parse(rawSpec) as NonNullable<DominoFile['screens']>['spec']
+        if (!spec || spec.version !== 1 || !Array.isArray(spec.pages)) {
+          errors.push({
+            line,
+            message: '[screens] spec is not a valid UiSpec (version 1 + pages required)'
+          })
+        } else {
+          screens = { spec }
+          if (rawGraph !== undefined) {
+            try {
+              const graph = JSON.parse(rawGraph)
+              if (Array.isArray(graph)) {
+                screens.graph = graph.filter(
+                  (e: unknown): e is NonNullable<NonNullable<DominoFile['screens']>['graph']>[number] =>
+                    typeof e === 'object' &&
+                    e !== null &&
+                    ['from', 'to', 'action', 'label', 'kind'].every(
+                      (k) => typeof (e as Record<string, unknown>)[k] === 'string'
+                    )
+                )
+              }
+            } catch {
+              errors.push({ line, message: '[screens] graph is not valid JSON — ignored' })
+            }
+          }
+        }
+      } catch {
+        errors.push({
+          line,
+          message: '[screens] spec is not valid JSON — the app must be generated from scratch'
+        })
+      }
+    }
+  }
 
   const extras: Record<string, Record<string, string>> = {}
   for (const [section, entries] of sections) {
-    if (section === 'script') continue
+    // script/data/actions/screens are modeled structures, not passthrough config.
+    if (
+      section === 'script' ||
+      section === 'data' ||
+      section === 'actions' ||
+      section === 'screens'
+    )
+      continue
     if (UNSAFE_KEYS.has(section)) continue // never copies into plain objects
     const known = knownKeys(section)
     const extra: Record<string, string> = {}
@@ -203,17 +379,56 @@ export function parseDomino(source: string): ParseResult {
     if (Object.keys(extra).length > 0) extras[section] = extra
   }
 
+  // A `refresh` step names a [data] source; say so at load time instead of
+  // silently doing nothing at runtime.
+  const dataKeys = new Set(data.map((d) => d.key))
+  for (const decl of actions) {
+    for (const step of decl.steps) {
+      if (step.kind === 'refresh' && !dataKeys.has(step.source)) {
+        errors.push({
+          line: sections.get('actions')?.find((e) => e.key === decl.id)?.line ?? 1,
+          message: `[actions] ${decl.id}: refresh "${step.source}" — no such [data] source`
+        })
+      }
+    }
+  }
+
   const domino: DominoFile = {
     meta: { name, logo: get('meta', 'logo'), home, description: get('meta', 'description') },
     auth,
     api,
     ui,
     script,
+    data,
+    actions,
+    ...(screens ? { screens } : {}),
     ...(guide ? { guide } : {}),
     extras,
     id: `${name}|${api.baseUrl ?? ''}`
   }
   return { ok: true, domino, errors }
+}
+
+/**
+ * `{stateKey}` interpolations in a [data] path resolve against spec.state at
+ * fetch time (missing/empty key = source not ready, fetch skipped). At parse
+ * time only the shape is checked: plain identifiers only.
+ */
+function interpolationGap(
+  path: string,
+  entry: { line: number; key: string },
+  errors: ParseError[]
+): boolean {
+  for (const m of path.matchAll(/\{([^}]*)\}/g)) {
+    if (!/^[A-Za-z0-9_]+$/.test(m[1])) {
+      errors.push({
+        line: entry.line,
+        message: `[data] ${entry.key}: interpolation "{${m[1]}}" must be a plain state key like {rssUrl}`
+      })
+      return true
+    }
+  }
+  return false
 }
 
 function knownKeys(section: string): Set<string> {
@@ -225,7 +440,16 @@ function knownKeys(section: string): Set<string> {
     case 'api':
       return new Set(['base_url', 'allow'])
     case 'ui':
-      return new Set(['theme', 'primary', 'style', 'radius', 'density', 'success', 'warning', 'danger'])
+      return new Set([
+        'theme',
+        'primary',
+        'style',
+        'radius',
+        'density',
+        'success',
+        'warning',
+        'danger'
+      ])
     default:
       return new Set()
   }

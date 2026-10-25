@@ -295,7 +295,10 @@ if (!gotLock) {
         // run for minutes, but a server that never answers must not hang.
         let timer: ReturnType<typeof setTimeout> | undefined
         const headDeadline = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('timed out waiting for response')), HEAD_TIMEOUT_MS)
+          timer = setTimeout(
+            () => reject(new Error('timed out waiting for response')),
+            HEAD_TIMEOUT_MS
+          )
           timer.unref?.()
         })
         let res: Response
@@ -366,9 +369,7 @@ if (!gotLock) {
     /* ---------------- secure KV store (BYOK keys, tokens) ---------------- */
     const securePath = (): string => join(app.getPath('userData'), 'secure-store.json')
 
-    type StoreRead =
-      | { ok: true; data: Record<string, string> }
-      | { ok: false; error: string }
+    type StoreRead = { ok: true; data: Record<string, string> } | { ok: false; error: string }
 
     async function readSecureStore(): Promise<StoreRead> {
       let raw: string
@@ -452,6 +453,33 @@ if (!gotLock) {
         const all = await readStoreForWrite()
         delete all[key]
         await writeSecureStore(all)
+      })
+    )
+
+    // Every [key, decrypted value] — the storage-management settings use it
+    // to compute per-domino sizes. A corrupt store enumerates as empty rather
+    // than taking the settings dialog down.
+    ipcMain.handle('secure:entries', () =>
+      queueStoreOp(async () => {
+        const read = await readSecureStore()
+        if (!read.ok) return [] as Array<[string, string]>
+        const out: Array<[string, string]> = []
+        for (const [key, stored] of Object.entries(read.data)) {
+          if (stored.startsWith('plain:')) {
+            out.push([key, stored.slice(6)])
+            continue
+          }
+          if (!safeStorage.isEncryptionAvailable()) {
+            out.push([key, stored])
+            continue
+          }
+          try {
+            out.push([key, safeStorage.decryptString(Buffer.from(stored, 'base64'))])
+          } catch {
+            /* unreadable entry — skip it, sizes stay approximate */
+          }
+        }
+        return out
       })
     )
 

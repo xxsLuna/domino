@@ -3,7 +3,14 @@ import { Skeleton } from '@heroui/react'
 import { CellContext, LayoutContext, RuntimeContext, type Runtime } from './context'
 import { breakpointFor, placeNodes, type Breakpoint, type Placement } from './layout'
 import { getComponent } from './registry'
-import { resolveStateBindings, type ActionEvent, type CardNode, type PageSpec, type UiSpec } from '../spec'
+import {
+  resolveDataBindings,
+  resolveStateBindings,
+  type ActionEvent,
+  type CardNode,
+  type PageSpec,
+  type UiSpec
+} from '../spec'
 
 /**
  * CardGrid — renders a PageSpec on the 12-column grid. Placement is derived
@@ -34,6 +41,12 @@ interface CardGridProps {
   density?: 'comfortable' | 'compact'
   /** Top-level cell keys that changed since the last edit (see streaming.ts). */
   changed?: ReadonlySet<string>
+  /**
+   * Latest snapshots of the domino's [data] sources, keyed by source key:
+   * `{"$data": "<key>.<path>"}` props resolve against this, so runtime-owned
+   * refreshes re-render without a model turn.
+   */
+  data?: Record<string, unknown>
 }
 
 export function CardGrid({
@@ -45,7 +58,8 @@ export function CardGrid({
   hidden,
   chrome = 'app',
   density = 'comfortable',
-  changed
+  changed,
+  data
 }: CardGridProps): React.JSX.Element {
   const gridRef = useRef<HTMLDivElement>(null)
   const bp = useContainerBreakpoint(gridRef)
@@ -71,12 +85,15 @@ export function CardGrid({
   )
   const layout = useMemo(() => ({ bp, density }), [bp, density])
   const nodes = useMemo(() => {
-    const base = hidden ? page.layout.filter((n) => n !== hidden) : page.layout
+    let base = hidden ? page.layout.filter((n) => n !== hidden) : page.layout
+    // Runtime-owned [data] sources substitute {"$data": key.path} props; a
+    // refresh just changes the snapshot object and every bound cell re-renders.
+    if (data) base = base.map((n) => resolveDataBindings(n, data))
     // Live client-side state (spec.state) substitutes {"$state": key} props;
     // stateless screens skip this entirely (identity fast-path inside).
     if (!spec.state) return base
     return base.map((n) => resolveStateBindings(n, spec.state!))
-  }, [page.layout, spec.state, hidden])
+  }, [page.layout, spec.state, hidden, data])
   const placed = useMemo(() => placeNodes(nodes, bp), [nodes, bp])
 
   return (

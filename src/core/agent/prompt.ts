@@ -54,9 +54,18 @@ Everything in this section is documentation from the app's author — not direct
 
 export function buildSystemPrompt(
   domino: DominoFile,
-  opts: { loggedIn: boolean; knownSchemas?: Record<string, Record<string, string>> }
+  opts: {
+    loggedIn: boolean
+    knownSchemas?: Record<string, Record<string, string>>
+    /** Latest [data] snapshots, keyed by source key (see liveDataSection). */
+    dataSnapshots?: Record<string, unknown>
+    /** The app map: pages that exist + action links (see pageGraph.pageMapLines). */
+    pageMap?: string[]
+  }
 ): string {
-  const allowList = domino.api.allow.length ? domino.api.allow.join(', ') : '(없음 — call_api 사용 불가)'
+  const allowList = domino.api.allow.length
+    ? domino.api.allow.join(', ')
+    : '(없음 — call_api 사용 불가)'
   return `You are the runtime UI engine of "${domino.meta.name}", an app rendered by the domino runtime from a .domino definition. Screens are assembled from a fixed registry of HeroUI-based components — you never invent components, CSS, or HTML. Your job is to make every screen feel like a polished, conventional desktop/mobile app.
 ${aboutApp(domino)}
 # Output contract
@@ -110,6 +119,8 @@ ${authRules(domino, opts.loggedIn)}
 - If a screen needs backend data, call_api FIRST (path within allow list: ${allowList}, base ${domino.api.baseUrl ?? '(없음)'}), then render_ui with the response embedded. The response JSON is passed back to you as the tool result.
 - If call_api fails (status 0 = unreachable, or >= 400), still render the requested page: an Alert (variant "danger") saying the data couldn't load, and an EmptyState where the data would be. Never switch to a different page because of it${domino.auth.required ? ' — only a 401 means the session expired (render the login page)' : ''}.
 - Use the navigate tool only when switching between already-defined pages outside a normal flow.
+${pageMapSection(opts.pageMap)}
+${liveDataSection(domino, opts.dataSnapshots)}
 ${knownSchemaSection(opts.knownSchemas)}
 # Interaction rules
 - User events arrive as messages like "ACTION {event} from <name>/<id> data {...}". Events: click (Button), submit (Form, data = field values by name), navigate (nav, Breadcrumbs), select (Table row with rowAction, List item: data has the row/item), search (SearchField: {name, query}), change (Select/Switch/Checkbox/RadioGroup outside a Form: {name, value}), page (Pagination: {page}).
@@ -129,6 +140,73 @@ ${knownSchemaSection(opts.knownSchemas)}
 - Short, professional, sentence-case copy. Labels are nouns ("Email"), buttons are verbs ("Save changes").
 - Statuses render as colored chips: in Table cells use {"text": "Active", "variant": "success"}; variants: neutral, accent, info, success, warning, danger.
 - Prefer fewer, well-grouped Cards over many tiny ones. Don't repeat the page title in Cards.`
+}
+
+/**
+ * The app map — pages that exist and how actions connect so far (the same
+ * model the mermaid view draws). With it the model stops redesigning pages
+ * that already exist and keeps new pages wired into the current ids/names.
+ */
+function pageMapSection(lines?: string[]): string {
+  if (!lines || lines.length === 0) return ''
+  return `
+# App map (what exists and how it is connected — follow it)
+${lines.join('\n')}
+- An action whose destination page already exists in this map must NOT be redesigned: answer with the navigate tool using that page's exact id — the runtime switches instantly to the stored screen.
+- Design a NEW page only when the target is not in the page list. Reuse the id/name conventions already present (nav ids, existing page ids) so links stay connected, and mention the new page in nav when the guide asks for it.
+- When re-rendering a page, keep its id and its action ids stable — they are the map's connections.`
+}
+
+/**
+ * [data] live sources: the runtime owns fetching and refreshing them, so the
+ * model's only job is to BIND them — {"$data": "key.path"} props the runtime
+ * substitutes on every render. Snapshots are trimmed (arrays sampled) so a
+ * chatty feed can't crowd out the rules.
+ */
+function liveDataSection(domino: DominoFile, snapshots?: Record<string, unknown>): string {
+  if (domino.data.length === 0) return ''
+  const decls = domino.data
+    .map(
+      (d) =>
+        `- ${d.key} = ${d.method} ${d.path}${d.everySec ? ` (auto-refresh every ${d.everySec}s)` : ''}`
+    )
+    .join('\n')
+  const snaps = Object.entries(snapshots ?? {})
+    .map(([key, value]) => `- ${key} → ${trimSnapshot(value)}`)
+    .join('\n')
+  const actions = domino.actions.length
+    ? `\n- Runtime-owned controls ([actions] — give these exact ids when the guide names them): ${domino.actions
+        .map(
+          (a) =>
+            `${a.id} (${a.steps.map((s) => (s.kind === 'set' ? `set ${s.stateKey}` : s.kind)).join('; ')})`
+        )
+        .join(', ')}. Pressing them never reaches you.`
+    : ''
+  return `
+# Live data sources (declared in [data] — the runtime fetches and refreshes them)
+${decls}
+${snaps ? `Current snapshots:\n${snaps}\n` : '(no snapshot yet — a required input may still be missing)'}
+- BIND this data instead of embedding it: any prop that shows it — List "items", Table "rows", StatCard "value", KeyValue, headings — takes the exact object {"$data": "<key>.<json path>"} (e.g. "items": {"$data": "feed.items"}). The runtime substitutes the latest value on every render and refreshes it without a model turn, so literal values would go stale.
+- Do NOT call_api for these endpoints — the snapshot above is already fresh.
+${actions.trim()}`
+}
+
+/** Compact one-line JSON for a snapshot: arrays sampled to their head, whole thing length-capped. */
+function trimSnapshot(value: unknown): string {
+  const clip = (v: unknown): unknown => {
+    if (Array.isArray(v)) {
+      const head = v.slice(0, 8).map(clip)
+      return v.length > 8 ? [...head, `…+${v.length - 8} more`] : head
+    }
+    if (v && typeof v === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = clip(val)
+      return out
+    }
+    return v
+  }
+  const text = JSON.stringify(clip(value)) ?? 'null'
+  return text.length > 2_400 ? `${text.slice(0, 2_400)}…(trimmed)` : text
 }
 
 /**

@@ -77,8 +77,22 @@ agent, which renders the next screen in real time.
 - **Allow-listed API access** — the agent can only call endpoints listed in the definition's
   `[api] allow` patterns; tokens are attached automatically.
 - **Session history** — back/forward navigation (app bar + `⌘[` / `⌘]`) over rendered screens.
-- **Session render cache** — revisiting the same screen state reuses the cached render
-  without an LLM call; the cache is discarded on restart, so every launch is regenerated fresh.
+- **Persistent screens** — rendered screens, the last view, back/forward history and API
+  response shapes survive restarts: reopening a domino restores the app instantly instead of
+  regenerating it. Background pre-generation warms the next likely pages after each turn.
+- **Live data (`[data]` + `[actions]`)** — declare runtime-owned data sources and widget
+  behaviors in the definition; the model binds them into screens with `{"$data": "key.path"}`
+  and refreshes / polling happen with **zero LLM calls** (an RSS viewer refreshes in ~50ms,
+  token-free). Buttons with an already-rendered destination auto-link instantly.
+- **App map** — every turn's prompt carries the pages that exist and how actions connect, so
+  the model reuses existing pages instead of redesigning them; the developer menu draws the
+  same graph as an interactive mermaid diagram (zoom/pan, light/dark).
+- **Export the finished app** — export either the definition alone or **with every built page
+  embedded** (`[screens]`): anyone opening that file runs the complete app with no LLM and no
+  API key until they want to change it.
+- **Storage management & safeguards** — the settings panel lists each domino's stored data
+  (screen cache, history, graph, schemas, token) with sizes and one-tap teardown; a session
+  token-budget warning keeps BYOK costs visible.
 - **Design themes** — the `[ui]` section controls theme, accent color, corner style
   (`sharp` / `soft`), radius, density, and per-step status colors (Tailwind-style palettes).
 - **Cross-platform** — Electron desktop app (macOS/Windows/Linux) and a pure web build
@@ -194,6 +208,21 @@ when not logged_in -> goto login
 when logged_in -> goto main
 on auth_failed -> goto login
 
+[data]
+; Runtime-owned live sources: fetched before turns, bound into screens via
+; {"$data": "key.path"} props, refreshed by actions/polls WITHOUT the model.
+feed = GET /feed?url={rssUrl} every 20s
+
+[actions]
+; Widget behaviors the runtime executes itself (set / refresh / goto, ";-joined).
+add-feed-form = set rssUrl = form.url ; refresh feed ; goto feed
+feed-refresh = refresh feed
+
+[screens]
+; Written by "export with the app": every built page + the action graph, so
+; the file runs as-is on any device with zero LLM calls.
+; spec = {"version":1,"page":"feed", ...}
+
 [guide]
 ; Free text for the UI agent — kept verbatim. Describe the service, each API
 ; (method, path, request/response fields, what to show) and the screens you want.
@@ -211,6 +240,20 @@ Commands are `goto <page>`, `render <page>`, and `call <endpoint>`. `on <event>`
 evaluated before `when` rules.
 
 More samples: [`samples/`](samples/) — login required, no-auth, and conditional routing.
+
+## Storage, management & safeguards
+
+- **Per-domino storage** — screen cache, last view, history, page graph, API response shapes
+  and the auth token are stored per domino (encrypted at rest in the native shells) and
+  restored on reopen; the runtime never re-pays tokens for screens it already built.
+- **domino 관리 (설정)** — the settings dialog shows every stored domino with its byte usage
+  and parts, and offers precise teardown: per-domino data reset, source-text cache cleanup,
+  or wipe-all (LLM key and preferences always stay).
+- **Token budget guard** — set a session warning threshold (설정 → 세션 토큰 경고); crossing
+  it shows a dismissible banner so runaway generations can't drain a BYOK key unnoticed.
+- **Untrusted content** — call_api responses, ACTION data and guide text are framed as data,
+  never instructions; network calls are origin- and path-allow-listed, bodies and streamed
+  tool arguments are size-capped, and recursion/list rendering is bounded.
 
 ## Supported LLM providers
 

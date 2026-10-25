@@ -53,6 +53,38 @@ export interface ScriptRule {
   command: ScriptCommand
 }
 
+/**
+ * [data] — a live data source the RUNTIME owns: fetched before turns, bound
+ * into screens via `{"$data": "<key>.<path>"}` props and refreshed (by an
+ * [actions] rule or an `every Ns` poll) without a model turn.
+ */
+export interface DataSourceDecl {
+  /** Source key used in `{"$data": "key.path"}` bindings and `refresh` steps. */
+  key: string
+  method: string
+  /** Path (with query) under [api] base_url; `{stateKey}` interpolates spec.state. */
+  path: string
+  /** Poll interval while a page showing this source is on screen. */
+  everySec?: number
+}
+
+/** One step of an [actions] rule — the runtime executes these itself. */
+export type ActionStep =
+  | { kind: 'refresh'; source: string }
+  | { kind: 'set'; stateKey: string; formField: string }
+  | { kind: 'goto'; page: string }
+
+/**
+ * [actions] — widget behaviors implemented by the runtime, not the model:
+ * pressing a control whose node id (a Form's id for submits) matches a key
+ * runs the steps locally; a `goto` for a page not built yet falls through to
+ * a live generation turn.
+ */
+export interface ActionDecl {
+  id: string
+  steps: ActionStep[]
+}
+
 export interface DominoFile {
   meta: {
     name: string
@@ -65,6 +97,20 @@ export interface DominoFile {
   api: ApiSection
   ui: UiSection
   script: ScriptRule[]
+  /** [data] live sources (runtime-owned fetching/refresh). */
+  data: DataSourceDecl[]
+  /** [actions] runtime-owned widget behaviors, keyed by node id. */
+  actions: ActionDecl[]
+  /**
+   * [screens] — an export WITH the built app embedded: every rendered page
+   * (a full UiSpec snapshot) plus the observed action graph, so the file
+   * runs as-is on a fresh device with zero LLM calls. `spec` is imported
+   * structurally to avoid a domino ↔ pageGraph type cycle.
+   */
+  screens?: {
+    spec: import('../spec').UiSpec
+    graph?: Array<{ from: string; to: string; action: string; label: string; kind: string }>
+  }
   /** Author's instructions for the agent ([guide] section, verbatim). */
   guide?: string
   /** Stable id for session/token storage. */

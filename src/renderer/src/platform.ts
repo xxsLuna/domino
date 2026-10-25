@@ -13,6 +13,7 @@ interface SecureStore {
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
   remove(key: string): Promise<void>
+  entries?(): Promise<Array<[string, string]>>
 }
 
 interface DominoBridge {
@@ -84,6 +85,9 @@ function localStorageAdapter(): KeyValueStorage {
     },
     async remove(key) {
       window.localStorage.removeItem(key)
+    },
+    async entries() {
+      return Object.keys(window.localStorage).map((k) => [k, window.localStorage.getItem(k) ?? ''])
     }
   }
 }
@@ -132,6 +136,16 @@ function secureAdapter(): KeyValueStorage {
       await ensureMigrated()
       await SecureStorage.removeItem(key)
       await legacy.remove(key)
+    },
+    async entries() {
+      await ensureMigrated()
+      const keys = await SecureStorage.keys()
+      const out: Array<[string, string]> = []
+      for (const key of keys) {
+        const value = await SecureStorage.getItem(key)
+        if (value !== null) out.push([key, value])
+      }
+      return out
     }
   }
 }
@@ -145,7 +159,8 @@ export function getStorage(): KeyValueStorage {
     cached = {
       get: (key) => bridge.secure!.get(key),
       set: (key, value) => bridge.secure!.set(key, value),
-      remove: (key) => bridge.secure!.remove(key)
+      remove: (key) => bridge.secure!.remove(key),
+      ...(bridge.secure.entries ? { entries: () => bridge.secure!.entries!() } : {})
     }
   } else if (isNativeMobile()) {
     cached = secureAdapter()

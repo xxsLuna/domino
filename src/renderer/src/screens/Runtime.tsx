@@ -23,7 +23,7 @@ import {
 } from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
 import { buildSystemPrompt } from '@core/agent/prompt'
-import { resolveEndpoint } from '@core/agent/api'
+import { executeApi, resolveEndpoint } from '@core/agent/api'
 import {
   bookFields,
   hashSchema,
@@ -35,11 +35,18 @@ import {
 import { mergeKnownPage, pregenTargets } from '@core/agent/pregen'
 import { nextSpecChars, renderProgress } from '@core/agent/progress'
 import { applyScript, buildScriptContext } from '@core/domino/script'
-import type { DominoFile } from '@core/domino/types'
+import type { ActionDecl, DominoFile } from '@core/domino/types'
+import {
+  loadPageGraph,
+  pageMapLines,
+  savePageGraph,
+  upsertEdge,
+  type GraphEdge
+} from '@core/pageGraph'
 import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
 import { httpFetch, readTextCapped } from '@core/net'
 import { hashContext, SessionStore, type HistoryKind } from '@core/session/session'
-import { clearToken, extractToken, getToken, setToken } from '@core/session/prefs'
+import { clearToken, extractToken, getToken, loadTokenWarn, setToken } from '@core/session/prefs'
 import { ScreenStore, type ScreenDeps } from '@core/session/screenStore'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
 import { CardGrid } from '@core/ui/CardGrid'
@@ -52,6 +59,7 @@ import {
   findPage,
   isCancelEvent,
   isSignOutEvent,
+  referencedDataKeys,
   withKnownPages,
   withTargetPage,
   type ActionEvent,
@@ -64,6 +72,7 @@ import { isModalPresentation } from '@core/ui/presentation'
 import { loadDominoText, type LoadedDomino } from '../loadDomino'
 import { useBackHandler } from '../backStack'
 import { getStorage } from '../platform'
+import { PageGraphDialog } from './PageGraphDialog'
 
 interface RuntimeProps {
   loaded: LoadedDomino
@@ -120,6 +129,20 @@ export function Runtime({
   const pregenScheduled = useRef(false)
   /** Late-bound so the early finalize hook can reach the runner declared below. */
   const pregenRunnerRef = useRef<((seq: number) => Promise<void>) | null>(null)
+  /**
+   * [data] live sources: latest snapshot per key. The runtime refreshes these
+   * itself (bound [actions], `every Ns` polls); CardGrid substitutes them into
+   * {"$data": key.path} props, so a refresh re-renders without a model turn.
+   */
+  const dataSnapRef = useRef<Record<string, unknown>>({})
+  const [dataSnap, setDataSnap] = useState<Record<string, unknown>>({})
+  /** When each source was last fetched — turns re-pull anything stale. */
+  const dataAtRef = useRef<Record<string, number>>({})
+  /** Page-graph edges observed so far (page ←action→ page), persisted per domino. */
+  const graphEdgesRef = useRef<GraphEdge[]>([])
+  const [graphTick, setGraphTick] = useState(0)
+  /** The action a running turn answers — finalizeSpec turns it into an edge. */
+  const pendingActionRef = useRef<{ from: string; action: string; label: string } | null>(null)
 
   const [currentSpec, setCurrentSpec] = useState<UiSpec | null>(null)
   /** Mirror of currentSpec for async turns deciding "is my page on screen". */
@@ -138,12 +161,17 @@ export function Runtime({
   const [activeNav, setActiveNav] = useState<string | null>(null)
   // "app" renders like a real app; "inspect" reveals per-component cards.
   const [chrome, setChrome] = useState<'app' | 'inspect'>('app')
+  // Developer submenu (phone menu) + the mermaid page-graph dialog it opens.
+  const [devMenuOpen, setDevMenuOpen] = useState(false)
+  const [graphOpen, setGraphOpen] = useState(false)
   // Live "change this screen" composer — the app-bar field and the phone modal
   // share the draft; submitting queues the request and drains it sequentially.
   const [editText, setEditText] = useState('')
   const [editOpen, setEditOpen] = useState(false)
   /** "Rebuild from scratch" confirmation — carries the token-consumption warning. */
   const [rebuildOpen, setRebuildOpen] = useState(false)
+  /** Export chooser: definition only, or definition + built pages ([screens]). */
+  const [exportOpen, setExportOpen] = useState(false)
   /** Right-side screen-history drawer (collapsed by default). */
   const [historyOpen, setHistoryOpen] = useState(false)
   /** Queued edit requests ({text, pageId}), applied one at a time. */
@@ -396,17 +424,14 @@ export function Runtime({
     }
     setResultToast(null)
   }, [])
-  const armResultToast = useCallback(
-    (toast: NonNullable<typeof resultToast>, ms: number): void => {
-      if (resultToastTimer.current !== null) window.clearTimeout(resultToastTimer.current)
-      setResultToast(toast)
-      resultToastTimer.current = window.setTimeout(() => {
-        resultToastTimer.current = null
-        setResultToast(null)
-      }, ms)
-    },
-    []
-  )
+  const armResultToast = useCallback((toast: NonNullable<typeof resultToast>, ms: number): void => {
+    if (resultToastTimer.current !== null) window.clearTimeout(resultToastTimer.current)
+    setResultToast(toast)
+    resultToastTimer.current = window.setTimeout(() => {
+      resultToastTimer.current = null
+      setResultToast(null)
+    }, ms)
+  }, [])
   useEffect(
     () => () => {
       if (resultToastTimer.current !== null) window.clearTimeout(resultToastTimer.current)
@@ -418,13 +443,54 @@ export function Runtime({
   /** Last turn's token total (transient chip); session cumulative (drawer). */
   const [lastUsage, setLastUsage] = useState<number | null>(null)
   const [usageTotal, setUsageTotal] = useState(0)
+  /** Session budget guard: threshold from settings; the banner shows once. */
+  const tokenWarnRef = useRef(0)
+  const [tokenWarned, setTokenWarned] = useState(false)
   const lastUsageInTurn = useRef(0)
   const usageChipTimer = useRef<number | null>(null)
   /** Recent call_api results (newest first) — the drawer's API section. */
   const apiLogRef = useRef<Array<{ at: number; path: string; status: number; ms: number }>>([])
 
+  /** Remember page ←action→ page (deduped); persisted so the graph survives restarts. */
+  const recordGraphEdge = useCallback(
+    (edge: GraphEdge): void => {
+      graphEdgesRef.current = upsertEdge(graphEdgesRef.current, edge)
+      setGraphTick((t) => t + 1)
+      void savePageGraph(storage, domino.id, graphEdgesRef.current)
+    },
+    [domino.id, storage]
+  )
+
+  /** The graph's human label for an action: its button text / form title. */
+  const actionLabel = useCallback(
+    (spec: UiSpec | null, nodeId: string, fallback: string): string => {
+      if (!spec) return fallback
+      const node = findNode(spec, nodeId)
+      const text = node?.props?.text ?? node?.props?.title
+      return typeof text === 'string' && text.trim() ? text : fallback
+    },
+    []
+  )
+
+  /**
+   * The app map for the model's prompt: pages that exist, connected actions,
+   * unconnected buttons — the mermaid view's model in cheap text lines.
+   */
+  const appMapLines = useCallback((): string[] | undefined => {
+    const known = knownRef.current
+    if (!known || known.pages.length === 0) return undefined
+    return pageMapLines(known, navRef.current, domino, graphEdgesRef.current)
+  }, [domino])
+
   const finalizeSpec = useCallback(
     (spec: UiSpec, cacheKey: string | null, kindHint?: HistoryKind) => {
+      // The action this screen answers (a tap that ran/generated) becomes a
+      // page-graph edge: from the page it was pressed on to the page shown.
+      const pending = pendingActionRef.current
+      if (pending) {
+        pendingActionRef.current = null
+        recordGraphEdge({ ...pending, to: spec.page, kind: 'action' })
+      }
       // What the history panel shows as this moment's badge.
       const kind: HistoryKind =
         kindHint ??
@@ -466,7 +532,15 @@ export function Runtime({
       syncNav()
       schedulePreGen()
     },
-    [armResultToast, clearEditHighlight, schedulePreGen, session, showSpec, syncNav]
+    [
+      armResultToast,
+      clearEditHighlight,
+      recordGraphEdge,
+      schedulePreGen,
+      session,
+      showSpec,
+      syncNav
+    ]
   )
 
   const apiRuntime = useCallback(
@@ -476,6 +550,54 @@ export function Runtime({
       token: loggedInRef.current ? sessionTokenRef.current : null
     }),
     [domino]
+  )
+
+  /**
+   * `{stateKey}` interpolations of a [data] path resolve against the live
+   * screen state. Any key missing or empty → null: the source isn't ready
+   * (no RSS URL typed yet) and fetching would ask the backend for nothing.
+   */
+  const interpolateDataPath = useCallback((path: string): string | null => {
+    let ready = true
+    const filled = path.replace(/\{([A-Za-z0-9_]+)\}/g, (_, key: string) => {
+      const v = stateRef.current[key]
+      if (v === undefined || v === null || String(v).trim() === '') {
+        ready = false
+        return ''
+      }
+      return encodeURIComponent(String(v))
+    })
+    return ready ? filled : null
+  }, [])
+
+  /**
+   * Fetch one [data] source through the same allowlist/origin gates as
+   * call_api, store the snapshot (a bound screen re-renders from it) and log
+   * the call to the API inspector — runtime-owned refreshes are visible too.
+   */
+  const fetchSource = useCallback(
+    async (key: string): Promise<void> => {
+      const decl = domino.data.find((d) => d.key === key)
+      if (!decl) return
+      const path = interpolateDataPath(decl.path)
+      if (!path) return // not ready: an input the source depends on is still empty
+      const result = await executeApi(apiRuntime(), { path, method: decl.method })
+      apiLogRef.current.unshift({
+        at: Date.now(),
+        path: `${decl.method} ${path}`,
+        status: result.status,
+        ms: result.ms ?? 0
+      })
+      if (apiLogRef.current.length > 50) apiLogRef.current.pop()
+      const value =
+        result.status > 0 && result.status < 400
+          ? result.data
+          : { error: result.status === 0 ? 'unreachable' : `HTTP ${result.status}` }
+      dataSnapRef.current = { ...dataSnapRef.current, [key]: value }
+      dataAtRef.current = { ...dataAtRef.current, [key]: Date.now() }
+      setDataSnap(dataSnapRef.current)
+    },
+    [apiRuntime, domino.data, interpolateDataPath]
   )
 
   /**
@@ -502,7 +624,12 @@ export function Runtime({
       // The user is elsewhere: landing silently felt like a lost request —
       // say so, and let the chip jump straight to the changed page.
       armResultToast(
-        { kind: 'notice', text: `수정 완료 · ${findPage(spec, pageId)?.name ?? pageId}`, target: null, pageId },
+        {
+          kind: 'notice',
+          text: `수정 완료 · ${findPage(spec, pageId)?.name ?? pageId}`,
+          target: null,
+          pageId
+        },
         8_000
       )
     },
@@ -587,7 +714,10 @@ export function Runtime({
           ? `\nScreen history (oldest first, "index) [kind] label time"; current = ${hist[hist.length - 1].index}): ` +
             hist
               .slice(-25)
-              .map((e) => `${e.index}) [${e.kind}] ${e.label} ${new Date(e.at).toTimeString().slice(0, 5)}`)
+              .map(
+                (e) =>
+                  `${e.index}) [${e.kind}] ${e.label} ${new Date(e.at).toTimeString().slice(0, 5)}`
+              )
               .join(' | ')
           : ''
       pendingStateWrites.current = {}
@@ -609,12 +739,21 @@ export function Runtime({
       let completed = false
       try {
         const adapter = createAdapter(config)
+        // [data] sources arrive in the prompt as snapshots the model BINDS
+        // ({"$data": key.path}) — pull anything not-yet-fetched or stale so
+        // the design is made against real values, not a missing snapshot.
+        for (const decl of domino.data) {
+          const at = dataAtRef.current[decl.key] ?? 0
+          if (Date.now() - at > 5_000) await fetchSource(decl.key)
+        }
         // One snapshot per turn: the engine diffs responses against it, the
         // prompt describes screens built from it.
         const knownSchemas = bookFields(schemaBookRef.current)
         const system = buildSystemPrompt(domino, {
           loggedIn: loggedInRef.current,
-          knownSchemas
+          knownSchemas,
+          dataSnapshots: dataSnapRef.current,
+          pageMap: appMapLines()
         })
         fork.push({ role: 'user', content: prompt + liveState + historyLine })
         for await (const update of runAgentTurn({
@@ -685,7 +824,7 @@ export function Runtime({
               break
             case 'usage': {
               const t =
-                update.usage.total ?? ((update.usage.prompt ?? 0) + (update.usage.completion ?? 0))
+                update.usage.total ?? (update.usage.prompt ?? 0) + (update.usage.completion ?? 0)
               if (t > 0) {
                 // Provider totals are cumulative within one response: add only
                 // the delta so a repeated chunk can't double-count the session.
@@ -761,12 +900,14 @@ export function Runtime({
     },
     [
       apiRuntime,
+      appMapLines,
       armEditFade,
       cancelGauge,
       clearEditHighlight,
       config,
       domino,
       failTurn,
+      fetchSource,
       finalizeSpec,
       landEdit,
       restoreAt,
@@ -789,7 +930,9 @@ export function Runtime({
       const knownSchemas = bookFields(schemaBookRef.current)
       const system = buildSystemPrompt(domino, {
         loggedIn: loggedInRef.current,
-        knownSchemas
+        knownSchemas,
+        dataSnapshots: dataSnapRef.current,
+        pageMap: appMapLines()
       })
       try {
         for await (const update of runAgentTurn({
@@ -808,7 +951,7 @@ export function Runtime({
       }
       return null
     },
-    [apiRuntime, config, domino]
+    [apiRuntime, appMapLines, config, domino]
   )
 
   const maybeRunPreGen = useCallback(
@@ -858,10 +1001,15 @@ export function Runtime({
       sessionTokenRef.current = token
       loggedInRef.current = Boolean(token)
 
+      tokenWarnRef.current = await loadTokenWarn(storage)
       schemaBookRef.current = await loadSchemaBook(storage, domino.id)
+      graphEdgesRef.current = await loadPageGraph(storage, domino.id)
       const screens = await ScreenStore.open(storage, domino.id)
       screensRef.current = screens
       if (cancelled) return
+      // Ready [data] sources fetch once up front: the very first design turn
+      // (and any pregen build) sees real values to bind.
+      await Promise.all(domino.data.map((d) => fetchSource(d.key)))
       // The stack rides along too: reopening lands on the very moment the
       // user left, not a one-entry stand-in.
       session.attach(storage, `domino:history:${domino.id}`)
@@ -870,6 +1018,14 @@ export function Runtime({
       const view = await screens.loadView(loggedInRef.current)
       if (cancelled) return
       if (view && findPage(view.known, view.page)) {
+        // Live screen state rides in the snapshot: hydrate it BEFORE any
+        // [data] fetch so `{stateKey}` interpolations (e.g. {rssUrl}) resolve
+        // on this very session — without this the sources would stay unready
+        // forever and a restored feed rendered empty.
+        stateRef.current = { ...(view.known.state ?? {}) }
+        pendingStateWrites.current = {}
+        await Promise.all(domino.data.map((d) => fetchSource(d.key)))
+        if (cancelled) return
         const restoredHistory = await session.load()
         if (cancelled) return
         if (restoredHistory && session.historySize > 0) {
@@ -881,6 +1037,27 @@ export function Runtime({
         } else {
           finalizeSpec({ ...view.known, page: view.page }, null)
         }
+        return
+      }
+
+      // First open on this device of an export "with the app": the embedded
+      // [screens] restore the whole thing — zero LLM calls, no BYOK needed
+      // (a key only matters once the user edits or generates more). A local
+      // view — this user's own progress — always wins over the embed.
+      if (domino.screens && findPage(domino.screens.spec, domino.screens.spec.page)) {
+        const embedded = domino.screens.spec
+        stateRef.current = { ...(embedded.state ?? {}) }
+        pendingStateWrites.current = {}
+        // The exported action graph seeds the map, so linked buttons
+        // auto-navigate on day one and the model sees the connections.
+        if (domino.screens.graph && domino.screens.graph.length > 0) {
+          graphEdgesRef.current = domino.screens.graph as GraphEdge[]
+          setGraphTick((t) => t + 1)
+          void savePageGraph(storage, domino.id, graphEdgesRef.current)
+        }
+        await Promise.all(domino.data.map((d) => fetchSource(d.key)))
+        if (cancelled) return
+        finalizeSpec(embedded, null)
         return
       }
 
@@ -915,6 +1092,30 @@ export function Runtime({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /* --------------------------- [data] auto-refresh -------------------------- */
+  // Sources declared `every Ns` poll while any known page binds them — the
+  // live feel: fresh values appear on screen without touching the model.
+  const polledKeys = useMemo(() => {
+    if (!currentSpec) return ''
+    const used = referencedDataKeys(currentSpec)
+    return domino.data
+      .filter((d) => d.everySec && used.has(d.key))
+      .map((d) => d.key)
+      .join(',')
+  }, [currentSpec, domino.data])
+  useEffect(() => {
+    if (!polledKeys) return
+    const keys = new Set(polledKeys.split(','))
+    const decls = domino.data.filter((d) => d.everySec && keys.has(d.key))
+    if (decls.length === 0) return
+    const intervalMs = Math.min(...decls.map((d) => d.everySec!)) * 1000
+    const iv = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      for (const d of decls) void fetchSource(d.key)
+    }, intervalMs)
+    return () => window.clearInterval(iv)
+  }, [polledKeys, domino.data, fetchSource])
+
   /* ------------------------- back / forward keys ------------------------- */
   // Back/forward choose WHICH page to show, never WHEN: the snapshot's page
   // pointer + the current canonical pages (knownRef). Reviving the snapshot's
@@ -944,7 +1145,15 @@ export function Runtime({
       showSpec(canonicalView(snap))
       syncNav()
     }
-  }, [canonicalView, clearEditHighlight, interruptTurn, session, sheetBehindIndex, showSpec, syncNav])
+  }, [
+    canonicalView,
+    clearEditHighlight,
+    interruptTurn,
+    session,
+    sheetBehindIndex,
+    showSpec,
+    syncNav
+  ])
 
   const goForward = useCallback(() => {
     const snap = session.forward()
@@ -1060,6 +1269,120 @@ export function Runtime({
     [currentSpec, showSpec]
   )
 
+  /**
+   * The ACTION → agent tail shared by every non-local event: record which
+   * action asked (its landing page becomes a graph edge), push the ACTION
+   * message, then cache → stored screen → one turn.
+   */
+  const dispatchToAgent = useCallback(
+    (e: ActionEvent, pageId: string): void => {
+      // A plain button that already led somewhere (observed edge), with its
+      // page still built, links straight to it — no model turn. Data-carrying
+      // clicks (row selects, links) keep the normal flow: their target
+      // depends on the data, not just the button.
+      if (e.event === 'click' && (!e.data || Object.keys(e.data).length === 0)) {
+        const edge = graphEdgesRef.current.find(
+          (x) => x.from === pageId && x.action === e.nodeId && x.kind === 'action' && x.to !== ''
+        )
+        const known = knownRef.current
+        const cs = currentSpecRef.current
+        if (edge && known && cs && findPage(known, edge.to)) {
+          interruptTurn()
+          finalizeSpec({ ...cs, page: edge.to }, null)
+          return
+        }
+      }
+      pendingActionRef.current = {
+        from: pageId,
+        action: e.nodeId,
+        label: actionLabel(currentSpecRef.current, e.nodeId, e.nodeId)
+      }
+      historyRef.current.push({
+        role: 'user',
+        content: `ACTION ${e.event} from ${e.nodeName}/${e.nodeId}${
+          e.data ? ` data ${JSON.stringify(redact(e.data))}` : ''
+        } (page "${pageId}")`
+      })
+      // Trim conversation so long sessions don't blow the context window.
+      if (historyRef.current.length > 60) historyRef.current.splice(0, 20)
+
+      const cacheKey = `${pageId}::${hashContext({ id: e.nodeId, ev: e.event, d: e.data })}`
+      const cached = session.cacheGet(cacheKey)
+      if (cached) {
+        // A replay only speaks for ITS target page: the other pages in the
+        // stored spec were captured alongside it and must not drag the rest
+        // of the app back to that moment (withTargetPage).
+        finalizeSpec(withTargetPage(cached, knownRef.current), cacheKey)
+        return
+      }
+      // Persisted across restarts — but only while every endpoint it embeds
+      // still answers with the shape the screen was built on.
+      const stored = screensRef.current?.get(cacheKey, schemaHashes())
+      if (stored) {
+        session.cacheSet(cacheKey, stored.spec)
+        finalizeSpec(withTargetPage(stored.spec, knownRef.current), cacheKey)
+        return
+      }
+      void runTurn(
+        `The user acted on the current screen (see ACTION above). Compute and render the next screen.`,
+        cacheKey
+      )
+    },
+    [actionLabel, finalizeSpec, interruptTurn, runTurn, schemaHashes, session]
+  )
+
+  /**
+   * [actions]-bound widgets run entirely in the runtime — set state, refresh
+   * [data] sources, switch to a built page — with no model turn. A goto for a
+   * page not built yet falls through to the agent (which designs it against
+   * the just-refreshed snapshot), so a bound button can never dead-end.
+   */
+  const runBoundAction = useCallback(
+    async (decl: ActionDecl, e: ActionEvent, pageId: string): Promise<void> => {
+      const label = actionLabel(currentSpecRef.current, e.nodeId, e.nodeId)
+      let needsTurn = false
+      for (const step of decl.steps) {
+        if (step.kind === 'set') {
+          const raw = e.data?.[step.formField]
+          const value = Array.isArray(raw)
+            ? raw.join(', ')
+            : raw === undefined
+              ? undefined
+              : String(raw)
+          if (value !== undefined && value.trim() !== '') applyLocalState(step.stateKey, value)
+        } else if (step.kind === 'refresh') {
+          await fetchSource(step.source)
+        } else {
+          const known = knownRef.current
+          const resolved = known ? resolvePageId(navRef.current, known.pages, step.page) : null
+          const cs = currentSpecRef.current
+          if (resolved && cs) {
+            recordGraphEdge({ from: pageId, to: resolved, action: e.nodeId, label, kind: 'action' })
+            interruptTurn()
+            finalizeSpec({ ...cs, page: resolved }, null)
+            return
+          }
+          needsTurn = true
+        }
+      }
+      if (!needsTurn) {
+        // refresh/set only: the page stays; its bound props just got new data.
+        recordGraphEdge({ from: pageId, to: pageId, action: e.nodeId, label, kind: 'data' })
+        return
+      }
+      dispatchToAgent(e, pageId)
+    },
+    [
+      actionLabel,
+      applyLocalState,
+      dispatchToAgent,
+      fetchSource,
+      finalizeSpec,
+      interruptTurn,
+      recordGraphEdge
+    ]
+  )
+
   const handleEvent = useCallback(
     (e: ActionEvent): void => {
       const pageId = currentSpec?.page ?? e.pageId
@@ -1125,6 +1448,14 @@ export function Runtime({
         return
       }
 
+      // [actions]-bound widgets: the runtime owns their steps (set / refresh /
+      // goto) — pressing one never starts a model turn by itself.
+      const bound = domino.actions.find((a) => a.id === e.nodeId)
+      if (bound) {
+        void runBoundAction(bound, e, pageId)
+        return
+      }
+
       // Pages the agent already delivered switch instantly, like a real app —
       // resolved through the nav↔page links, so a nav id that drifted from the
       // page id still lands on the stored page instead of asking the model to
@@ -1140,55 +1471,36 @@ export function Runtime({
       const resolved =
         target && currentSpec ? resolvePageId(navRef.current, currentSpec.pages, target) : null
       if (resolved && currentSpec && resolved !== currentSpec.page) {
+        recordGraphEdge({
+          from: pageId,
+          to: resolved,
+          action: e.nodeId,
+          label: actionLabel(currentSpec, e.nodeId, target ?? e.nodeId),
+          kind: e.event === 'navigate' ? 'nav' : 'action'
+        })
         interruptTurn()
         finalizeSpec({ ...currentSpec, page: resolved }, null)
         return
       }
       if (target && navRef.current.some((i) => i.id === target)) setActiveNav(target)
 
-      historyRef.current.push({
-        role: 'user',
-        content: `ACTION ${e.event} from ${e.nodeName}/${e.nodeId}${
-          e.data ? ` data ${JSON.stringify(redact(e.data))}` : ''
-        } (page "${pageId}")`
-      })
-      // Trim conversation so long sessions don't blow the context window.
-      if (historyRef.current.length > 60) historyRef.current.splice(0, 20)
-
-      const cacheKey = `${pageId}::${hashContext({ id: e.nodeId, ev: e.event, d: e.data })}`
-      const cached = session.cacheGet(cacheKey)
-      if (cached) {
-        // A replay only speaks for ITS target page: the other pages in the
-        // stored spec were captured alongside it and must not drag the rest
-        // of the app back to that moment (withTargetPage).
-        finalizeSpec(withTargetPage(cached, knownRef.current), cacheKey)
-        return
-      }
-      // Persisted across restarts — but only while every endpoint it embeds
-      // still answers with the shape the screen was built on.
-      const stored = screensRef.current?.get(cacheKey, schemaHashes())
-      if (stored) {
-        session.cacheSet(cacheKey, stored.spec)
-        finalizeSpec(withTargetPage(stored.spec, knownRef.current), cacheKey)
-        return
-      }
-      void runTurn(
-        `The user acted on the current screen (see ACTION above). Compute and render the next screen.`,
-        cacheKey
-      )
+      dispatchToAgent(e, pageId)
     },
     [
+      actionLabel,
+      applyLocalState,
       clearEditHighlight,
       currentSpec,
+      dispatchToAgent,
       domino,
       finalizeSpec,
       goBack,
       handleLogin,
       interruptTurn,
+      recordGraphEdge,
       restoreAt,
+      runBoundAction,
       runTurn,
-      schemaHashes,
-      session,
       sheetBehindIndex,
       storage
     ]
@@ -1258,18 +1570,20 @@ export function Runtime({
     const advance = (): void => {
       if (editQueueRef.current[0] === head) editQueueRef.current.shift()
     }
-    void processEdit(head).then(
-      (outcome) => {
-        // Superseded: keep the head — this edit re-runs on the next drain.
-        if (outcome !== 'superseded') advance()
-      },
-      // An unexpected throw is a failed edit: advance rather than loop on it.
-      advance
-    ).finally(() => {
-      editDraining.current = false
-      setEditCount(editQueueRef.current.length)
-      if (editQueueRef.current.length > 0) drainEditQueue()
-    })
+    void processEdit(head)
+      .then(
+        (outcome) => {
+          // Superseded: keep the head — this edit re-runs on the next drain.
+          if (outcome !== 'superseded') advance()
+        },
+        // An unexpected throw is a failed edit: advance rather than loop on it.
+        advance
+      )
+      .finally(() => {
+        editDraining.current = false
+        setEditCount(editQueueRef.current.length)
+        if (editQueueRef.current.length > 0) drainEditQueue()
+      })
   }, [processEdit])
   editDrainRef.current = drainEditQueue
 
@@ -1345,23 +1659,59 @@ export function Runtime({
   }, [clearEditHighlight, clearResultToast, interruptTurn, runTurn, session, syncNav])
 
   /**
-   * Download the open .domino source — the exact text the app was built from
-   * (cached at load; re-fetched only if the cache entry is gone).
+   * Download a .domino text (the export chooser's both variants land here).
    */
-  const exportDomino = useCallback((): void => {
-    void (async () => {
-      try {
-        const text = (await getCachedText(storage, loaded.source)) ?? (await loadDominoText(loaded.source))
-        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
-        const a = document.createElement('a')
-        a.href = URL.createObjectURL(blob)
-        a.download = `${loaded.name || 'app'}.domino`
-        a.click()
-      } catch {
-        setError('현재 domino를 내보내지 못했습니다 — 원본 소스를 다시 불러올 수 없습니다.')
-      }
-    })()
-  }, [loaded, storage])
+  const downloadDomino = useCallback(
+    (text: string, suffix = ''): void => {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `${loaded.name || 'app'}${suffix}.domino`
+      a.click()
+    },
+    [loaded.name]
+  )
+
+  /**
+   * Export: the definition alone, or the definition WITH the built app
+   * embedded in a [screens] section — pages, live state and the observed
+   * action graph travel inside the file, so anyone opening it runs the app
+   * as-is with zero LLM calls (a key is only needed to change it).
+   */
+  const runExport = useCallback(
+    (withScreens: boolean): void => {
+      setExportOpen(false)
+      void (async () => {
+        try {
+          const text =
+            (await getCachedText(storage, loaded.source)) ?? (await loadDominoText(loaded.source))
+          if (!withScreens) {
+            downloadDomino(text)
+            return
+          }
+          const known = knownRef.current
+          if (!known) return
+          // A previous embed is replaced wholesale: the file always ships
+          // the screens as they stand right now.
+          const stripped = text.replace(/\[screens\][\s\S]*$/m, '').trimEnd()
+          const embed = [
+            '',
+            '[screens]',
+            `; 완성된 앱 포함 내보내기 — 페이지 ${known.pages.length}개와 액션 연결이 함께 저장됩니다.`,
+            '; 이 파일을 여는 누구나 LLM 없이 그대로 앱을 실행할 수 있습니다.',
+            `spec = ${JSON.stringify(known)}`,
+            ...(graphEdgesRef.current.length > 0
+              ? [`graph = ${JSON.stringify(graphEdgesRef.current)}`]
+              : [])
+          ].join('\n')
+          downloadDomino(`${stripped}\n${embed}\n`, '-app')
+        } catch {
+          setError('현재 domino를 내보내지 못했습니다 — 원본 소스를 다시 불러올 수 없습니다.')
+        }
+      })()
+    },
+    [downloadDomino, loaded, storage]
+  )
 
   /**
    * Re-render the CURRENT page from scratch: one INITIAL-style turn for this
@@ -1378,6 +1728,13 @@ export function Runtime({
       `init::${target}::auth:${loggedInRef.current}`
     )
   }, [domino, runTurn])
+
+  // Budget guard: once per session, when cumulative tokens cross the
+  // configured threshold, surface a dismissible warning — BYOK is real money.
+  useEffect(() => {
+    const limit = tokenWarnRef.current
+    if (!tokenWarned && limit > 0 && usageTotal >= limit) setTokenWarned(true)
+  }, [usageTotal, tokenWarned])
 
   /* -------------------------------- render -------------------------------- */
   const view = useMemo(
@@ -1455,7 +1812,11 @@ export function Runtime({
       if (!live || !raw) return
       try {
         const v = JSON.parse(String(raw)) as { side?: string; y?: unknown }
-        if ((v.side === 'left' || v.side === 'right') && typeof v.y === 'number' && Number.isFinite(v.y)) {
+        if (
+          (v.side === 'left' || v.side === 'right') &&
+          typeof v.y === 'number' &&
+          Number.isFinite(v.y)
+        ) {
           const pos = { side: v.side, y: Math.min(0.94, Math.max(0.06, v.y)) } as const
           handlePosRef.current = pos
           setHandlePos(pos)
@@ -1574,12 +1935,17 @@ export function Runtime({
       ? [
           { key: 'edit', label: '화면 수정', icon: 'edit', run: () => setEditOpen(true) },
           { key: 'refresh', label: '화면 다시 그리기', icon: 'refresh', run: refreshPage },
-          { key: 'rebuild', label: '처음부터 다시 만들기', icon: 'sparkles', run: () => setRebuildOpen(true) }
+          {
+            key: 'rebuild',
+            label: '처음부터 다시 만들기',
+            icon: 'sparkles',
+            run: () => setRebuildOpen(true)
+          }
         ]
       : []),
     { key: 'back', label: '이전 화면', icon: 'back', run: goBack },
     { key: 'forward', label: '다음 화면', icon: 'arrow-right', run: goForward },
-    { key: 'export', label: 'domino 내보내기', icon: 'download', run: exportDomino },
+    { key: 'export', label: 'domino 내보내기', icon: 'download', run: () => setExportOpen(true) },
     { key: 'history', label: '화면 히스토리', icon: 'history', run: () => setHistoryOpen(true) },
     {
       key: 'inspect',
@@ -1587,6 +1953,7 @@ export function Runtime({
       icon: 'layers',
       run: () => setChrome(chrome === 'app' ? 'inspect' : 'app')
     },
+    { key: 'graph', label: '페이지 관계도', icon: 'chart', run: () => setGraphOpen(true) },
     { key: 'settings', label: '설정', icon: 'settings', run: onOpenSettings },
     { key: 'home', label: 'domino 닫기', icon: 'close', run: onHome },
     ...(currentSpec?.pages ?? [])
@@ -1617,7 +1984,7 @@ export function Runtime({
     else if (key === 'edit') setEditOpen(true)
     else if (key === 'rebuild') setRebuildOpen(true)
     else if (key === 'refresh') refreshPage()
-    else if (key === 'export') exportDomino()
+    else if (key === 'export') setExportOpen(true)
     else if (key === 'history') setHistoryOpen(true)
     else if (key === 'handle-side') {
       // Cross-wall moves live here: swiping horizontally from the very edge
@@ -1629,8 +1996,8 @@ export function Runtime({
       handlePosRef.current = next
       setHandlePos(next)
       void storage.set('domino:handle-pos', JSON.stringify(next))
-    }
-    else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
+    } else if (key === 'inspect') setChrome(chrome === 'app' ? 'inspect' : 'app')
+    else if (key === 'graph') setGraphOpen(true)
     else if (key === 'settings') onOpenSettings()
     else if (key === 'home') onHome()
   }
@@ -1747,6 +2114,13 @@ export function Runtime({
             className="hide-phone"
           />
           <BarButton
+            label="페이지 관계도"
+            icon="chart"
+            onPress={() => setGraphOpen(true)}
+            isDisabled={!currentSpec}
+            className="hide-phone"
+          />
+          <BarButton
             label="화면 다시 그리기"
             icon="refresh"
             onPress={refreshPage}
@@ -1756,7 +2130,7 @@ export function Runtime({
           <BarButton
             label="domino 내보내기"
             icon="download"
-            onPress={exportDomino}
+            onPress={() => setExportOpen(true)}
             className="hide-phone"
           />
           <BarButton
@@ -1789,6 +2163,7 @@ export function Runtime({
           const next = open && dragCloseRef.current ? false : open
           menuOpenRef.current = next
           setMenuOpen(next)
+          if (!next) setDevMenuOpen(false) // the flyout never outlives its menu
         }}
       >
         <Button
@@ -1855,13 +2230,11 @@ export function Runtime({
                 textValue={handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}
               >
                 <Icon name={handlePos.side === 'right' ? 'arrow-left' : 'arrow-right'} />
-                <Label>{handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}</Label>
+                <Label>
+                  {handlePos.side === 'right' ? '핸들을 왼쪽으로' : '핸들을 오른쪽으로'}
+                </Label>
               </Dropdown.Item>
             </Dropdown.Section>
-            <Dropdown.Item id="inspect" textValue="구조 보기">
-              <Icon name="layers" />
-              <Label>{chrome === 'app' ? '구조 보기' : '앱처럼 보기'}</Label>
-            </Dropdown.Item>
             <Dropdown.Item id="settings" textValue="설정">
               <Icon name={needsKey ? 'key' : 'settings'} />
               <Label>{needsKey ? '설정 (BYOK 미설정)' : '설정'}</Label>
@@ -1871,6 +2244,71 @@ export function Runtime({
               <Label>domino 닫기</Label>
             </Dropdown.Item>
           </Dropdown.Menu>
+          {/* Developer tools live OUTSIDE the menu collection: pressing the
+              row must not select (react-aria would close the whole menu) —
+              it toggles a flyout submenu that opens BESIDE the menu, which
+              stays up until a real item is picked. */}
+          <div className="menu-submenu-row">
+            <button
+              type="button"
+              className="menu-item menu-item--default menu-submenu-trigger"
+              aria-expanded={devMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => {
+                const next = !devMenuOpen
+                setDevMenuOpen(next)
+                // The expanded rows land inside the popover's scroll area:
+                // reveal them the moment they mount, so "expands downward"
+                // never means "expands out of sight".
+                if (next) {
+                  window.setTimeout(() => {
+                    document
+                      .querySelector('.menu-submenu-items')
+                      ?.lastElementChild?.scrollIntoView({ block: 'nearest' })
+                  }, 60)
+                }
+              }}
+            >
+              <Icon name="grid" />
+              <Label>개발자 메뉴</Label>
+              <span aria-hidden className="menu-submenu-chev">
+                {handlePos.side === 'right' ? '‹' : '›'}
+              </span>
+            </button>
+            {/* The submenu ACCORDIONS open downward, in-flow inside the
+                popover: nothing to clip, nothing outside the modal scope —
+                and the row (outside the menu collection) keeps the menu up. */}
+            {devMenuOpen ? (
+              <div className="menu-submenu-items" role="menu" aria-label="개발자 메뉴">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    menuOpenRef.current = false
+                    setMenuOpen(false)
+                    setDevMenuOpen(false)
+                    setChrome(chrome === 'app' ? 'inspect' : 'app')
+                  }}
+                >
+                  <Icon name="layers" />
+                  {chrome === 'app' ? '구조 보기' : '앱처럼 보기'}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    menuOpenRef.current = false
+                    setMenuOpen(false)
+                    setDevMenuOpen(false)
+                    setGraphOpen(true)
+                  }}
+                >
+                  <Icon name="chart" />
+                  페이지 관계도
+                </button>
+              </div>
+            ) : null}
+          </div>
         </Dropdown.Popover>
       </Dropdown>
 
@@ -1961,6 +2399,47 @@ export function Runtime({
         </AlertDialog.Container>
       </AlertDialog.Backdrop>
 
+      {/* Export chooser: the definition alone, or the definition WITH the
+          built pages embedded — the latter runs on any device, zero LLM. */}
+      <Modal.Backdrop
+        isOpen={exportOpen}
+        onOpenChange={(o) => {
+          if (!o) setExportOpen(false)
+        }}
+        variant="blur"
+      >
+        <Modal.Container size="sm" placement="center">
+          <Modal.Dialog aria-label="domino 내보내기">
+            <Modal.CloseTrigger />
+            <Modal.Header>
+              <Modal.Heading>domino 내보내기</Modal.Heading>
+              <p className="text-sm text-muted">무엇을 포함해서 내보낼지 선택하세요.</p>
+            </Modal.Header>
+            <Modal.Body className="flex flex-col gap-2">
+              <button type="button" className="export-option" onClick={() => runExport(false)}>
+                <strong>정의만 내보내기</strong>
+                <span>
+                  원본 .domino 텍스트 그대로입니다. 화면 구조는 포함되지 않아, 여는 쪽에서 처음부터
+                  생성됩니다.
+                </span>
+              </button>
+              <button
+                type="button"
+                className="export-option"
+                onClick={() => runExport(true)}
+                disabled={!currentSpec}
+              >
+                <strong>완성된 앱 포함</strong>
+                <span>
+                  지금까지 만들어진 페이지 {currentSpec?.pages.length ?? 0}개와 액션 연결이 함께
+                  저장됩니다 — 받은 사람이 LLM·API 키 없이 바로 실행합니다.
+                </span>
+              </button>
+            </Modal.Body>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+
       {/* Command palette (⌘/Ctrl K): every runtime action plus a jump to any
           page of the current screen. Enter runs the highlighted row. */}
       <Modal.Backdrop
@@ -2049,6 +2528,7 @@ export function Runtime({
                   chrome={chrome}
                   density={domino.ui.density}
                   changed={changed}
+                  data={dataSnap}
                 />
               </Modal.Body>
             </Modal.Dialog>
@@ -2064,6 +2544,17 @@ export function Runtime({
           onScroll={onBodyScroll}
           data-centered={navItems.length === 0 && !sheetMode ? 'true' : undefined}
         >
+          {tokenWarned ? (
+            <div className="runtime-banner">
+              <Alert
+                variant="warning"
+                title="세션 토큰 예산 초과"
+                message={`이번 세션에서 ${fmtTokens(usageTotal)} 토큰을 사용했습니다 — 예산을 확인하세요. (설정에서 임계값 조정)`}
+                action={{ label: '설정', onPress: onOpenSettings }}
+                onClose={() => setTokenWarned(false)}
+              />
+            </div>
+          ) : null}
           {error ? (
             <div className="runtime-banner">
               <Alert
@@ -2096,6 +2587,7 @@ export function Runtime({
               chrome={chrome}
               density={domino.ui.density}
               changed={sheetMode ? undefined : changed}
+              data={dataSnap}
             />
           ) : error ? null : (
             <LoadingScreen />
@@ -2146,6 +2638,18 @@ export function Runtime({
           ) : null}
         </div>
       ) : null}
+
+      {/* Developer menu's mermaid view: pages, every action button, and where
+          each leads — unconnected buttons show as live-generation targets. */}
+      <PageGraphDialog
+        open={graphOpen}
+        onClose={() => setGraphOpen(false)}
+        spec={currentSpec}
+        nav={nav}
+        domino={domino}
+        edges={graphEdgesRef.current}
+        tick={graphTick}
+      />
 
       {/* Right-side screen history: every settled moment; click restores it. */}
       {historyOpen ? <div className="history-scrim" onClick={() => setHistoryOpen(false)} /> : null}

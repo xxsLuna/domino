@@ -6,6 +6,8 @@ export interface SecureStore {
   get(key: string): Promise<string | null>
   set(key: string, value: string): Promise<void>
   remove(key: string): Promise<void>
+  /** All [key, value] pairs — powers the storage-management settings. */
+  entries(): Promise<Array<[string, string]>>
 }
 
 export interface DominoBridge {
@@ -35,7 +37,8 @@ const bridge: DominoBridge = {
   secure: {
     get: (key) => ipcRenderer.invoke('secure:get', key),
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),
-    remove: (key) => ipcRenderer.invoke('secure:remove', key)
+    remove: (key) => ipcRenderer.invoke('secure:remove', key),
+    entries: () => ipcRenderer.invoke('secure:entries')
   },
   pathForFile: (file) => webUtils.getPathForFile(file),
   update: {
