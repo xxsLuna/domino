@@ -97,6 +97,12 @@ export interface AgentTurnOptions {
   maxIterations?: number
   /** Endpoint shapes (`METHOD /path` → type map) remembered from earlier turns. */
   knownSchemas?: Record<string, Record<string, string>>
+  /**
+   * Builds a deeper-reasoning adapter for the one corrective round. A failed
+   * or absent render is exactly when extra thinking pays for its latency, so
+   * the cheap default stays cheap and only the retry gets the depth.
+   */
+  escalateReasoning?: () => LLMAdapter
 }
 
 export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<AgentUpdate> {
@@ -111,6 +117,12 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
   // A turn should end on a screen (or a page switch); otherwise say so.
   let rendered = false
   let reported = false
+  // Starts on the caller's adapter; a retry may swap to a deeper thinker.
+  let adapter = opts.adapter
+  // Both retry paths spend the single round, so only the first one escalates.
+  const escalate = (): void => {
+    if (opts.escalateReasoning && retriesLeft === 0) adapter = opts.escalateReasoning()
+  }
 
   try {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
@@ -119,7 +131,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
       const overflowed = new Set<string>()
       const order: string[] = []
 
-      const stream = opts.adapter.chat({ messages, tools: agentTools })
+      const stream = adapter.chat({ messages, tools: agentTools })
       let lastPreviewAt = 0
       let lastProgressAt = 0
 
@@ -199,6 +211,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         // Empty or chatty reply (seen with real models): ask once for the screen.
         if (!reported && retriesLeft > 0 && iteration < maxIterations - 1) {
           retriesLeft--
+          escalate()
           messages.push({
             role: 'user',
             content: 'No screen was rendered. Call render_ui now with the screen for the request above.'
@@ -322,7 +335,10 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         reported = true
         yield { type: 'error', message: 'render_ui received an invalid UiSpec' }
       }
-      if (retry) retriesLeft--
+      if (retry) {
+        retriesLeft--
+        escalate()
+      }
       const shouldContinue =
         canContinue &&
         (retry || completed.some((tc) => tc.name === 'call_api' || tc.name === 'navigate'))

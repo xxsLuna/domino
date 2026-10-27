@@ -306,6 +306,70 @@ describe('runAgentTurn with a misbehaving model', () => {
     expect(failed!.args.length).toBeLessThanOrEqual(2_001)
     expect(failed!.args.endsWith('…')).toBe(true)
   })
+
+  it('escalates to the deeper adapter only for the corrective round', async () => {
+    const bad = JSON.stringify({ spec: { version: 1, page: 'p', pages: [] } })
+    const good = JSON.stringify({ spec: JSON.parse(inner) })
+    const used: string[] = []
+    const shallow: LLMAdapter = {
+      async *chat(): AsyncIterable<StreamDelta> {
+        used.push('shallow')
+        yield { type: 'tool_call_start', id: 'a', name: 'render_ui' }
+        yield { type: 'tool_call_args', id: 'a', argsDelta: bad }
+        yield { type: 'tool_call_end', id: 'a' }
+        yield { type: 'done' }
+      }
+    }
+    const deep: LLMAdapter = {
+      async *chat(): AsyncIterable<StreamDelta> {
+        used.push('deep')
+        yield { type: 'tool_call_start', id: 'b', name: 'render_ui' }
+        yield { type: 'tool_call_args', id: 'b', argsDelta: good }
+        yield { type: 'tool_call_end', id: 'b' }
+        yield { type: 'done' }
+      }
+    }
+    const updates = []
+    for await (const u of runAgentTurn({
+      adapter: shallow,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      api: { allow: [], token: null },
+      escalateReasoning: () => deep
+    }))
+      updates.push(u)
+    // First pass failed on the shallow adapter; the retry recovered on the deep one.
+    expect(used).toEqual(['shallow', 'deep'])
+    expect(updates.some((u) => u.type === 'spec' && u.final)).toBe(true)
+    expect(updates.some((u) => u.type === 'error')).toBe(false)
+  })
+
+  it('does not escalate when the first render already succeeds', async () => {
+    let deepCalls = 0
+    const shallow: LLMAdapter = {
+      async *chat(): AsyncIterable<StreamDelta> {
+        yield { type: 'tool_call_start', id: 'a', name: 'render_ui' }
+        yield { type: 'tool_call_args', id: 'a', argsDelta: JSON.stringify({ spec: JSON.parse(inner) }) }
+        yield { type: 'tool_call_end', id: 'a' }
+        yield { type: 'done' }
+      }
+    }
+    const deep: LLMAdapter = {
+      async *chat(): AsyncIterable<StreamDelta> {
+        deepCalls++
+        yield { type: 'done' }
+      }
+    }
+    for await (const _ of runAgentTurn({
+      adapter: shallow,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      api: { allow: [], token: null },
+      escalateReasoning: () => deep
+    }))
+      void _
+    expect(deepCalls).toBe(0)
+  })
 })
 
 describe('compactToolResult (what the model reads of a call_api payload)', () => {

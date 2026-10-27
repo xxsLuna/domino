@@ -1,4 +1,5 @@
 import { httpFetch } from '../net'
+import { modelTakesReasoning, openaiReasoningEffort } from './reasoning'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
@@ -43,10 +44,17 @@ export function createOpenAIAdapter(config: LLMConfig): LLMAdapter {
   const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')
   return {
     async *chat(req: ChatRequest): AsyncIterable<StreamDelta> {
+      // Only models that advertise a reasoning knob get one; classic models
+      // (and non-OpenAI-compatible backends) reject the param outright.
+      const effort =
+        config.reasoning && modelTakesReasoning(config.model)
+          ? { reasoning_effort: openaiReasoningEffort(config.reasoning) }
+          : {}
       const body = {
         model: config.model,
         stream: true,
         temperature: config.temperature ?? 0.7,
+        ...effort,
         messages: toOpenAIMessages(req.messages),
         // Ask for the terminal usage chunk (OpenAI-compatible servers ignore
         // the flag; those that never send usage simply never emit a delta).

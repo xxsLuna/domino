@@ -46,6 +46,7 @@ import {
   type GraphEdge
 } from '@core/pageGraph'
 import { createAdapter, needsApiKey, type ChatMessage, type LLMConfig } from '@core/llm'
+import { nextReasoningLevel } from '@core/llm/reasoning'
 import { httpFetch, readTextCapped } from '@core/net'
 import { hashContext, SessionStore, type HistoryKind } from '@core/session/session'
 import { clearToken, extractToken, getToken, loadTokenWarn, setToken } from '@core/session/prefs'
@@ -895,7 +896,10 @@ export function Runtime({
           system,
           history: fork,
           api: apiRuntime(),
-          knownSchemas
+          knownSchemas,
+          // A failed/absent render is the one round worth spending depth on.
+          escalateReasoning: () =>
+            createAdapter({ ...config, reasoning: nextReasoningLevel(config.reasoning) })
         })) {
           if (turnSeq.current !== myTurn) break // superseded by a newer turn
           switch (update.type) {

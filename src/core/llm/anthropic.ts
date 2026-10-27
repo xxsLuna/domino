@@ -1,4 +1,5 @@
 import { httpFetch } from '../net'
+import { anthropicThinkingBudget, modelTakesReasoning } from './reasoning'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
@@ -54,6 +55,13 @@ export function createAnthropicAdapter(config: LLMConfig): LLMAdapter {
   return {
     async *chat(req: ChatRequest): AsyncIterable<StreamDelta> {
       const { system, messages } = toAnthropic(req.messages)
+      // Extended thinking is a hard contract: temperature must be 1, the
+      // budget eats into max_tokens (so raise it to leave the screen its
+      // full room), and the model has to be a 3.7+/4+ Claude.
+      const thinkingBudget =
+        config.reasoning && modelTakesReasoning(config.model)
+          ? anthropicThinkingBudget(config.reasoning)
+          : null
       const res = await httpFetch(`${baseUrl}/v1/messages`, {
         method: 'POST',
         headers: {
@@ -64,9 +72,11 @@ export function createAnthropicAdapter(config: LLMConfig): LLMAdapter {
         },
         body: JSON.stringify({
           model: config.model,
-          max_tokens: 8192,
+          max_tokens: thinkingBudget !== null ? thinkingBudget + 8192 : 8192,
           stream: true,
-          temperature: config.temperature ?? 0.7,
+          ...(thinkingBudget !== null
+            ? { temperature: 1, thinking: { type: 'enabled', budget_tokens: thinkingBudget } }
+            : { temperature: config.temperature ?? 0.7 }),
           ...(system ? { system } : {}),
           messages,
           ...(req.tools?.length

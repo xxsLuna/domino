@@ -27,6 +27,14 @@ export interface LLMConfig {
   baseUrl?: string
   model: string
   temperature?: number
+  /**
+   * Reasoning/thinking depth, provider-agnostic. Adapters map it to their own
+   * knob (reasoning_effort, extended-thinking budget, …) on models that
+   * advertise one and stay silent where the backend has none — most screen
+   * generation is mechanical transcription, so the default leaves it unset
+   * and the engine escalates only its corrective round.
+   */
+  reasoning?: 'none' | 'low' | 'medium' | 'high'
 }
 
 /**

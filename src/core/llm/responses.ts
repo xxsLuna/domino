@@ -1,4 +1,5 @@
 import { httpFetch } from '../net'
+import { modelTakesReasoning, openaiReasoningEffort } from './reasoning'
 import { routingHeaders } from './routing'
 import { readError, sseData } from './sse'
 import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } from './types'
@@ -67,6 +68,11 @@ export function createResponsesAdapter(config: LLMConfig): LLMAdapter {
           model: config.model,
           stream: true,
           temperature: config.temperature ?? 0.7,
+          // Responses API nests its reasoning knob; same "only if the model
+          // advertises one" guard as chat-completions.
+          ...(config.reasoning && modelTakesReasoning(config.model)
+            ? { reasoning: { effort: openaiReasoningEffort(config.reasoning) } }
+            : {}),
           input: toResponsesInput(req.messages),
           ...(req.tools?.length
             ? {
