@@ -1,4 +1,5 @@
 import { httpFetch, readTextCapped } from '../net'
+import { parseFeed } from '../feeds/parse'
 
 /**
  * call_api execution with domino allowlist enforcement.
@@ -89,9 +90,11 @@ function normalizePathname(path: string): string | null {
 }
 
 /** `/leads/*` matches `/leads` and everything under it; exact strings match exactly. */
-export function isAllowed(path: string, allow: string[], baseUrl?: string): boolean {
-  if (allow.length === 0) return false
-
+export function isAllowed(
+  path: string,
+  allow: string[],
+  baseUrl?: string
+): boolean {
   let requestOrigin: string | null
   let pathname: string | null
   if (/^https?:\/\//i.test(path)) {
@@ -110,6 +113,8 @@ export function isAllowed(path: string, allow: string[], baseUrl?: string): bool
     requestOrigin = baseUrl ? originOf(baseUrl) : null
     if (pathname === null || requestOrigin === null) return false
   }
+
+  if (allow.length === 0) return false
 
   const baseOrigin = baseUrl ? originOf(baseUrl) : null
   for (const raw of allow) {
@@ -155,6 +160,12 @@ export function resolveEndpoint(path: string, baseUrl?: string): string | null {
 /** Read at most `maxChars` so one oversized body can't blow up memory or context. */
 // (Shared implementation lives in @core/net — readTextCapped.)
 
+/** Sniff an XML feed body cheaply before paying for a full DOM parse. */
+function looksLikeFeedXml(text: string): boolean {
+  const head = text.slice(0, 512).replace(/^\uFEFF/, '').trimStart()
+  return head.startsWith('<')
+}
+
 export async function executeApi(
   api: ApiRuntime,
   req: { path: string; method?: string; body?: unknown }
@@ -183,12 +194,15 @@ export async function executeApi(
       data: { error: `path "${req.path}" cannot be resolved — set [api] base_url in the domino file` }
     }
   }
+  // The login token belongs to the app's own backend only — everything the
+  // model can reach has already passed the allow gate above.
+  const sendToken = Boolean(api.token)
   try {
     const res = await httpFetch(url, {
       method,
       headers: {
         'content-type': 'application/json',
-        ...(api.token ? { authorization: `Bearer ${api.token}` } : {})
+        ...(sendToken ? { authorization: `Bearer ${api.token}` } : {})
       },
       ...(req.body !== undefined && method !== 'GET' ? { body: JSON.stringify(req.body) } : {}),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
@@ -198,7 +212,11 @@ export async function executeApi(
     try {
       data = text ? JSON.parse(text) : null
     } catch {
-      /* keep raw text */
+      // Raw XML into the tool result would flood the model's context with a
+      // whole feed document; parsed feeds arrive as the same compact JSON a
+      // JSON API would return.
+      const feed = looksLikeFeedXml(text) ? parseFeed(text) : null
+      data = feed ?? text
     }
     return { path: req.path, status: res.status, data, ms: Date.now() - started }
   } catch (err) {

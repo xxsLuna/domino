@@ -38,6 +38,7 @@ import { applyScript, buildScriptContext } from '@core/domino/script'
 import type { ActionDecl, DominoFile } from '@core/domino/types'
 import {
   loadPageGraph,
+  observedDests,
   pageMapLines,
   savePageGraph,
   upsertEdge,
@@ -58,7 +59,10 @@ import {
   findNode,
   findPage,
   isCancelEvent,
+  isRefreshFeedsEvent,
   isSignOutEvent,
+  isSubscribeFeedEvent,
+  isUnsubscribeFeedEvent,
   referencedDataKeys,
   withKnownPages,
   withTargetPage,
@@ -66,6 +70,14 @@ import {
   type NavItem,
   type UiSpec
 } from '@core/spec'
+import {
+  fetchFeed,
+  loadFeeds,
+  normalizeFeedUrl,
+  saveFeeds,
+  MAX_FEEDS,
+  type FeedEntry
+} from '@core/feeds/store'
 import { resolvePageId } from '@core/pageLinks'
 import { getCachedText } from '@core/session/registry'
 import { isModalPresentation } from '@core/ui/presentation'
@@ -85,6 +97,9 @@ interface RuntimeProps {
 
 /** How a turn ended: applied to a screen, failed, or taken over by a newer turn. */
 type TurnOutcome = 'applied' | 'failed' | 'superseded'
+
+/** Items one `@subscriptions` snapshot may carry — 20 feeds × 50 items is plenty. */
+const MAX_FEED_ITEMS = 200
 
 export function Runtime({
   loaded,
@@ -115,6 +130,8 @@ export function Runtime({
   const knownRef = useRef<UiSpec | null>(null)
   /** Persisted per-domino API memory: endpoint → key/type shape of its responses. */
   const schemaBookRef = useRef<SchemaBook>({})
+  /** User-subscribed feeds (RSS/Atom) — the runtime owns this list, not the model. */
+  const feedsRef = useRef<FeedEntry[]>([])
   /** Persistent screen cache — specs from earlier sessions, with their API deps. */
   const screensRef = useRef<ScreenStore | null>(null)
   /** Endpoints whose responses the current turn's final spec is built from. */
@@ -574,8 +591,10 @@ export function Runtime({
    * `{stateKey}` interpolations of a [data] path resolve against the live
    * screen state. Any key missing or empty → null: the source isn't ready
    * (no RSS URL typed yet) and fetching would ask the backend for nothing.
+   * FEED paths interpolate RAW (a whole URL may be substituted); every other
+   * method percent-encodes the value for safe query use.
    */
-  const interpolateDataPath = useCallback((path: string): string | null => {
+  const interpolateDataPath = useCallback((path: string, raw = false): string | null => {
     let ready = true
     const filled = path.replace(/\{([A-Za-z0-9_]+)\}/g, (_, key: string) => {
       const v = stateRef.current[key]
@@ -583,20 +602,73 @@ export function Runtime({
         ready = false
         return ''
       }
-      return encodeURIComponent(String(v))
+      return raw ? String(v) : encodeURIComponent(String(v))
     })
     return ready ? filled : null
   }, [])
 
+  /** Store one source's snapshot and stamp its fetch time (ref-first: async-safe). */
+  const commitSourceSnapshot = useCallback((key: string, value: unknown): void => {
+    dataSnapRef.current = { ...dataSnapRef.current, [key]: value }
+    dataAtRef.current = { ...dataAtRef.current, [key]: Date.now() }
+    setDataSnap(dataSnapRef.current)
+  }, [])
+
   /**
-   * Fetch one [data] source through the same allowlist/origin gates as
-   * call_api, store the snapshot (a bound screen re-renders from it) and log
-   * the call to the API inspector — runtime-owned refreshes are visible too.
+   * Fetch one [data] source, store the snapshot (a bound screen re-renders
+   * from it) and log the fetch to the API inspector — runtime-owned refreshes
+   * are visible too. API methods ride the allowlist/origin gates; FEED sources
+   * are fetched and parsed client-side (no [api] involved), and the special
+   * `FEED @subscriptions` fans out over the user's subscription list.
    */
   const fetchSource = useCallback(
     async (key: string): Promise<void> => {
       const decl = domino.data.find((d) => d.key === key)
       if (!decl) return
+      if (decl.method === 'FEED') {
+        if (decl.path === '@subscriptions') {
+          const results = await Promise.all(
+            feedsRef.current.map((f) => fetchFeed(f.url, f.title))
+          )
+          for (const r of results) {
+            apiLogRef.current.unshift({
+              at: Date.now(),
+              path: `FEED ${r.entry.url}`,
+              status: r.status,
+              ms: r.ms
+            })
+          }
+          if (apiLogRef.current.length > 50) apiLogRef.current.length = 50
+          commitSourceSnapshot(key, {
+            feeds: results.map((r) => ({
+              url: r.entry.url,
+              title: r.entry.title,
+              ...(r.error ? { error: r.error } : {})
+            })),
+            items: results
+              .flatMap((r) => (r.data?.items ?? []).map((i) => ({ ...i, feed: r.entry.title })))
+              .slice(0, MAX_FEED_ITEMS)
+          })
+          return
+        }
+        const url = interpolateDataPath(decl.path, true)
+        if (!url) return // not ready: the URL state input is still empty
+        const norm = normalizeFeedUrl(url)
+        if (!norm) {
+          commitSourceSnapshot(key, { error: 'feed URL must be https (plain http only on localhost)' })
+          return
+        }
+        const result = await fetchFeed(norm)
+        apiLogRef.current.unshift({
+          at: Date.now(),
+          path: `FEED ${norm}`,
+          status: result.status,
+          ms: result.ms
+        })
+        if (apiLogRef.current.length > 50) apiLogRef.current.pop()
+        commitSourceSnapshot(key, result.data ?? { error: result.error ?? `HTTP ${result.status}` })
+        return
+      }
       const path = interpolateDataPath(decl.path)
       if (!path) return // not ready: an input the source depends on is still empty
       const result = await executeApi(apiRuntime(), { path, method: decl.method })
@@ -611,12 +683,20 @@ export function Runtime({
         result.status > 0 && result.status < 400
           ? result.data
           : { error: result.status === 0 ? 'unreachable' : `HTTP ${result.status}` }
-      dataSnapRef.current = { ...dataSnapRef.current, [key]: value }
-      dataAtRef.current = { ...dataAtRef.current, [key]: Date.now() }
-      setDataSnap(dataSnapRef.current)
+      commitSourceSnapshot(key, value)
     },
-    [apiRuntime, domino.data, interpolateDataPath]
+    [apiRuntime, commitSourceSnapshot, domino.data, interpolateDataPath]
   )
+
+  /**
+   * The subscription list changed — refetch every `FEED @subscriptions`
+   * source so bound screens update on their own (no model turn).
+   */
+  const refreshSubscriptions = useCallback((): void => {
+    for (const d of domino.data) {
+      if (d.method === 'FEED' && d.path === '@subscriptions') void fetchSource(d.key)
+    }
+  }, [domino.data, fetchSource])
 
   /**
    * Land an edit's result on ITS page. The user is on that page right now →
@@ -771,7 +851,8 @@ export function Runtime({
           loggedIn: loggedInRef.current,
           knownSchemas,
           dataSnapshots: dataSnapRef.current,
-          pageMap: appMapLines()
+          pageMap: appMapLines(),
+          feeds: feedsRef.current
         })
         fork.push({ role: 'user', content: prompt + liveState + historyLine })
         for await (const update of runAgentTurn({
@@ -950,7 +1031,8 @@ export function Runtime({
         loggedIn: loggedInRef.current,
         knownSchemas,
         dataSnapshots: dataSnapRef.current,
-        pageMap: appMapLines()
+        pageMap: appMapLines(),
+        feeds: feedsRef.current
       })
       try {
         for await (const update of runAgentTurn({
@@ -978,7 +1060,8 @@ export function Runtime({
       const base = knownRef.current
       if (!base) return
       let builtCount = 0
-      for (const pageId of pregenTargets(domino, base, loggedInRef.current)) {
+      const observed = observedDests(graphEdgesRef.current)
+      for (const pageId of pregenTargets(domino, base, loggedInRef.current, observed)) {
         if (pregenSeq.current !== seq) return
         // The user may have reached this page while earlier targets were
         // building: a page the runtime already knows is canonical — a live
@@ -1002,7 +1085,16 @@ export function Runtime({
         // Idle continuation: a run that made progress arms the next batch until
         // every target is warm; an all-failures run just re-arms on the next turn.
         pregenScheduled.current = false
-        if (builtCount > 0 && pregenTargets(domino, known, loggedInRef.current).length > 0) {
+        if (
+          builtCount > 0 &&
+          pregenTargets(
+            domino,
+            known,
+            loggedInRef.current,
+            // Fresh read: a press during the batch may have observed a new page.
+            observedDests(graphEdgesRef.current)
+          ).length > 0
+        ) {
           schedulePreGen()
         }
       }
@@ -1022,6 +1114,7 @@ export function Runtime({
       tokenWarnRef.current = await loadTokenWarn(storage)
       schemaBookRef.current = await loadSchemaBook(storage, domino.id)
       graphEdgesRef.current = await loadPageGraph(storage, domino.id)
+      feedsRef.current = await loadFeeds(storage, domino.id)
       const screens = await ScreenStore.open(storage, domino.id)
       screensRef.current = screens
       if (cancelled) return
@@ -1290,20 +1383,22 @@ export function Runtime({
   /**
    * The ACTION → agent tail shared by every non-local event: record which
    * action asked (its landing page becomes a graph edge), push the ACTION
-   * message, then cache → stored screen → one turn.
+   * message, then cache → stored screen → one turn — guided by the observed
+   * edge when it names a destination that is no longer built.
    */
   const dispatchToAgent = useCallback(
     (e: ActionEvent, pageId: string): void => {
+      const known = knownRef.current
+      const cs = currentSpecRef.current
       // A plain button that already led somewhere (observed edge), with its
       // page still built, links straight to it — no model turn. Data-carrying
       // clicks (row selects, links) keep the normal flow: their target
       // depends on the data, not just the button.
-      if (e.event === 'click' && (!e.data || Object.keys(e.data).length === 0)) {
+      const plainClick = e.event === 'click' && (!e.data || Object.keys(e.data).length === 0)
+      if (plainClick) {
         const edge = graphEdgesRef.current.find(
           (x) => x.from === pageId && x.action === e.nodeId && x.kind === 'action' && x.to !== ''
         )
-        const known = knownRef.current
-        const cs = currentSpecRef.current
         if (edge && known && cs && findPage(known, edge.to)) {
           interruptTurn()
           finalizeSpec({ ...cs, page: edge.to }, null)
@@ -1324,7 +1419,10 @@ export function Runtime({
       // Trim conversation so long sessions don't blow the context window.
       if (historyRef.current.length > 60) historyRef.current.splice(0, 20)
 
-      const cacheKey = `${pageId}::${hashContext({ id: e.nodeId, ev: e.event, d: e.data })}`
+      // Page-free key: the same control (id + event + data) is the same action
+      // wherever it sits, so every page's copy shares one cache slot — the
+      // prompt's "one action, one id" contract, enforced here.
+      const cacheKey = hashContext({ id: e.nodeId, ev: e.event, d: e.data })
       const cached = session.cacheGet(cacheKey)
       if (cached) {
         // A replay only speaks for ITS target page: the other pages in the
@@ -1341,8 +1439,19 @@ export function Runtime({
         finalizeSpec(withTargetPage(stored.spec, knownRef.current), cacheKey)
         return
       }
+
+      // The graph saw this plain press land on a page that isn't built right
+      // now (the auto-link above would have taken it): name that destination
+      // instead of letting the turn invent one.
+      const guidedTo = plainClick
+        ? (graphEdgesRef.current.find(
+            (x) => x.from === pageId && x.action === e.nodeId && x.kind === 'action' && x.to !== ''
+          )?.to ?? null)
+        : null
       void runTurn(
-        `The user acted on the current screen (see ACTION above). Compute and render the next screen.`,
+        guidedTo
+          ? `The user acted on the current screen (see ACTION above). This action has led to page "${guidedTo}" before — render that page again with fresh data (call_api first when it shows live records).`
+          : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`,
         cacheKey
       )
     },
@@ -1434,6 +1543,89 @@ export function Runtime({
         }
       }
 
+      // Feed conventions: the runtime owns the subscription list (validation,
+      // storage, fetching); the model only renders around it.
+      if (isSubscribeFeedEvent(e)) {
+        const raw = String(e.data?.url ?? '')
+        const url = normalizeFeedUrl(raw)
+        void (async () => {
+          if (!url) {
+            armResultToast(
+              {
+                kind: 'notice',
+                text: `피드 주소가 올바르지 않습니다 (https 필요, localhost는 http 허용): ${raw.slice(0, 80)}`,
+                target: null
+              },
+              5_000
+            )
+            return
+          }
+          if (feedsRef.current.some((f) => f.url === url)) {
+            armResultToast({ kind: 'notice', text: '이미 구독 중인 피드입니다', target: null }, 4_000)
+            return
+          }
+          if (feedsRef.current.length >= MAX_FEEDS) {
+            armResultToast(
+              { kind: 'notice', text: `구독은 최대 ${MAX_FEEDS}개까지 가능합니다`, target: null },
+              4_000
+            )
+            return
+          }
+          // First fetch before the turn: the model needs the feed's title and
+          // items to draw the updated screen in one go. A dead feed is still a
+          // valid subscription — the screen shows its error state.
+          const result = await fetchFeed(url)
+          feedsRef.current = [...feedsRef.current, result.entry]
+          void saveFeeds(storage, domino.id, feedsRef.current)
+          refreshSubscriptions()
+          const items = result.data?.items ?? []
+          // Same synthetic-history pattern as login/sign-out: the model sees
+          // what happened even though no default ACTION line was pushed.
+          historyRef.current.push({
+            role: 'user',
+            content: `ACTION submit from ${e.nodeName}/${e.nodeId} → SUBSCRIBED ${url}${
+              result.error
+                ? ` (first fetch failed: ${result.error})`
+                : ` — "${result.entry.title}", ${items.length} items`
+            }`
+          })
+          await runTurn(
+            `The user subscribed to a new feed: ${url} — ${
+              result.error
+                ? `the first fetch failed: ${result.error}.`
+                : `"${result.entry.title}" with ${items.length} items: ${JSON.stringify(items.slice(0, 10))}.`
+            } Update the current screen to show the new subscription.`,
+            `feed-sub::${hashContext(url)}`
+          )
+        })()
+        return
+      }
+      if (isUnsubscribeFeedEvent(e)) {
+        const node = currentSpec ? findNode(currentSpec, e.nodeId) : null
+        const raw = String(node?.props?.url ?? e.data?.url ?? '')
+        const url = normalizeFeedUrl(raw)
+        if (url && feedsRef.current.some((f) => f.url === url)) {
+          feedsRef.current = feedsRef.current.filter((f) => f.url !== url)
+          void saveFeeds(storage, domino.id, feedsRef.current)
+          refreshSubscriptions()
+          historyRef.current.push({
+            role: 'user',
+            content: `ACTION click from ${e.nodeName}/${e.nodeId} → UNSUBSCRIBED ${url}`
+          })
+          void runTurn(
+            `The user unsubscribed from ${url}. Update the current screen to remove it.`,
+            `feed-unsub::${hashContext(url)}`
+          )
+        }
+        return
+      }
+      if (isRefreshFeedsEvent(e)) {
+        // Instant and token-free: the @subscriptions snapshot refetches and
+        // every bound screen updates on its own — no model turn.
+        refreshSubscriptions()
+        return
+      }
+
       // Sign-out convention: the runtime owns the token, so it clears it itself.
       if (isSignOutEvent(e) && loggedInRef.current) {
         void (async () => {
@@ -1507,6 +1699,7 @@ export function Runtime({
     [
       actionLabel,
       applyLocalState,
+      armResultToast,
       clearEditHighlight,
       currentSpec,
       dispatchToAgent,
@@ -1516,6 +1709,7 @@ export function Runtime({
       handleLogin,
       interruptTurn,
       recordGraphEdge,
+      refreshSubscriptions,
       restoreAt,
       runBoundAction,
       runTurn,

@@ -3,6 +3,7 @@ import { parseDomino } from './domino/parse'
 import type { DominoFile } from './domino/types'
 import type { UiSpec } from './spec'
 import {
+  observedDests,
   pageMapLines,
   buildPageGraph,
   collectActions,
@@ -150,5 +151,41 @@ describe('pageMapLines (the model-facing app map)', () => {
     expect(lines[0]).toContain('saved: 저장함')
     expect(lines.some((l) => l.includes('저장함 → saved'))).toBe(true)
     expect(lines.some((l) => l.includes('구독 제출'))).toBe(true) // unconnected form
+  })
+})
+
+describe('observedDests (pre-gen targets from the observed graph)', () => {
+  const edge = (over: Partial<GraphEdge>): GraphEdge => ({
+    from: 'main',
+    to: 'saved',
+    action: 'go',
+    label: 'Go',
+    kind: 'action',
+    ...over
+  })
+
+  it('collects unique destinations of action edges, in first-seen order', () => {
+    const edges = [
+      edge({ to: 'saved' }),
+      edge({ to: 'detail' }),
+      edge({ to: 'saved' }) // duplicate destination
+    ]
+    expect(observedDests(edges)).toEqual(['saved', 'detail'])
+  })
+
+  it('ignores empty destinations and non-action edges', () => {
+    const edges = [
+      edge({ to: '' }), // live-generating press: no destination yet
+      edge({ kind: 'nav' }),
+      edge({ kind: 'data' }),
+      edge({ kind: 'form' }),
+      edge({ kind: 'state' }),
+      edge({ to: 'settings' })
+    ]
+    expect(observedDests(edges)).toEqual(['settings'])
+  })
+
+  it('is empty for an empty graph', () => {
+    expect(observedDests([])).toEqual([])
   })
 })

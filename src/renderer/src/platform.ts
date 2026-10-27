@@ -72,7 +72,57 @@ export function syncSystemBars(theme: 'light' | 'dark'): void {
 /** On desktop, outbound HTTP runs in the main process — free of browser CORS. */
 export function installPlatformFetch(): void {
   const transport = window.dominoBridge?.netFetch
-  if (transport) setHttpFetch(bridgedFetch(transport))
+  if (transport) {
+    setHttpFetch(bridgedFetch(transport))
+    return
+  }
+  // Android (CapacitorHttp) also bypasses CORS natively. A plain browser page
+  // has neither escape hatch, so cross-origin calls ride the dev/preview
+  // relay proxy (see vite.web.config.ts) — same marker header as /zen. The
+  // relay only exists on the vite dev/preview server; production web hosting
+  // must deploy its own endpoint at /relay with the same rules.
+  if (!Capacitor.isNativePlatform()) setHttpFetch(relayFetch(globalThis.fetch.bind(globalThis)))
+}
+
+const RELAY_CLIENT_HEADER = 'x-domino-client'
+const RELAY_CLIENT_VALUE = 'domino-web'
+
+/**
+ * Rewriter turning cross-origin http(s) calls into same-origin /relay?url=…
+ *
+ * For url + init callers (every httpFetch call site) the relayed request is
+ * rebuilt from the ORIGINAL init: copying the constructed Request instead
+ * carries the body as a bare ReadableStream, which Chromium refuses to
+ * dispatch without duplex mode — every POST died client-side as
+ * "Failed to fetch" before ever reaching the relay.
+ */
+function relayFetch(inner: typeof fetch): typeof fetch {
+  return (input, init) => {
+    let rawUrl: string
+    if (input instanceof Request) rawUrl = input.url
+    else if (input instanceof URL) rawUrl = input.href
+    else rawUrl = input
+    let resolved: URL
+    try {
+      resolved = new URL(rawUrl, window.location.href)
+    } catch {
+      return inner(input, init)
+    }
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return inner(input, init)
+    if (resolved.origin === window.location.origin) return inner(input, init)
+
+    const relayUrl = `/relay?url=${encodeURIComponent(resolved.href)}`
+    if (input instanceof Request) {
+      // No separate init to rebase onto — copy path. Our callers always pass
+      // url + init, so this never carries a body (where the copy breaks).
+      const relayed = new Request(relayUrl, input)
+      relayed.headers.set(RELAY_CLIENT_HEADER, RELAY_CLIENT_VALUE)
+      return inner(relayed)
+    }
+    const headers = new Headers(init?.headers)
+    headers.set(RELAY_CLIENT_HEADER, RELAY_CLIENT_VALUE)
+    return inner(relayUrl, { ...init, headers })
+  }
 }
 
 function localStorageAdapter(): KeyValueStorage {

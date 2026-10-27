@@ -283,6 +283,32 @@ describe('[data] and [actions] sections', () => {
     expect(res.errors.some((e) => e.message.includes('interpolation'))).toBe(true)
   })
 
+  it('parses FEED sources: absolute URL, bare {stateKey}, @subscriptions', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\n' +
+        'fixed = FEED https://example.com/rss.xml every 60s\n' +
+        'typed = FEED {rssUrl}\n' +
+        'subs = FEED @subscriptions every 30s\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.data).toEqual([
+      { key: 'fixed', method: 'FEED', path: 'https://example.com/rss.xml', everySec: 60 },
+      { key: 'typed', method: 'FEED', path: '{rssUrl}' },
+      { key: 'subs', method: 'FEED', path: '@subscriptions', everySec: 30 }
+    ])
+  })
+
+  it('rejects a FEED path that is neither a URL, a bare state key nor @subscriptions', () => {
+    const res = parseDomino('[meta]\nname = X\n[data]\nfeed = FEED /relative/rss.xml\n')
+    expect(res.domino?.data).toHaveLength(0)
+    expect(res.errors.some((e) => e.message.includes('FEED needs'))).toBe(true)
+  })
+
+  it('rejects unknown methods with the FEED example in the message', () => {
+    const res = parseDomino('[meta]\nname = X\n[data]\nfeed = HEAD /rss.xml\n')
+    expect(res.errors.some((e) => e.message.includes('FEED <url>'))).toBe(true)
+  })
+
   it('parses action rules as ordered steps keyed by node id', () => {
     const res = parseDomino(
       '[meta]\nname = X\n[data]\nfeed = GET /feed\n[actions]\n' +

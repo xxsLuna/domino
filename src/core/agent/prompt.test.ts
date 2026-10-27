@@ -116,3 +116,37 @@ describe('buildSystemPrompt (known API responses)', () => {
     ).not.toContain('# Known API responses')
   })
 })
+
+describe('buildSystemPrompt (FEED sources)', () => {
+  it('renders the live-data note for a FEED decl and lists the snapshot keys', () => {
+    const prompt = promptFor(
+      '[meta]\nname = X\n[data]\nfeed = FEED https://example.com/rss.xml every 60s\n'
+    )
+    expect(prompt).toContain('# Live data sources')
+    expect(prompt).toContain('- feed = FEED https://example.com/rss.xml (auto-refresh every 60s)')
+    expect(prompt).toContain('FEED sources are RSS/Atom fetched and parsed by the runtime itself')
+    // no @subscriptions → no subscription-conventions section
+    expect(prompt).not.toContain('# Feed subscriptions')
+  })
+
+  it('adds the subscription conventions only when @subscriptions is declared', () => {
+    const prompt = promptFor(
+      '[meta]\nname = X\n[data]\nsubs = FEED @subscriptions every 30s\n'
+    )
+    expect(prompt).toContain('# Feed subscriptions')
+    expect(prompt).toContain('"subscribe-feed"')
+    expect(prompt).toContain('"unsubscribe-feed"')
+    expect(prompt).toContain('"refresh-feeds"')
+    expect(prompt).toContain('no turn, no call_api')
+    expect(prompt).toContain('Current subscriptions: (없음)')
+  })
+
+  it('lists the current subscriptions when the runtime passes them', () => {
+    const domino = parseDomino('[meta]\nname = X\n[data]\nsubs = FEED @subscriptions\n').domino!
+    const prompt = buildSystemPrompt(domino, {
+      loggedIn: false,
+      feeds: [{ url: 'https://a.test/rss', title: 'A' }]
+    })
+    expect(prompt).toContain('- A: https://a.test/rss')
+  })
+})

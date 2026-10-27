@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { isAllowed, resolveEndpoint } from './api'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { DOMParser } from '@xmldom/xmldom'
+import { executeApi, isAllowed, resolveEndpoint } from './api'
 import type { ChatMessage, ChatRequest, LLMAdapter, StreamDelta } from '../llm/types'
 import { setHttpFetch } from '../net'
 import { runAgentTurn, specFromArgs } from './engine'
@@ -48,6 +49,55 @@ describe('isAllowed (domino allow list)', () => {
 
   it('empty allow list denies everything', () => {
     expect(isAllowed('/login', [], BASE)).toBe(false)
+  })
+})
+
+describe('executeApi feed support', () => {
+  afterEach(() => {
+    setHttpFetch((input, init) => globalThis.fetch(input, init))
+  })
+  beforeAll(() => {
+    // node has no DOMParser; the XML auto-parse path needs one (see parse.test.ts).
+    ;(globalThis as { DOMParser?: unknown }).DOMParser = DOMParser
+  })
+
+  const FEED_XML = '<?xml version="1.0"?><rss><channel><title>T</title><item><title>Post</title><link>https://feeds.example.com/1</link></item></channel></rss>'
+
+  it('parses an XML feed body into compact JSON', async () => {
+    setHttpFetch(async () =>
+      new Response(FEED_XML, { status: 200, headers: { 'content-type': 'application/rss+xml' } })
+    )
+    const result = await executeApi(
+      { baseUrl: BASE, allow: ['https://feeds.example.com/*'], token: null },
+      { path: 'https://feeds.example.com/rss.xml' }
+    )
+    expect(result.status).toBe(200)
+    expect(result.data).toEqual({
+      title: 'T',
+      items: [{ title: 'Post', link: 'https://feeds.example.com/1' }]
+    })
+  })
+
+  it('keeps non-XML bodies that fail JSON parsing as raw text', async () => {
+    setHttpFetch(async () => new Response('plain, not json, not xml', { status: 200 }))
+    const result = await executeApi(
+      { baseUrl: BASE, allow: ['/raw/*'], token: null },
+      { path: '/raw/page' }
+    )
+    expect(result.data).toBe('plain, not json, not xml')
+  })
+
+  it('sends the login token to an allowed backend', async () => {
+    let seenAuth: string | null = null
+    setHttpFetch(async (_input, init) => {
+      seenAuth = new Headers(init?.headers).get('authorization')
+      return new Response('{}', { status: 200 })
+    })
+    await executeApi(
+      { baseUrl: BASE, allow: ['/leads'], token: 'secret-token' },
+      { path: '/leads' }
+    )
+    expect(seenAuth).toBe('Bearer secret-token')
   })
 })
 

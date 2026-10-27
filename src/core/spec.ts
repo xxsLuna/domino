@@ -87,6 +87,32 @@ export function isCancelEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean
   return e.event === 'click' && /(?:^|[-_.])cancel(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
 }
 
+/**
+ * Feed-subscription conventions, handled by the runtime without a model round
+ * trip for the store mutation itself (the follow-up screen still needs one).
+ * A form submits "subscribe-feed" with a url field; the other two are buttons.
+ */
+export function isSubscribeFeedEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
+  return (
+    e.event === 'submit' &&
+    /(?:^|[-_.])subscribe-?feed(?:[-_.](?:form|btn|button|\d+))?$/i.test(e.nodeId)
+  )
+}
+
+export function isUnsubscribeFeedEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
+  return (
+    e.event === 'click' &&
+    /(?:^|[-_.])unsubscribe-?feed(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
+  )
+}
+
+export function isRefreshFeedsEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
+  return (
+    e.event === 'click' &&
+    /(?:^|[-_.])refresh-?feeds?(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
+  )
+}
+
 const cardNodeSchema: z.ZodType<CardNode> = z.lazy(() =>
   // Key order matters: parsed specs go back into the conversation, and models
   // copy the order they see there (grid before props streams placement first).

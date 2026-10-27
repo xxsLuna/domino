@@ -149,6 +149,7 @@ when logged_in -> goto main
 # Rules
 - Every path the app must call (including the login endpoint path when it is relative) belongs in [api] allow.
 - No auth section when the app has no sign-in. Without a backend, omit [api] and describe local-only behavior in [guide].
+- RSS/Atom reader: declare a source like "feeds = FEED @subscriptions every 60s" in [data] (or one fixed "FEED https://…/rss.xml") — the runtime fetches and parses the feed itself, so feed URLs never belong in [api] allow. @subscriptions is the user's runtime-managed list; describing the subscribe/refresh flow in [guide] helps the model render it well.
 - Write [guide] in the user's language. Keys and section names stay in English.`
 
 /** Answers to an ask_user round, as the next user message. */

@@ -83,7 +83,9 @@ agent, which renders the next screen in real time.
 - **Live data (`[data]` + `[actions]`)** — declare runtime-owned data sources and widget
   behaviors in the definition; the model binds them into screens with `{"$data": "key.path"}`
   and refreshes / polling happen with **zero LLM calls** (an RSS viewer refreshes in ~50ms,
-  token-free). Buttons with an already-rendered destination auto-link instantly.
+  token-free). A `FEED` source is RSS/Atom the runtime fetches and parses itself — either one
+  fixed URL or `@subscriptions`, the user's own subscription list — so a feed reader needs no
+  backend at all. Buttons with an already-rendered destination auto-link instantly.
 - **App map** — every turn's prompt carries the pages that exist and how actions connect, so
   the model reuses existing pages instead of redesigning them; the developer menu draws the
   same graph as an interactive mermaid diagram (zoom/pan, light/dark).
@@ -211,7 +213,9 @@ on auth_failed -> goto login
 [data]
 ; Runtime-owned live sources: fetched before turns, bound into screens via
 ; {"$data": "key.path"} props, refreshed by actions/polls WITHOUT the model.
-feed = GET /feed?url={rssUrl} every 20s
+; FEED <url> is RSS/Atom the runtime fetches and parses itself (no [api] call);
+; FEED @subscriptions is the user's own runtime-managed subscription list.
+feed = FEED @subscriptions every 60s
 
 [actions]
 ; Widget behaviors the runtime executes itself (set / refresh / goto, ";-joined).

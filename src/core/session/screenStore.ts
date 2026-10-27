@@ -5,11 +5,13 @@ import type { KeyValueStorage } from './prefs'
  * Persistent screen memory for one domino — the part of the render cache that
  * survives a restart:
  *
- * - **Screens**: `screenCacheKey(pageId, contextHash)` → spec, plus the
+ * - **Screens**: context hash (node id + event + data of the press, no source
+ *   page — one action shares one slot wherever it is pressed) → spec, plus the
  *   endpoints the spec was built from (`deps`: endpoint → schema hash). A hit
  *   whose endpoint answered with a different shape since is demoted to a miss
  *   so the screen gets rebuilt against the new keys instead of showing stale
- *   fields.
+ *   fields. Non-action keys (`init::…`, `edit::…`, `feed-…`) prefix the same
+ *   hash with their own kind.
  * - **View**: the last page + a snapshot of every page the runtime knows, so
  *   reopening the app restores the screen without asking the LLM. Stored per
  *   auth flag — a logged-out session never restores a logged-in view.

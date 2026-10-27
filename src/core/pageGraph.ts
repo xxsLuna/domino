@@ -289,6 +289,15 @@ export function upsertEdge(edges: GraphEdge[], edge: GraphEdge): GraphEdge[] {
   return [...edges.filter((e) => edgeKey(e) !== key), edge]
 }
 
+/**
+ * Pages the observed presses actually led to, unique and in first-seen order.
+ * Pre-generation warms these after nav and script targets: a page the user
+ * reached once is the likeliest next press.
+ */
+export function observedDests(edges: GraphEdge[]): string[] {
+  return [...new Set(edges.filter((e) => e.kind === 'action' && e.to !== '').map((e) => e.to))]
+}
+
 /* -------------------------------- mermaid -------------------------------- */
 
 /** Mermaid node ids stay [A-Za-z0-9_]; labels drop mermaid-significant chars. */

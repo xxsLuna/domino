@@ -61,8 +61,13 @@ export interface ScriptRule {
 export interface DataSourceDecl {
   /** Source key used in `{"$data": "key.path"}` bindings and `refresh` steps. */
   key: string
+  /** API method, or `FEED` for RSS/Atom fetched and parsed client-side. */
   method: string
-  /** Path (with query) under [api] base_url; `{stateKey}` interpolates spec.state. */
+  /**
+   * Path (with query) under [api] base_url; `{stateKey}` interpolates spec.state.
+   * A FEED source holds an absolute http(s) URL, a bare `{stateKey}` with the
+   * whole URL, or `@subscriptions` — the user's runtime-managed feed list.
+   */
   path: string
   /** Poll interval while a page showing this source is on screen. */
   everySec?: number

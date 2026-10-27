@@ -55,6 +55,29 @@ describe('pregenTargets', () => {
     const d = domino('[meta]\nname = X\n')
     expect(pregenTargets(d, spec('a', ['a', 'b'], ['a', 'b']), true)).toEqual([])
   })
+
+  it('takes observed-graph pages after nav and script targets', () => {
+    const d = domino('[meta]\nname = X\n[script]\nwhen logged_in -> goto home\n')
+    const targets = pregenTargets(
+      d,
+      spec('main', ['main'], ['main', 'leads']),
+      true,
+      ['settings', 'main', 'lead-detail']
+    )
+    // nav first, script next, observed last; known pages and dupes drop out.
+    expect(targets).toEqual(['leads', 'home', 'settings'])
+  })
+
+  it('still caps at three even with more observed pages', () => {
+    const d = domino('[meta]\nname = X\n')
+    const targets = pregenTargets(d, spec('a', ['a'], ['a']), true, ['p', 'q', 'r', 's'])
+    expect(targets).toEqual(['p', 'q', 'r'])
+  })
+
+  it('observed pages alone are enough to pre-generate', () => {
+    const d = domino('[meta]\nname = X\n')
+    expect(pregenTargets(d, spec('a', ['a'], []), true, ['edit-form'])).toEqual(['edit-form'])
+  })
 })
 
 describe('mergeKnownPage', () => {

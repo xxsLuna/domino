@@ -61,6 +61,7 @@ export function buildSystemPrompt(
     dataSnapshots?: Record<string, unknown>
     /** The app map: pages that exist + action links (see pageGraph.pageMapLines). */
     pageMap?: string[]
+    feeds?: Array<{ url: string; title: string }>
   }
 ): string {
   const allowList = domino.api.allow.length
@@ -122,6 +123,7 @@ ${authRules(domino, opts.loggedIn)}
 ${pageMapSection(opts.pageMap)}
 ${liveDataSection(domino, opts.dataSnapshots)}
 ${knownSchemaSection(opts.knownSchemas)}
+${feedSection(domino, opts.feeds)}
 # Interaction rules
 - User events arrive as messages like "ACTION {event} from <name>/<id> data {...}". Events: click (Button), submit (Form, data = field values by name), navigate (nav, Breadcrumbs), select (Table row with rowAction, List item: data has the row/item), search (SearchField: {name, query}), change (Select/Switch/Checkbox/RadioGroup outside a Form: {name, value}), page (Pagination: {page}).
 - A user message starting with EDIT REQUEST (page "X"): is an instruction to change the screen the user is looking at: apply exactly that change to page X and re-render it, keeping the rest of the page — layout, ids, values, data — and every other page as they are, unless the change requires otherwise. When the request targets the whole app (a theme, colors, wording, navigation), re-render EVERY page with the change applied and include all of them in the spec — the runtime applies every page you return. Don't call_api for an edit unless it needs new data.
@@ -182,12 +184,15 @@ function liveDataSection(domino: DominoFile, snapshots?: Record<string, unknown>
         )
         .join(', ')}. Pressing them never reaches you.`
     : ''
+  const feedNote = domino.data.some((d) => d.method === 'FEED')
+    ? '\n- FEED sources are RSS/Atom fetched and parsed by the runtime itself — {"title", "items"} (or {"feeds", "items"} for @subscriptions) — never call_api for them.'
+    : ''
   return `
 # Live data sources (declared in [data] — the runtime fetches and refreshes them)
 ${decls}
 ${snaps ? `Current snapshots:\n${snaps}\n` : '(no snapshot yet — a required input may still be missing)'}
 - BIND this data instead of embedding it: any prop that shows it — List "items", Table "rows", StatCard "value", KeyValue, headings — takes the exact object {"$data": "<key>.<json path>"} (e.g. "items": {"$data": "feed.items"}). The runtime substitutes the latest value on every render and refreshes it without a model turn, so literal values would go stale.
-- Do NOT call_api for these endpoints — the snapshot above is already fresh.
+- Do NOT call_api for these endpoints — the snapshot above is already fresh.${feedNote}
 ${actions.trim()}`
 }
 
@@ -224,7 +229,31 @@ ${list}
 - These are the shapes earlier screens were built from, not guarantees. A call_api result may carry "_schemaChange" ({added, removed, changed}): the endpoint answered with keys added/removed/type-changed — re-render the page so added keys show, removed keys are gone, and changed keys use the new type. Otherwise keep field names consistent with the shapes above.`
 }
 
-/** Sign-in rules only for apps that have sign-in; otherwise models invent login pages. */
+/** Compact feed list for the system prompt; capping keeps memory from crowding rules. */
+const MAX_FEEDS_IN_PROMPT = 20
+
+function formatFeeds(feeds?: Array<{ url: string; title: string }>): string {
+  if (!feeds?.length) return '(없음)'
+  const lines = feeds.slice(0, MAX_FEEDS_IN_PROMPT).map((f) => `- ${f.title}: ${f.url}`)
+  return lines.join('\n')
+}
+
+/**
+ * Subscription conventions — rendered only when the domino declares a
+ * `FEED @subscriptions` source. The runtime owns the list (validation,
+ * storage, fetching); the model renders around it and binds the snapshot.
+ */
+function feedSection(
+  domino: DominoFile,
+  feeds?: Array<{ url: string; title: string }>
+): string {
+  if (!domino.data.some((d) => d.method === 'FEED' && d.path === '@subscriptions')) return ''
+  return `
+# Feed subscriptions (managed by the runtime)
+- The user can subscribe to RSS/Atom feeds. SUBSCRIBE: a Form whose id is "subscribe-feed" containing an Input (name "url") and a submit Button — the runtime validates, stores and fetches the URL itself. UNSUBSCRIBE: a Button with id "unsubscribe-feed" whose props carry {"url": "<feed url>"} (list rows typically bind it per feed). REFRESH: a Button with id "refresh-feeds" re-fetches every subscribed feed instantly — no turn, no call_api.
+- The @subscriptions snapshot carries {"feeds": [{"url","title","error"?}], "items": [{"title","link","date"?,"summary"?,"feed"}]} — bind it with {"$data": "<key>.items"} / {"$data": "<key>.feeds"} and show the link in a Link component; never invent items.
+- Current subscriptions: ${formatFeeds(feeds)}`
+}
 function authRules(domino: DominoFile, loggedIn: boolean): string {
   if (!domino.auth.required) {
     return '- This app has no sign-in: never render a login page or sign-out button; every screen is reachable directly.'

@@ -13,14 +13,18 @@ export const MAX_PREGEN_TARGETS = 3
 
 /**
  * Candidate pages, in tap likelihood: nav items first (they're on every
- * screen), then scripted targets. Already-known pages, the login page and —
- * for an auth-required app while signed out — everything are excluded: those
- * would be built against the wrong context or rebuilt for no reason.
+ * screen), then scripted targets, then pages the observed action graph led to
+ * (a press landed there before; rebuilding lets the next identical press land
+ * instantly even when the view snapshot lost the page). Already-known pages,
+ * the login page and — for an auth-required app while signed out — everything
+ * are excluded: those would be built against the wrong context or rebuilt for
+ * no reason.
  */
 export function pregenTargets(
   domino: DominoFile,
   known: UiSpec,
-  loggedIn: boolean
+  loggedIn: boolean,
+  observedPages?: string[]
 ): string[] {
   if (domino.auth.required && !loggedIn) return []
   const have = new Set(known.pages.map((p) => p.id))
@@ -33,6 +37,7 @@ export function pregenTargets(
   for (const rule of domino.script) {
     if (rule.command.kind === 'goto' || rule.command.kind === 'render') add(rule.command.page)
   }
+  for (const pageId of observedPages ?? []) add(pageId)
   return targets.slice(0, MAX_PREGEN_TARGETS)
 }
 

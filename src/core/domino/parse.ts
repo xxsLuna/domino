@@ -246,13 +246,15 @@ export function parseDomino(source: string): ParseResult {
 
   /* ------------------------------- data ------------------------------- */
   // `feed = GET /feed?url={rssUrl} every 20s` — one runtime-owned source.
+  // `feed = FEED https://example.com/rss.xml every 60s` — RSS/Atom fetched and
+  // parsed client-side; `FEED @subscriptions` is the user's subscription list.
   const data: DataSourceDecl[] = []
   for (const e of sections.get('data') ?? []) {
-    const m = e.value.match(/^(GET|POST|PUT|PATCH|DELETE)\s+(.+)$/i)
+    const m = e.value.match(/^(GET|POST|PUT|PATCH|DELETE|FEED)\s+(.+)$/i)
     if (!m) {
       errors.push({
         line: e.line,
-        message: `[data] ${e.key}: expected "GET /path?query (every Ns)", got "${e.value}"`
+        message: `[data] ${e.key}: expected "GET /path?query (every Ns)" or "FEED <url> (every Ns)", got "${e.value}"`
       })
       continue
     }
@@ -261,7 +263,40 @@ export function parseDomino(source: string): ParseResult {
     const path = (ev ? rest.slice(0, ev.index) : rest).trim()
     // `{state key}` segments may hold spaces; the rest of a path may not.
     const spacesOutside = path.replace(/\{[^}]*\}/g, '').includes(' ')
-    if (spacesOutside || !/^(\/|https?:\/\/)/i.test(path)) {
+    if (spacesOutside) {
+      errors.push({
+        line: e.line,
+        message: `[data] ${e.key}: the path must be "/…" (or an absolute http URL), got "${path}"`
+      })
+      continue
+    }
+    const method = m[1].toUpperCase()
+    if (method === 'FEED') {
+      // A FEED source is fetched directly (no [api] involved): an absolute
+      // http(s) URL, a bare {stateKey} holding the whole URL (substituted raw
+      // and re-validated at fetch time), or @subscriptions — the runtime's
+      // user-managed subscription list.
+      const ok =
+        path === '@subscriptions' ||
+        /^\{[A-Za-z0-9_]+\}$/.test(path) ||
+        /^https?:\/\//i.test(path)
+      if (!ok) {
+        errors.push({
+          line: e.line,
+          message: `[data] ${e.key}: FEED needs an absolute https URL, a bare {stateKey} holding one, or @subscriptions, got "${path}"`
+        })
+        continue
+      }
+      if (interpolationGap(path, e, errors)) continue
+      data.push({
+        key: e.key,
+        method,
+        path,
+        ...(ev ? { everySec: Math.min(600, Math.max(5, Number(ev[1]))) } : {})
+      })
+      continue
+    }
+    if (!/^(\/|https?:\/\/)/i.test(path)) {
       errors.push({
         line: e.line,
         message: `[data] ${e.key}: the path must be "/…" (or an absolute http URL), got "${path}"`
@@ -271,7 +306,7 @@ export function parseDomino(source: string): ParseResult {
     if (interpolationGap(path, e, errors)) continue
     data.push({
       key: e.key,
-      method: m[1].toUpperCase(),
+      method,
       path,
       ...(ev ? { everySec: Math.min(600, Math.max(5, Number(ev[1]))) } : {})
     })
