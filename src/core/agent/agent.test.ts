@@ -424,8 +424,16 @@ describe('call_api schema memory', () => {
     const tool = seen[1].messages.find((m) => m.role === 'tool')!
     expect(JSON.parse(tool!.content as string)).toEqual({
       status: 200,
-      data: { id: 1, name: 'Lead' }
+      data: { id: 1, name: 'Lead' },
+      bind: 'GET /leads'
     })
+  })
+
+  it('exposes a "bind" key naming the endpoint for {"$data"} bindings', async () => {
+    serveJson(200, { rows: [{ id: 1 }] })
+    const { seen } = await run()
+    const tool = seen[1].messages.find((m) => m.role === 'tool')!
+    expect(JSON.parse(tool!.content as string).bind).toBe('GET /leads')
   })
 
   it('compacts a big payload for the model but keeps the full body in api_result', async () => {

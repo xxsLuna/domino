@@ -32,6 +32,7 @@ import {
   saveSchemaBook,
   type SchemaBook
 } from '@core/agent/schema'
+import { loadApiSnaps, putApiSnap, saveApiSnaps, type ApiSnaps } from '@core/agent/apiSnaps'
 import { mergeKnownPage, pregenTargets } from '@core/agent/pregen'
 import { nextSpecChars, renderProgress } from '@core/agent/progress'
 import { applyScript, buildScriptContext } from '@core/domino/script'
@@ -130,6 +131,8 @@ export function Runtime({
   const knownRef = useRef<UiSpec | null>(null)
   /** Persisted per-domino API memory: endpoint → key/type shape of its responses. */
   const schemaBookRef = useRef<SchemaBook>({})
+  /** Persisted endpoint → last body: what {"$data": "api:…"} bindings resolve against. */
+  const apiSnapsRef = useRef<ApiSnaps>({})
   /** User-subscribed feeds (RSS/Atom) — the runtime owns this list, not the model. */
   const feedsRef = useRef<FeedEntry[]>([])
   /** Persistent screen cache — specs from earlier sessions, with their API deps. */
@@ -137,6 +140,7 @@ export function Runtime({
   /** Endpoints whose responses the current turn's final spec is built from. */
   const turnDepsRef = useRef<ScreenDeps>({})
   const schemaTimer = useRef<number | null>(null)
+  const snapTimer = useRef<number | null>(null)
   /** Rendering gauge: turn start, streamed chars, EMA of finished spec sizes. */
   const progressStart = useRef(0)
   const progressChars = useRef(0)
@@ -233,6 +237,15 @@ export function Runtime({
     }, 800)
   }, [domino.id, storage])
 
+  // Same debounce for the bindable endpoint snapshots.
+  const scheduleSnapSave = useCallback(() => {
+    if (snapTimer.current !== null) window.clearTimeout(snapTimer.current)
+    snapTimer.current = window.setTimeout(() => {
+      snapTimer.current = null
+      void saveApiSnaps(storage, domino.id, apiSnapsRef.current)
+    }, 800)
+  }, [domino.id, storage])
+
   // Don't drop a pending save when the screen unmounts mid-debounce.
   useEffect(
     () => () => {
@@ -240,6 +253,11 @@ export function Runtime({
         window.clearTimeout(schemaTimer.current)
         schemaTimer.current = null
         void saveSchemaBook(storage, domino.id, schemaBookRef.current)
+      }
+      if (snapTimer.current !== null) {
+        window.clearTimeout(snapTimer.current)
+        snapTimer.current = null
+        void saveApiSnaps(storage, domino.id, apiSnapsRef.current)
       }
     },
     [domino.id, storage]
@@ -615,6 +633,23 @@ export function Runtime({
   }, [])
 
   /**
+   * A call_api response becomes a bindable snapshot: screens carry
+   * {"$data": "api:<endpoint>.…"} and re-resolve against the latest body —
+   * live this turn, and after a restart from the persisted copy. Only a
+   * successful object body qualifies; error shapes would fake bindings.
+   */
+  const rememberApiSnapshot = useCallback(
+    (endpoint: string, result: { status: number; data: unknown }): void => {
+      if (result.status < 200 || result.status >= 300) return
+      if (result.data === null || typeof result.data !== 'object') return
+      apiSnapsRef.current = putApiSnap(apiSnapsRef.current, endpoint, result.data)
+      commitSourceSnapshot(`api:${endpoint}`, apiSnapsRef.current[endpoint])
+      scheduleSnapSave()
+    },
+    [commitSourceSnapshot, scheduleSnapSave]
+  )
+
+  /**
    * Fetch one [data] source, store the snapshot (a bound screen re-renders
    * from it) and log the fetch to the API inspector — runtime-owned refreshes
    * are visible too. API methods ride the allowlist/origin gates; FEED sources
@@ -917,6 +952,8 @@ export function Runtime({
                 turnDepsRef.current[update.endpoint] = hashSchema(update.schema)
                 scheduleSchemaSave()
               }
+              // The result also feeds {"$data": "api:…"} bindings in screens.
+              rememberApiSnapshot(update.endpoint, update.result)
               break
             case 'progress':
               progressChars.current = update.chars
@@ -1009,6 +1046,7 @@ export function Runtime({
       fetchSource,
       finalizeSpec,
       landEdit,
+      rememberApiSnapshot,
       restoreAt,
       scheduleSchemaSave,
       startGauge
@@ -1044,14 +1082,19 @@ export function Runtime({
         })) {
           if (pregenSeq.current !== seq) return null // cancelled: walk away silently
           if (update.type === 'spec' && update.final) return update.spec
-          // previews and api_results are ignored: nothing on screen changes
+          // Previews change nothing on screen; api results still seed the
+          // {"$data": "api:…"} snapshots the built page's bindings resolve
+          // against the moment it is shown.
+          if (update.type === 'api_result') {
+            rememberApiSnapshot(update.endpoint, update.result)
+          }
         }
       } catch {
         return null // a failed background build just becomes a live-generating tap
       }
       return null
     },
-    [apiRuntime, appMapLines, config, domino]
+    [apiRuntime, appMapLines, config, domino, rememberApiSnapshot]
   )
 
   const maybeRunPreGen = useCallback(
@@ -1113,11 +1156,16 @@ export function Runtime({
 
       tokenWarnRef.current = await loadTokenWarn(storage)
       schemaBookRef.current = await loadSchemaBook(storage, domino.id)
+      // Persisted endpoint bodies: a restored screen's {"$data": "api:…"}
+      // bindings resolve against these before any new call happens.
+      apiSnapsRef.current = await loadApiSnaps(storage, domino.id)
+      dataSnapRef.current = { ...apiSnapsRef.current, ...dataSnapRef.current }
       graphEdgesRef.current = await loadPageGraph(storage, domino.id)
       feedsRef.current = await loadFeeds(storage, domino.id)
       const screens = await ScreenStore.open(storage, domino.id)
       screensRef.current = screens
       if (cancelled) return
+      setDataSnap(dataSnapRef.current)
       // Ready [data] sources fetch once up front: the very first design turn
       // (and any pregen build) sees real values to bind.
       await Promise.all(domino.data.map((d) => fetchSource(d.key)))

@@ -77,7 +77,7 @@ ${aboutApp(domino)}
 - One action, one id: every control that performs the same action — a page-header button, a quick-actions shortcut, a sidebar entry that all open the same form — carries the same id, so the runtime treats the first press as the answer for all of them. The same id may repeat across pages; never give two nodes the same id inside the same parent container.
 - "grid" belongs on top-level layout nodes only; children are laid out by their parent. Never wrap a whole page in one Stack/Card/Columns — place its blocks on the grid directly.
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
-- Before finishing a screen you can call call_api to fetch live data, then embed the results into the layout (Table rows, StatCard values, List items, KeyValue…).
+- Before finishing a screen you can call call_api to fetch live data. Every result carries a "bind" key — show response data by BINDING it, not by copying it: any prop that displays it (Table "rows", List "items", StatCard "value", KeyValue…) takes {"$data": "<bind>.<json path>"} (e.g. "rows": {"$data": "api:GET /leads.rows"}). Bindings re-resolve against the latest response on every render and survive restarts; copied values cost tokens and go stale. Copy at most a row or two when a literal example helps (an empty-state illustration), never whole lists.
 - Keep a screen compact: at most ~15 layout nodes, and at most ~20 rows in any Table or List (longer payloads are trimmed from your context anyway — show the head, and let pagination or a $data binding carry the rest).
 
 # Example (shape reference only — your ids, pages and data must match THIS app)
@@ -91,7 +91,7 @@ A whole valid render_ui call for a small dashboard:
     {"name": "StatCard", "id": "stat-open", "grid": {"x": 0, "y": 1, "w": 3, "h": 2},
      "props": {"label": "Open deals", "value": "42", "icon": "briefcase"}},
     {"name": "Table", "id": "main-table", "grid": {"x": 0, "y": 3, "w": 12, "h": 5},
-     "props": {"columns": ["Name", "Stage"], "rows": [["Ana Ruiz", "Qualified"], ["Ken Sato", "Proposal"]], "rowAction": true}}
+     "props": {"columns": ["Name", "Stage"], "rows": {"$data": "api:GET /leads.rows"}, "rowAction": true}}
   ]}]}}
 - Note the key order everywhere: name, id, grid, then props/children; children carry no grid.
 

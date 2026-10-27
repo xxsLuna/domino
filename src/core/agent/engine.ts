@@ -278,6 +278,9 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             content: JSON.stringify({
               status: result.status,
               data: compactToolResult(result.data),
+              // Show this data by binding, not copying: any prop takes
+              // {"$data": "<bind>.<json path>"} and re-resolves on every render.
+              bind: endpoint,
               // Keys added/removed/changed vs. what earlier screens were built
               // on: the model re-renders so the cached layout catches up.
               ...(changed ? { _schemaChange: changed } : {})

@@ -6,6 +6,7 @@ import {
   isSignOutEvent,
   iterateNodes,
   normalizeGrid,
+  resolveDataBindings,
   resolveStateBindings,
   tryValidateUiSpec,
   validateUiSpec,
@@ -282,5 +283,50 @@ describe('client-side state', () => {
     // The {$state} shape only swaps on an exact single-key object.
     const lookalike: CardNode = { name: 'Badge', props: { value: { $state: 'a', extra: 1 } } }
     expect(resolveStateBindings(lookalike, { a: 5 })).toBe(lookalike)
+  })
+})
+
+describe('resolveDataBindings ({"$data"} → live/API snapshots)', () => {
+  const node = (props: Record<string, unknown>): CardNode => ({ name: 'Table', id: 't', props })
+
+  it('resolves a dotted path into the matching source', () => {
+    const out = resolveDataBindings(node({ rows: { $data: 'feed.items' } }), {
+      feed: { items: [{ title: 'A' }] }
+    })
+    expect(out.props?.rows).toEqual([{ title: 'A' }])
+  })
+
+  it('indexes arrays by numeric segments', () => {
+    const out = resolveDataBindings(node({ title: { $data: 'feed.items.0.title' } }), {
+      feed: { items: [{ title: 'First' }] }
+    })
+    expect(out.props?.title).toBe('First')
+  })
+
+  it('matches the LONGEST source key, so an endpoint key with dots resolves', () => {
+    // "api:GET /feed.xml" contains a dot that is not a path separator — the
+    // lookup must not split it away.
+    const out = resolveDataBindings(
+      node({ rows: { $data: 'api:GET /feed.xml.items' } }),
+      { 'api:GET /feed.xml': { items: [{ title: 'T' }] } }
+    )
+    expect(out.props?.rows).toEqual([{ title: 'T' }])
+  })
+
+  it('prefers a longer key over a prefix that is also a key', () => {
+    const sources = {
+      api: { label: 'short' },
+      'api:GET /leads': { label: 'long' }
+    }
+    const out = resolveDataBindings(node({ label: { $data: 'api:GET /leads.label' } }), sources)
+    expect(out.props?.label).toBe('long')
+    // A shorter path that is exactly a key still resolves to that key.
+    const bare = resolveDataBindings(node({ label: { $data: 'api.label' } }), sources)
+    expect(bare.props?.label).toBe('short')
+  })
+
+  it('an unknown key resolves to undefined (prop disappears)', () => {
+    const out = resolveDataBindings(node({ rows: { $data: 'nope.items' } }), {})
+    expect(out.props?.rows).toBeUndefined()
   })
 })

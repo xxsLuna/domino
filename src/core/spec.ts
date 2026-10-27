@@ -416,7 +416,19 @@ const dataBinding = (v: unknown): string | null =>
 
 /** Walk a `key.a.b` path into the source map (numeric segments index arrays). */
 function lookupDataPath(sources: Record<string, unknown>, path: string): unknown {
-  const [key, ...rest] = path.split('.')
+  // The key is the longest dot-boundary prefix that names a source — keys may
+  // themselves contain dots ("api:GET /feed.xml"). A key the map lacks falls
+  // back to the first segment and misses the map, resolving to undefined.
+  let key = path.split('.')[0]
+  for (const candidate of Object.keys(sources)) {
+    if (
+      candidate.length > key.length &&
+      (path === candidate || path.startsWith(`${candidate}.`))
+    ) {
+      key = candidate
+    }
+  }
+  const rest = path.length > key.length + 1 ? path.slice(key.length + 1).split('.') : []
   let cur: unknown = sources[key]
   for (const seg of rest) {
     if (cur === null || cur === undefined) return undefined
