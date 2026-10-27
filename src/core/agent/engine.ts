@@ -45,6 +45,44 @@ const PREVIEW_INTERVAL_MS = 80
 const MAX_TOOL_ARGS_CHARS = 2_000_000
 
 /**
+ * A failed render_ui blob stays in history as the model's own example — keep
+ * only a short head so a megabyte of garbage can't bloat (or teach) later
+ * passes. The validation error beside it carries the actual diagnosis.
+ */
+const MAX_FAILED_ARGS_CHARS = 2_000
+
+/**
+ * One call_api payload as the MODEL reads it: arrays trimmed to their head
+ * (the spec embeds the first rows anyway), whole body capped — a 400KB
+ * response would otherwise ride every later pass and turn as history, and
+ * models rarely read past the first rows. The full response still reaches
+ * the runtime through the api_result update.
+ */
+const MAX_RESULT_CHARS = 24_000
+const MAX_RESULT_ARRAY = 40
+
+export function compactToolResult(data: unknown): unknown {
+  const trim = (v: unknown): unknown => {
+    if (Array.isArray(v)) {
+      const head = v.slice(0, MAX_RESULT_ARRAY).map(trim)
+      return v.length > MAX_RESULT_ARRAY ? [...head, `…+${v.length - MAX_RESULT_ARRAY} more`] : head
+    }
+    if (v && typeof v === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = trim(val)
+      return out
+    }
+    return v
+  }
+  const trimmed = trim(data)
+  const text = JSON.stringify(trimmed)
+  if (text === undefined) return data // non-JSON-able payload: hand it through as-is
+  if (text.length <= MAX_RESULT_CHARS) return trimmed
+  // Still too big (many wide objects): replace with a valid-JSON head.
+  return { truncated: true, chars: text.length, head: text.slice(0, 4_000) }
+}
+
+/**
  * Minimum gap between progress updates. Same reasoning as previews: the
  * gauge animates smoothly at 150ms spacing without a yield per delta.
  */
@@ -176,16 +214,20 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         if (tc.name === 'render_ui') {
           const { spec: raw } = specFromArgs(tc.args)
           const spec = raw === null ? null : tryValidateUiSpec(raw)
+          // Models copy their own earlier calls: a stringified spec, a missing
+          // "version" or props-before-grid in history repeats on every later
+          // turn. Keep the validated spec, in contract key order, there instead
+          // — and when there is none, only a short head of the failed blob.
+          const recorded = assistantMsg.toolCalls?.find((c) => c.id === tc.id)
           if (spec) {
             sawRender = true
             rendered = true
-            // Models copy their own earlier calls: a stringified spec, a missing
-            // "version" or props-before-grid in history repeats on every later
-            // turn. Keep the validated spec, in contract key order, there instead.
-            const recorded = assistantMsg.toolCalls?.find((c) => c.id === tc.id)
             if (recorded) recorded.args = JSON.stringify({ spec })
           } else {
             failedRender = true
+            if (recorded && recorded.args.length > MAX_FAILED_ARGS_CHARS) {
+              recorded.args = `${recorded.args.slice(0, MAX_FAILED_ARGS_CHARS)}…`
+            }
           }
           // Record the tool result before yielding: if the caller walks away
           // at the yield (superseded turn), history must still carry it.
@@ -235,7 +277,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             toolName: tc.name,
             content: JSON.stringify({
               status: result.status,
-              data: result.data,
+              data: compactToolResult(result.data),
               // Keys added/removed/changed vs. what earlier screens were built
               // on: the model re-renders so the cached layout catches up.
               ...(changed ? { _schemaChange: changed } : {})

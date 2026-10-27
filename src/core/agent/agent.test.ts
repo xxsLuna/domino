@@ -3,7 +3,7 @@ import { DOMParser } from '@xmldom/xmldom'
 import { executeApi, isAllowed, resolveEndpoint } from './api'
 import type { ChatMessage, ChatRequest, LLMAdapter, StreamDelta } from '../llm/types'
 import { setHttpFetch } from '../net'
-import { runAgentTurn, specFromArgs } from './engine'
+import { compactToolResult, runAgentTurn, specFromArgs } from './engine'
 import { extractPartialSpec, parsePartialJson } from './partialJson'
 
 const BASE = 'https://api.example.com/v1'
@@ -297,6 +297,40 @@ describe('runAgentTurn with a misbehaving model', () => {
     const updates = await run(fakeAdapter([bad, bad]), [{ role: 'user', content: 'go' }])
     expect(updates.filter((u) => u.type === 'error')).toHaveLength(1)
   })
+
+  it('keeps only a short head of a failed render blob in history', async () => {
+    const hugeBad = JSON.stringify({ spec: { version: 1, page: 'p', pages: 'x'.repeat(50_000) } })
+    const history: ChatMessage[] = [{ role: 'user', content: 'go' }]
+    await run(fakeAdapter([hugeBad, JSON.stringify({ spec: JSON.parse(inner) })]), history)
+    const failed = history.find((m) => m.role === 'assistant')?.toolCalls?.[0]
+    expect(failed!.args.length).toBeLessThanOrEqual(2_001)
+    expect(failed!.args.endsWith('…')).toBe(true)
+  })
+})
+
+describe('compactToolResult (what the model reads of a call_api payload)', () => {
+  it('passes small payloads through unchanged', () => {
+    const small = { id: 1, rows: [{ a: 1 }, { a: 2 }] }
+    expect(compactToolResult(small)).toEqual(small)
+  })
+
+  it('trims arrays past 40 items to their head with a more-marker', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({ i }))
+    const out = compactToolResult({ rows }) as { rows: unknown[] }
+    expect(out.rows).toHaveLength(41)
+    expect(out.rows[0]).toEqual({ i: 0 })
+    expect(out.rows[40]).toBe('…+60 more')
+  })
+
+  it('caps a still-huge body as valid JSON instead of a giant string', () => {
+    const wide = Array.from({ length: 30 }, (_, i) =>
+      Array.from({ length: 40 }, (_, j) => ({ i, j, note: 'x'.repeat(200) }))
+    )
+    const out = compactToolResult({ lists: wide }) as { truncated: boolean; head: string }
+    expect(out.truncated).toBe(true)
+    expect(out.head.length).toBeLessThanOrEqual(4_000)
+    expect(() => JSON.parse(JSON.stringify(out))).not.toThrow()
+  })
 })
 
 describe('history after render_ui', () => {
@@ -392,6 +426,20 @@ describe('call_api schema memory', () => {
       status: 200,
       data: { id: 1, name: 'Lead' }
     })
+  })
+
+  it('compacts a big payload for the model but keeps the full body in api_result', async () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({ id: i }))
+    serveJson(200, { rows })
+    const { updates, seen } = await run()
+    const tool = seen[1].messages.find((m) => m.role === 'tool')!
+    const parsed = JSON.parse(tool!.content as string)
+    expect(parsed.status).toBe(200)
+    expect(parsed.data.rows).toHaveLength(41)
+    expect(parsed.data.rows[40]).toBe('…+60 more')
+    // The runtime-side update keeps the untouched response.
+    const api = updates.find((u) => u.type === 'api_result')!
+    expect((api.result as { data: { rows: unknown[] } }).data.rows).toHaveLength(100)
   })
 
   it('flags _schemaChange when the response has keys the memory lacks', async () => {

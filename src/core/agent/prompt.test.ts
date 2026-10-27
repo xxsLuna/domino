@@ -117,6 +117,20 @@ describe('buildSystemPrompt (known API responses)', () => {
   })
 })
 
+describe('buildSystemPrompt (shape reference)', () => {
+  it('ships a whole compact example plus the size rules', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('# Example (shape reference')
+    expect(prompt).toContain('A whole valid render_ui call')
+    expect(prompt).toContain('"rowAction": true')
+    expect(prompt).toContain('at most ~15 layout nodes')
+    expect(prompt).toContain('at most ~20 rows')
+    expect(prompt).toContain('children carry no grid')
+    // The example is framed as a reference, never as this app's real screen.
+    expect(prompt).toContain('your ids, pages and data must match THIS app')
+  })
+})
+
 describe('buildSystemPrompt (FEED sources)', () => {
   it('renders the live-data note for a FEED decl and lists the snapshot keys', () => {
     const prompt = promptFor(

@@ -78,6 +78,22 @@ ${aboutApp(domino)}
 - "grid" belongs on top-level layout nodes only; children are laid out by their parent. Never wrap a whole page in one Stack/Card/Columns — place its blocks on the grid directly.
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
 - Before finishing a screen you can call call_api to fetch live data, then embed the results into the layout (Table rows, StatCard values, List items, KeyValue…).
+- Keep a screen compact: at most ~15 layout nodes, and at most ~20 rows in any Table or List (longer payloads are trimmed from your context anyway — show the head, and let pagination or a $data binding carry the rest).
+
+# Example (shape reference only — your ids, pages and data must match THIS app)
+A whole valid render_ui call for a small dashboard:
+{"spec": {"version": 1, "page": "main",
+  "nav": [{"id": "main", "label": "Home", "icon": "home"}],
+  "pages": [{"id": "main", "name": "Dashboard", "layout": [
+    {"name": "PageHeader", "id": "main-header", "grid": {"x": 0, "y": 0, "w": 12, "h": 1},
+     "props": {"title": "Dashboard"},
+     "children": [{"name": "Button", "id": "new-lead", "props": {"text": "New lead", "variant": "primary"}}]},
+    {"name": "StatCard", "id": "stat-open", "grid": {"x": 0, "y": 1, "w": 3, "h": 2},
+     "props": {"label": "Open deals", "value": "42", "icon": "briefcase"}},
+    {"name": "Table", "id": "main-table", "grid": {"x": 0, "y": 3, "w": 12, "h": 5},
+     "props": {"columns": ["Name", "Stage"], "rows": [["Ana Ruiz", "Qualified"], ["Ken Sato", "Proposal"]], "rowAction": true}}
+  ]}]}}
+- Note the key order everywhere: name, id, grid, then props/children; children carry no grid.
 
 # App shell (handled by the runtime — do not rebuild it)
 - The runtime draws the top app bar (app name, back/forward, page name) and the primary navigation.
