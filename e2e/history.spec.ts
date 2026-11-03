@@ -16,7 +16,8 @@ test.describe('screen history drawer', () => {
     await submitEdit(page, request, 'tweak the dashboard wording')
     await expect(desc).toContainText('· edit')
 
-    // Newest first: [수정 Dashboard, 시작 Dashboard, 시작 Sign in …]
+    // Newest first: [수정 Dashboard, 시작 Dashboard]. History is kept per
+    // auth state, so the signed-out Sign in moment is not in this stack.
     await page.getByRole('button', { name: '화면 히스토리' }).click()
     const panel = page.locator('.history-panel.is-open')
     await expect(panel).toBeVisible()
@@ -30,7 +31,8 @@ test.describe('screen history drawer', () => {
     )
 
     const rows = panel.locator('.history-item')
-    expect(await rows.count()).toBeGreaterThanOrEqual(3)
+    expect(await rows.count()).toBeGreaterThanOrEqual(2)
+    await expect(panel.getByText('Sign in', { exact: true })).toHaveCount(0)
     await expect(rows.first()).toHaveAttribute('aria-current', 'true')
     await expect(rows.first().locator('.history-badge')).toHaveAttribute('data-kind', 'edit')
     await expect(rows.nth(1).locator('.history-badge')).toHaveAttribute('data-kind', 'start')
@@ -61,7 +63,7 @@ test.describe('screen history drawer', () => {
     await page.getByRole('button', { name: '화면 히스토리' }).click()
     const restoredRows = page.locator('.history-panel.is-open .history-item')
     await expect(restoredRows.first()).toBeVisible({ timeout: 20_000 })
-    expect(await restoredRows.count()).toBeGreaterThanOrEqual(3)
+    expect(await restoredRows.count()).toBeGreaterThanOrEqual(2)
     // The moment we jumped to before the reload is still the current one.
     await expect(restoredRows.first()).toHaveAttribute('aria-current', 'true')
   })

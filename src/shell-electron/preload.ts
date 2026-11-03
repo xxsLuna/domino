@@ -8,6 +8,18 @@ export interface SecureStore {
   remove(key: string): Promise<void>
   /** All [key, value] pairs — powers the storage-management settings. */
   entries(): Promise<Array<[string, string]>>
+  /** Several keys in one round trip (boot reads dozens of page blobs). */
+  getMany(keys: string[]): Promise<Array<string | null>>
+  /** Write everything the main process still holds in memory. */
+  flush(): Promise<void>
+  /** Told when the main process failed to write a key (disk full, permissions). */
+  onError(cb: (key: string, message: string) => void): () => void
+  /**
+   * The main process is about to quit or close this window: `cb` writes the
+   * renderer's debounced state (views, history, page blobs, snapshots) and
+   * its settling is acknowledged, so main flushes to disk only after it.
+   */
+  onFlushRequest(cb: () => Promise<void>): () => void
 }
 
 export interface DominoBridge {
@@ -38,7 +50,28 @@ const bridge: DominoBridge = {
     get: (key) => ipcRenderer.invoke('secure:get', key),
     set: (key, value) => ipcRenderer.invoke('secure:set', key, value),
     remove: (key) => ipcRenderer.invoke('secure:remove', key),
-    entries: () => ipcRenderer.invoke('secure:entries')
+    entries: () => ipcRenderer.invoke('secure:entries'),
+    getMany: (keys) => ipcRenderer.invoke('secure:getMany', keys),
+    flush: () => ipcRenderer.invoke('secure:flush'),
+    onError: (cb) => {
+      const listener = (_e: IpcRendererEvent, key: string, message: string): void =>
+        cb(key, message)
+      ipcRenderer.on('secure:error', listener)
+      return () => {
+        ipcRenderer.removeListener('secure:error', listener)
+      }
+    },
+    onFlushRequest: (cb) => {
+      const listener = (_e: IpcRendererEvent, id: string): void => {
+        void cb()
+          .catch(() => undefined)
+          .finally(() => ipcRenderer.send('storage:flush-done', id))
+      }
+      ipcRenderer.on('storage:flush-request', listener)
+      return () => {
+        ipcRenderer.removeListener('storage:flush-request', listener)
+      }
+    }
   },
   pathForFile: (file) => webUtils.getPathForFile(file),
   update: {

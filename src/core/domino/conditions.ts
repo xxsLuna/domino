@@ -187,6 +187,9 @@ function resolve(path: string, vars: Record<string, unknown>): unknown {
   let cur: unknown = vars
   for (const p of parts) {
     if (cur === null || cur === undefined || typeof cur !== 'object') return undefined
+    // Own properties only: `x.constructor` / `x.__proto__` must not resolve
+    // to inherited (always-truthy) members.
+    if (!Object.hasOwn(cur, p)) return undefined
     cur = (cur as Record<string, unknown>)[p]
   }
   return cur

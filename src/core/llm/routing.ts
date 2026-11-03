@@ -26,3 +26,19 @@ export function routingHeaders(baseUrl: string): Record<string, string> {
     ? { 'x-opencode-session': RUN_SESSION }
     : {}
 }
+
+/**
+ * Whether the endpoint takes OpenAI's `prompt_cache_key` routing hint. The
+ * key keeps one domino's requests on the same cache shard, but strict
+ * OpenAI-compatible backends (Gemini's compat layer, some gateways) reject
+ * unknown body fields with a 400 — so it goes only to OpenAI itself. Every
+ * other backend still gets the automatic prefix cache from the stable-first
+ * message order.
+ */
+export function acceptsPromptCacheKey(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'api.openai.com'
+  } catch {
+    return false
+  }
+}

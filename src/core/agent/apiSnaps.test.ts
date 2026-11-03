@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { KeyValueStorage } from '../session/prefs'
-import { apiSnapsKey, loadApiSnaps, putApiSnap, saveApiSnaps, type ApiSnaps } from './apiSnaps'
+import { apiSnapBindings, apiSnapsKey, loadApiSnaps, putApiSnap, saveApiSnaps, type ApiSnaps } from './apiSnaps'
 
 function memStorage(initial: Record<string, string> = {}): KeyValueStorage & {
   map: Map<string, string>
@@ -25,14 +25,46 @@ function bigRows(n: number): { rows: Array<{ id: number }> } {
   return { rows: Array.from({ length: n }, (_, id) => ({ id })) }
 }
 
+describe('persisted snapshot shapes', () => {
+  it('drops the old {truncated, head} form and legacy marker rows on load', async () => {
+    const storage = memStorage({
+      [apiSnapsKey('d')]: JSON.stringify({
+        'GET /old': { truncated: true, chars: 30_000, head: '{"rows"' },
+        'GET /list': { rows: [{ id: 1 }, '…+60 more'] }
+      })
+    })
+    const snaps = await loadApiSnaps(storage, 'd')
+    expect(snaps['GET /old']).toBeUndefined()
+    expect(snaps['GET /list']).toEqual({ rows: [{ id: 1 }] })
+  })
+
+  it('leaves a body too big to persist out of storage only', async () => {
+    const storage = memStorage()
+    const snaps = { 'GET /big': { blob: 'x'.repeat(500_000) }, 'GET /small': { a: 1 } }
+    await saveApiSnaps(storage, 'd', snaps)
+    expect(JSON.parse(storage.map.get(apiSnapsKey('d'))!)).toEqual({ 'GET /small': { a: 1 } })
+  })
+})
+
 describe('putApiSnap', () => {
-  it('compacts a big body so one snapshot cannot outgrow its screen', () => {
+  it('caps a big list without marker rows: every element stays a row', () => {
     const out = putApiSnap({}, 'GET /leads', bigRows(500))
     const snap = out['GET /leads'] as { rows: unknown[] }
-    // Head kept, tail collapsed to a marker — the whole thing stays a bound object.
-    expect(snap.rows).toHaveLength(41)
-    expect(snap.rows[0]).toEqual({ id: 0 })
-    expect(snap.rows[40]).toBe('…+460 more')
+    expect(snap.rows).toHaveLength(200)
+    expect(snap.rows.every((r) => typeof r === 'object')).toBe(true)
+  })
+
+  it('keeps 100 rows whole (bindings see every record, not the model-facing 40)', () => {
+    const out = putApiSnap({}, 'GET /leads', bigRows(100))
+    expect((out['GET /leads'] as { rows: unknown[] }).rows).toHaveLength(100)
+  })
+
+  it('never replaces the root of a wide body', () => {
+    const wide = {
+      rows: Array.from({ length: 30 }, (_, id) => ({ id, blob: 'w'.repeat(2_000) }))
+    }
+    const snap = putApiSnap({}, 'GET /wide', wide)['GET /wide'] as { rows: unknown[] }
+    expect(snap.rows).toHaveLength(30)
   })
 
   it('evicts the oldest endpoint once the horizon is exceeded', () => {
@@ -83,5 +115,30 @@ describe('apiSnaps round-trip', () => {
       async remove() {}
     }
     await expect(saveApiSnaps(broken, 'crm', {})).resolves.toBeUndefined()
+  })
+})
+
+describe('apiSnaps error reporting and bindings', () => {
+  it('reports a failed save through onError without rejecting', async () => {
+    const broken: KeyValueStorage = {
+      async get() {
+        return null
+      },
+      async set() {
+        throw new Error('quota')
+      },
+      async remove() {}
+    }
+    const seen: string[] = []
+    await expect(
+      saveApiSnaps(broken, 'crm', {}, (err) => seen.push(err.message))
+    ).resolves.toBeUndefined()
+    expect(seen).toEqual(['quota'])
+  })
+
+  it('exposes snapshots under their api:<endpoint> binding keys', () => {
+    const snaps = putApiSnap({}, 'GET /leads', { rows: [] })
+    expect(apiSnapBindings(snaps)).toEqual({ 'api:GET /leads': { rows: [] } })
+    expect(apiSnapBindings({ 'api:GET /x': 1 })).toEqual({ 'api:GET /x': 1 })
   })
 })

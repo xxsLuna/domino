@@ -4,6 +4,8 @@ import { createResponsesAdapter } from './responses'
 import type { LLMAdapter, LLMConfig } from './types'
 
 export * from './types'
+export { LLMRequestError } from './retry'
+export { LLMStallError } from './sse'
 
 /** Builds the streaming adapter for a BYOK config. Throws on unknown provider. */
 export function createAdapter(config: LLMConfig): LLMAdapter {

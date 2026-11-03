@@ -59,9 +59,8 @@ export function detectSpecLanguage(spec: UiSpec): SpecLang | null {
   if (spec.nav) {
     for (const item of spec.nav) {
       countScripts(item.label, counts)
-      if (item.badge !== undefined && typeof item.badge !== 'number') {
-        countScripts(String(item.badge), counts)
-      }
+      // A bound badge ({"$data": …}) carries no visible text of its own.
+      if (typeof item.badge === 'string') countScripts(item.badge, counts)
     }
   }
   const meaningful =

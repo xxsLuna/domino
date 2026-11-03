@@ -16,7 +16,18 @@ export interface LoadedDomino {
   domino: DominoFile
   source: DominoSource
   name: string
+  /**
+   * Everything the parser dropped or flagged while the file still opened
+   * (bad rules, refused [data] methods, unknown keys, gotos to undeclared
+   * pages…), sorted by line — shown to the author instead of failing silently.
+   */
   warnings: ParseError[]
+  /**
+   * The exact text this definition was parsed from. Export and share use it,
+   * so an embed's fingerprint always describes the file it ships in (the
+   * cached copy may already be a newer, revalidated text).
+   */
+  text?: string
 }
 
 export class DominoLoadError extends Error {
@@ -105,7 +116,7 @@ export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> 
   if (source.type === 'url') {
     const cached = await getCachedText(storage, source)
     if (cached !== null) {
-      const hit = tryParse(cached, source)
+      const hit = parseLoaded(cached, source)
       if (hit) {
         revalidate(source, cached, storage)
         return hit
@@ -122,14 +133,14 @@ export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> 
     if (source.type !== 'text') {
       const cached = await getCachedText(storage, source)
       if (cached !== null) {
-        const hit = tryParse(cached, source)
+        const hit = parseLoaded(cached, source)
         if (hit) return hit
       }
     }
     throw err
   }
 
-  const parsed = tryParse(text, source)
+  const parsed = parseLoaded(text, source)
   if (!parsed) {
     const result = parseDomino(text)
     const detail = result.errors
@@ -144,14 +155,20 @@ export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> 
   return parsed
 }
 
-function tryParse(text: string, source: DominoSource): LoadedDomino | null {
+/**
+ * Parse loaded text into a LoadedDomino (null when the file can't open).
+ * Every path that builds one — first open, cached reopen, offline fallback,
+ * a reload inside the runtime — goes through here, so warnings never vanish.
+ */
+export function parseLoaded(text: string, source: DominoSource): LoadedDomino | null {
   const result = parseDomino(text)
   if (!result.ok || !result.domino) return null
   return {
     domino: result.domino,
     source,
     name: result.domino.meta.name,
-    warnings: result.errors
+    warnings: result.warnings,
+    text
   }
 }
 

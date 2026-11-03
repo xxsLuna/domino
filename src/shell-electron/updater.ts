@@ -244,18 +244,38 @@ function installWindows(installer: string): void {
   app.quit()
 }
 
+/**
+ * Work that must finish before the process exits without the normal quit
+ * sequence (`app.exit` skips before-quit, where the store is flushed). Main
+ * registers the key/value store's flush here.
+ */
+let beforeExit: () => Promise<void> = async () => undefined
+
+export function setBeforeExit(fn: () => Promise<void>): void {
+  beforeExit = fn
+}
+
+async function exitNow(): Promise<void> {
+  try {
+    await beforeExit()
+  } catch {
+    /* the update goes ahead; a failed flush was already reported */
+  }
+  app.exit(0)
+}
+
 async function installLinux(file: string, assetName: string): Promise<void> {
   const appImage = process.env.APPIMAGE
   if (appImage && assetName.endsWith('.AppImage')) {
     await chmod(file, 0o755)
     await rename(file, appImage) // same directory, so an atomic replace
     app.relaunch({ execPath: appImage, args: process.argv.slice(1) })
-    app.exit(0)
+    await exitNow()
     return
   }
   await run('pkexec', ['dpkg', '-i', file])
   app.relaunch()
-  app.exit(0)
+  await exitNow()
 }
 
 /** Download the update found by the last check, install it, and relaunch. */

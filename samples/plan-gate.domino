@@ -15,9 +15,17 @@ allow = /login, /overview, /billing, /upgrade
 [ui]
 theme = dark
 
+[pages]
+overview = Overview | usage and limits of the current plan | nav
+billing = Billing | invoices and the payment method | nav
+upgrade = Upgrade | plan comparison with an upgrade button
+
 [script]
 when not logged_in -> goto login
 when error == "billing" -> goto upgrade
 when plan == "pro" and logged_in -> goto overview
 when plan == "free" and logged_in -> goto overview
 on logout -> goto login
+
+[data]
+overview = GET /overview

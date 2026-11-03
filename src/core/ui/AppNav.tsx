@@ -1,11 +1,16 @@
 import { Dropdown, Label } from '@heroui/react'
 import { Icon } from './icons'
+import { navBadgeText } from './nav'
 import type { NavItem } from '../spec'
 
 /**
  * Primary navigation for a generated app, in the shape each form factor
  * expects: a labeled sidebar on desktop, an icon rail on tablets (both are
  * `.side-nav`, CSS swaps the look) and a bottom tab bar on phones.
+ *
+ * Badges render through navBadgeText: callers resolve bound badges first
+ * (resolveNavItems in nav.ts); anything still not displayable — an
+ * unresolved binding, an object, 0 — simply shows no badge.
  */
 
 interface AppNavProps {
@@ -52,15 +57,18 @@ export function BottomNav({ items, activeId, onSelect }: AppNavProps): React.JSX
                 if (item) onSelect(item)
               }}
             >
-              {more.map((item) => (
-                <Dropdown.Item key={item.id} id={item.id} textValue={item.label}>
-                  <Icon name={item.icon} size={16} />
-                  <Label>{item.label}</Label>
-                  {item.badge !== undefined ? (
-                    <span className="nav-badge ml-auto">{item.badge}</span>
-                  ) : null}
-                </Dropdown.Item>
-              ))}
+              {more.map((item) => {
+                const badge = navBadgeText(item.badge)
+                return (
+                  <Dropdown.Item key={item.id} id={item.id} textValue={item.label}>
+                    <Icon name={item.icon} size={16} />
+                    <Label>{item.label}</Label>
+                    {badge !== undefined ? (
+                      <span className="nav-badge ml-auto">{badge}</span>
+                    ) : null}
+                  </Dropdown.Item>
+                )
+              })}
             </Dropdown.Menu>
           </Dropdown.Popover>
         </Dropdown>
@@ -78,6 +86,7 @@ function NavButton({
   active: boolean
   onSelect: (item: NavItem) => void
 }): React.JSX.Element {
+  const badge = navBadgeText(item.badge)
   return (
     <button
       type="button"
@@ -88,9 +97,7 @@ function NavButton({
     >
       <Icon name={item.icon ?? 'dashboard'} size={20} />
       <span className="nav-label">{item.label}</span>
-      {item.badge !== undefined && item.badge !== '' ? (
-        <span className="nav-badge">{item.badge}</span>
-      ) : null}
+      {badge !== undefined ? <span className="nav-badge">{badge}</span> : null}
     </button>
   )
 }

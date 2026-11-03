@@ -36,3 +36,15 @@ export const useLayout = (): LayoutInfo => useContext(LayoutContext)
 export const CellContext = createContext<{ fill: boolean }>({ fill: false })
 
 export const useCell = (): { fill: boolean } => useContext(CellContext)
+
+/**
+ * Keys of the screen's client-side `state` (spec.state). A field whose name is
+ * one of them reports its changes even inside a Form — the runtime applies
+ * them locally (no model turn), so every node bound to that key updates as
+ * the user types or toggles. Other form fields stay quiet until submit.
+ */
+const NO_KEYS: ReadonlySet<string> = new Set()
+
+export const StateKeysContext = createContext<ReadonlySet<string>>(NO_KEYS)
+
+export const useStateKeys = (): ReadonlySet<string> => useContext(StateKeysContext)

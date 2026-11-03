@@ -262,13 +262,112 @@ describe('hardening', () => {
 describe('[data] and [actions] sections', () => {
   it('parses data sources with interpolation and an every-interval', () => {
     const res = parseDomino(
-      '[meta]\nname = X\n[data]\nfeed = GET /feed?url={rssUrl} every 20s\nonce = POST /ping\n'
+      '[meta]\nname = X\n[data]\nfeed = GET /feed?url={rssUrl} every 20s\nonce = GET /ping\n'
     )
     expect(res.errors).toEqual([])
     expect(res.domino?.data).toEqual([
       { key: 'feed', method: 'GET', path: '/feed?url={rssUrl}', everySec: 20 },
-      { key: 'once', method: 'POST', path: '/ping' }
+      { key: 'once', method: 'GET', path: '/ping' }
     ])
+  })
+
+  it('refuses writing methods in [data] and points at an [actions] call step', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\norders = POST /orders\nwipe = DELETE /x every 10s\nok = GET /ok\n'
+    )
+    expect(res.ok).toBe(true)
+    expect(res.domino?.data.map((d) => d.key)).toEqual(['ok'])
+    const msgs = res.errors.map((e) => e.message)
+    expect(
+      msgs.some((m) => m.includes('POST is not allowed') && m.includes('[actions] call'))
+    ).toBe(true)
+    expect(msgs.some((m) => m.includes('DELETE is not allowed'))).toBe(true)
+    expect(res.warnings.some((w) => w.message.includes('POST is not allowed'))).toBe(true)
+  })
+
+  it('strips inline comments from [data] and [actions] values', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\nfeed = GET /feed?a=1;b=2 every 20s ; poll it\n' +
+        'other = GET /o # note\n[actions]\ngo = refresh feed ; goto x # back to x\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.data).toEqual([
+      { key: 'feed', method: 'GET', path: '/feed?a=1;b=2', everySec: 20 },
+      { key: 'other', method: 'GET', path: '/o' }
+    ])
+    expect(res.domino?.actions[0].steps).toEqual([
+      { kind: 'refresh', source: 'feed' },
+      { kind: 'goto', page: 'x' }
+    ])
+  })
+
+  it('keeps key case and resolves refresh references exactly (case-only match is a warning)', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\nrssFeed = GET /feed\n[actions]\n' +
+        'feedRefresh = refresh rssFeed\nlower = refresh rssfeed\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.data[0].key).toBe('rssFeed')
+    expect(res.domino?.actions).toEqual([
+      { id: 'feedRefresh', steps: [{ kind: 'refresh', source: 'rssFeed' }] },
+      { id: 'lower', steps: [{ kind: 'refresh', source: 'rssFeed' }] }
+    ])
+    expect(res.warnings.some((w) => w.message.includes('only by case'))).toBe(true)
+  })
+
+  it('rejects unsafe [data]/[actions] keys case-insensitively and flags duplicates', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[data]\n__PROTO__ = GET /x\nfeed = GET /a\nFeed = GET /b\n'
+    )
+    expect(res.domino?.data).toEqual([{ key: 'feed', method: 'GET', path: '/a' }])
+    expect(res.errors.some((e) => e.message.includes('unsafe key'))).toBe(true)
+    expect(res.errors.some((e) => e.message.includes('declared twice'))).toBe(true)
+  })
+
+  it('parses call steps with method, path interpolation and a form body', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[api]\nbase_url = https://api.test\nallow = /leads, /leads/*\n' +
+        '[data]\nleads = GET /leads\n[actions]\n' +
+        'new-lead-form = call POST /leads with form ; refresh leads ; goto leads\n' +
+        'delete-lead = call DELETE /leads/{row.id} ; refresh leads\n' +
+        'archive = call post /leads/{leadId}/archive form\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.actions).toEqual([
+      {
+        id: 'new-lead-form',
+        steps: [
+          { kind: 'call', method: 'POST', path: '/leads', body: 'form' },
+          { kind: 'refresh', source: 'leads' },
+          { kind: 'goto', page: 'leads' }
+        ]
+      },
+      {
+        id: 'delete-lead',
+        steps: [
+          { kind: 'call', method: 'DELETE', path: '/leads/{row.id}', body: 'none' },
+          { kind: 'refresh', source: 'leads' }
+        ]
+      },
+      {
+        id: 'archive',
+        steps: [{ kind: 'call', method: 'POST', path: '/leads/{leadId}/archive', body: 'form' }]
+      }
+    ])
+  })
+
+  it('rejects malformed call steps', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[actions]\n' +
+        'a = call FETCH /x\nb = call POST leads\nc = call POST /x/{a b}\nd = call POST /x/{item.id}\n'
+    )
+    expect(res.domino?.actions).toEqual([])
+    expect(res.errors).toHaveLength(4)
+  })
+
+  it('keeps a goto target that names a page not built (or declared) yet verbatim', () => {
+    const res = parseDomino('[meta]\nname = X\n[actions]\nsave = goto Lead-Detail_2\n')
+    expect(res.domino?.actions[0].steps).toEqual([{ kind: 'goto', page: 'Lead-Detail_2' }])
   })
 
   it('reports malformed data declarations without dropping the rest', () => {
@@ -376,5 +475,146 @@ describe('[screens] embedded app export', () => {
     const withSemi = { ...spec, pages: [{ id: 'a;b', name: 'x', layout: [] }] }
     const res = parseDomino(`[meta]\nname = X\n[screens]\nspec = ${JSON.stringify(withSemi)}`)
     expect(res.domino?.screens?.spec.pages[0].id).toBe('a;b')
+  })
+})
+
+describe('[pages] plan', () => {
+  it('parses id = Name | purpose | nav in file order', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\nhome = leads\n[pages]\n' +
+        'leads = Leads | every lead as a table | nav ; newest first\n' +
+        'lead-detail = Lead | one lead, opened from a row\n' +
+        'settings = Settings | nav\n' +
+        'about = About\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.warnings).toEqual([])
+    expect(res.domino?.pages).toEqual([
+      { id: 'leads', name: 'Leads', purpose: 'every lead as a table', nav: true },
+      { id: 'lead-detail', name: 'Lead', purpose: 'one lead, opened from a row', nav: false },
+      { id: 'settings', name: 'Settings', nav: true },
+      { id: 'about', name: 'About', nav: false }
+    ])
+  })
+
+  it('defaults to [] and stays out of extras', () => {
+    const res = parseDomino('[meta]\nname = X\n')
+    expect(res.domino?.pages).toEqual([])
+    const withPages = parseDomino('[meta]\nname = X\n[pages]\nmain = Main\n')
+    expect(withPages.domino?.extras).toEqual({})
+  })
+
+  it('rejects bad ids, duplicates and unknown flags with line numbers', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[pages]\nmain = Main | home | nav\nlead.detail = Lead\nMAIN = Again\nx = X | p | pinned\n'
+    )
+    expect(res.domino?.pages.map((p) => p.id)).toEqual(['main', 'x'])
+    expect(res.errors.map((e) => e.line)).toEqual([5, 6, 7])
+  })
+
+  it('warns when home, script or [actions] targets are not declared pages', () => {
+    const res = parseDomino(
+      [
+        '[meta]',
+        'name = X',
+        'home = dashboard',
+        '[auth]',
+        'required = true',
+        'login_endpoint = /login',
+        '[pages]',
+        'main = Main | | nav',
+        'Leads = Leads',
+        '[script]',
+        'when not logged_in -> goto login',
+        'when logged_in -> goto main',
+        'when error == "x" -> goto upgrade',
+        '[actions]',
+        'go = goto leads'
+      ].join('\n')
+    )
+    expect(res.ok).toBe(true)
+    expect(res.errors).toEqual([])
+    const msgs = res.warnings.map((w) => `${w.line}: ${w.message}`)
+    expect(msgs).toEqual([
+      '3: [meta] home "dashboard" is not a page in [pages]',
+      '13: [script] goto "upgrade" is not a page in [pages]',
+      '15: [actions] go: goto "leads" is not a page in [pages] — did you mean "Leads"?'
+    ])
+  })
+})
+
+describe('parse warnings', () => {
+  it('surfaces dropped lines, unknown keys and semantic findings as sorted warnings', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\ncolour = red\n[script]\nwhen nope ->\nwhen not logged_in -> goto login\n'
+    )
+    expect(res.ok).toBe(true)
+    expect(res.errors.map((e) => e.line)).toEqual([5])
+    expect(res.warnings.map((w) => w.line)).toEqual([3, 5, 6])
+    expect(res.warnings[0].message).toContain('unknown key "colour"')
+    expect(res.warnings[2].message).toContain('no sign-in')
+    // unknown keys still travel as extras (forward compat)
+    expect(res.domino?.extras.meta).toEqual({ colour: 'red' })
+  })
+
+  it('keeps non-fatal warnings when the file fails to parse', () => {
+    const res = parseDomino('[meta]\nhome = main\n[data]\nx = POST /y\n')
+    expect(res.ok).toBe(false)
+    expect(res.warnings.some((w) => w.message.includes('POST'))).toBe(true)
+    expect(res.warnings.some((w) => w.message.includes('name is required'))).toBe(false)
+  })
+
+  it('ships every sample without warnings', () => {
+    for (const name of ['example-crm.domino', 'notes-board.domino', 'plan-gate.domino']) {
+      const res = parseDomino(sample(name))
+      expect(res.warnings, name).toEqual([])
+      expect(res.domino?.pages.length, name).toBeGreaterThan(0)
+    }
+  })
+
+  it('ends a section on a header with a # comment', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[guide]\nbrief\n[api] # endpoints\nbase_url = https://a.test\n'
+    )
+    expect(res.errors).toEqual([])
+    expect(res.domino?.guide).toBe('brief')
+    expect(res.domino?.api.baseUrl).toBe('https://a.test')
+  })
+})
+
+describe('[screens] validation', () => {
+  it('normalizes an embedded spec the same way as model output', () => {
+    const raw = { version: 1, page: 'main', pages: [{ id: 'main', title: 'Main' }] }
+    const res = parseDomino(`[meta]\nname = X\n[screens]\nspec = ${JSON.stringify(raw)}`)
+    expect(res.errors).toEqual([])
+    expect(res.domino?.screens?.spec.pages[0]).toEqual({ id: 'main', name: 'Main', layout: [] })
+  })
+
+  it('rejects an embed with no usable page, saying why', () => {
+    const res = parseDomino(
+      `[meta]\nname = X\n[screens]\nspec = ${JSON.stringify({ version: 1, page: 'a', pages: [] })}`
+    )
+    expect(res.domino?.screens).toBeUndefined()
+    expect(res.errors[0].message).toContain('not a valid UiSpec')
+  })
+
+  it('rejects an unknown spec version', () => {
+    const res = parseDomino(
+      `[meta]\nname = X\n[screens]\nspec = ${JSON.stringify({ version: 2, page: 'a', pages: [{ id: 'a', name: 'A', layout: [] }] })}`
+    )
+    expect(res.domino?.screens).toBeUndefined()
+    expect(res.errors[0].message).toContain('version 1')
+  })
+})
+
+describe('[script] call commands', () => {
+  it('parses call with and without a method', () => {
+    const res = parseDomino(
+      '[meta]\nname = X\n[script]\non login -> call /me\non logout -> call POST /logout\n'
+    )
+    expect(res.domino?.script.map((r) => r.command)).toEqual([
+      { kind: 'call', endpoint: '/me' },
+      { kind: 'call', endpoint: '/logout', method: 'POST' }
+    ])
   })
 })

@@ -131,20 +131,69 @@ export function hashSchema(fields: Record<string, string>): string {
   return hashContext(canonical)
 }
 
-/** Keys added / removed / type-changed between two shapes of the same endpoint. */
+/**
+ * Types that say nothing about the shape: an empty array (`array`, no
+ * element type) or a null. `{rows: []}` after `{rows: [{id, name}]}` is an
+ * empty search, not a schema change — and a nullable field flipping between
+ * `null` and `string` is data, not shape.
+ */
+function vagueType(type: string | undefined): boolean {
+  return type === 'array' || type === 'null'
+}
+
+/** Keys where one side's type carries no information (see vagueType). */
+function blindKeys(prev: Record<string, string>, next: Record<string, string>): string[] {
+  return Object.keys(next).filter(
+    (k) => k in prev && prev[k] !== next[k] && (vagueType(prev[k]) || vagueType(next[k]))
+  )
+}
+
+/** Whether a path lies under one of `roots` (`rows[].id` under `rows`, `config.theme` under `config`). */
+function underAny(key: string, roots: string[]): boolean {
+  return roots.some((r) => key.startsWith(`${r}[]`) || key.startsWith(`${r}.`))
+}
+
+/**
+ * Keys added / removed / type-changed between two shapes of the same
+ * endpoint. A key whose old or new type is vague (empty array, null) is not
+ * a change, and neither are the sub-keys under it on either side.
+ */
 export function diffApiSchema(
   prev: Record<string, string>,
   next: Record<string, string>
 ): SchemaDiff {
   const diff: SchemaDiff = { added: [], removed: [], changed: [] }
+  const blind = blindKeys(prev, next)
   for (const key of Object.keys(next)) {
+    if (underAny(key, blind)) continue
     if (!(key in prev)) diff.added.push(key)
-    else if (prev[key] !== next[key]) diff.changed.push(key)
+    else if (prev[key] !== next[key] && !blind.includes(key)) diff.changed.push(key)
   }
   for (const key of Object.keys(prev)) {
-    if (!(key in next)) diff.removed.push(key)
+    if (!(key in next) && !underAny(key, blind)) diff.removed.push(key)
   }
   return diff
+}
+
+/**
+ * The shape to remember after a new answer: the new one, except that a
+ * vague answer (empty list, null) keeps what an earlier answer taught —
+ * `array<object>` and its `rows[].*` sub-keys survive an empty search, so
+ * the next non-empty answer does not read as "added".
+ */
+export function mergeSchemaFields(
+  prev: Record<string, string> | undefined,
+  next: Record<string, string>
+): Record<string, string> {
+  if (!prev) return next
+  const kept = blindKeys(prev, next).filter((k) => vagueType(next[k]) && !vagueType(prev[k]))
+  if (!kept.length) return next
+  const out: Record<string, string> = { ...next }
+  for (const key of kept) out[key] = prev[key]
+  for (const [key, type] of Object.entries(prev)) {
+    if (!(key in out) && underAny(key, kept) && Object.keys(out).length < MAX_SCHEMA_KEYS) out[key] = type
+  }
+  return out
 }
 
 export function hasSchemaChange(diff: SchemaDiff): boolean {
@@ -168,7 +217,8 @@ export function rememberSchema(
   endpoint: string,
   fields: Record<string, string>
 ): SchemaBook {
-  const next: SchemaBook = { ...book, [endpoint]: { fields, at: Date.now() } }
+  const merged = mergeSchemaFields(book[endpoint]?.fields, fields)
+  const next: SchemaBook = { ...book, [endpoint]: { fields: merged, at: Date.now() } }
   const keys = Object.keys(next)
   if (keys.length <= MAX_ENDPOINTS) return next
   // Oldest first (insertion order breaks same-millisecond ties); drop the excess.

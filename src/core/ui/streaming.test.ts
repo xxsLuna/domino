@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CardNode, UiSpec } from '../spec'
-import { changedNodeIds, streamView } from './streaming'
+import { changedNodeIds, fallbackSkeletonPage, skeletonFromPage, streamView } from './streaming'
 
 const node = (
   id: string,
@@ -61,6 +61,69 @@ describe('streamView', () => {
     const v = streamView(current, preview)
     expect(ids(v)).toEqual(['head', 'alert', 'table'])
     expect(v.pending?.id).toBe('table')
+  })
+
+  it('gives a new-page preview a state map before its `state` streams in', () => {
+    // No state anywhere yet: an empty map, so bindings resolve to nothing.
+    const fresh = streamView(spec('main', [node('x', 0)]), spec('leads', [node('a', 0)]))
+    expect(fresh.spec.state).toEqual({})
+    // The current screen's values carry over meanwhile…
+    const current = { ...spec('main', [node('x', 0)]), state: { q: 'acme' } }
+    expect(streamView(current, spec('leads', [node('a', 0)])).spec.state).toEqual({ q: 'acme' })
+    // …and the preview's own state wins once it arrives.
+    const own = { ...spec('leads', [node('a', 0)]), state: { q: '' } }
+    expect(streamView(current, own).spec.state).toEqual({ q: '' })
+  })
+})
+
+describe('skeletonFromPage', () => {
+  it('keeps the shape (name, id, grid) and only a header title and icon', () => {
+    const page = {
+      id: 'lead',
+      name: 'Lead',
+      layout: [
+        {
+          name: 'PageHeader',
+          id: 'h',
+          grid: { x: 0, y: 0, w: 12, h: 1 },
+          props: { title: 'Acme', description: 'Old record', icon: 'user', badge: { $state: 'x' } },
+          children: [{ name: 'Button', props: { text: 'Edit' } }]
+        },
+        { name: 'Table', id: 't', grid: { x: 0, y: 1, w: 12, h: 4 }, props: { rows: [[1]] } },
+        { name: 'Card', props: { title: { $data: 'lead.name' } } }
+      ]
+    }
+    expect(skeletonFromPage(page)).toEqual({
+      id: 'lead',
+      name: 'Lead',
+      layout: [
+        {
+          name: 'PageHeader',
+          id: 'h',
+          grid: { x: 0, y: 0, w: 12, h: 1 },
+          props: { title: 'Acme', icon: 'user' }
+        },
+        { name: 'Table', id: 't', grid: { x: 0, y: 1, w: 12, h: 4 } },
+        { name: 'Card' }
+      ]
+    })
+  })
+})
+
+describe('fallbackSkeletonPage', () => {
+  it('is a titled header, four tiles and a table', () => {
+    const p = fallbackSkeletonPage('reports', 'Reports')
+    expect(p.id).toBe('reports')
+    expect(p.layout.map((n) => n.name)).toEqual([
+      'PageHeader',
+      'StatCard',
+      'StatCard',
+      'StatCard',
+      'StatCard',
+      'Table'
+    ])
+    expect(p.layout[0].props).toEqual({ title: 'Reports' })
+    expect(fallbackSkeletonPage('x', '').layout[0].props).toBeUndefined()
   })
 })
 

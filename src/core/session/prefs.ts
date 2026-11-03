@@ -1,3 +1,4 @@
+import { isReasoningLevel } from '../llm/reasoning'
 import type { LLMConfig, ProviderId } from '../llm/types'
 import { PROVIDER_META } from '../llm/types'
 import { sourceKey } from './registry'
@@ -35,6 +36,7 @@ const KEYS = {
   llm: 'domino:llm-config',
   recents: 'domino:recents',
   token: (id: string) => `domino:token:${id}`,
+  sessionVars: (id: string) => `domino:sessionvars:${id}`,
   welcomeHint: 'domino:welcome-hint',
   tokenWarn: 'domino:token-warn',
   dominoLlm: (id: string) => `domino:llm-config:${id}`
@@ -47,6 +49,27 @@ export function defaultLlmConfig(): LLMConfig {
     baseUrl: meta.defaultBaseUrl,
     model: meta.defaultModel,
     apiKey: ''
+  }
+}
+
+/**
+ * The optional tuning fields of a stored config, each type-checked: a bad
+ * value (hand-edited file, older build) is dropped on its own instead of
+ * failing the whole load.
+ */
+function optionalLlmFields(
+  p: Record<string, unknown>
+): Pick<LLMConfig, 'temperature' | 'reasoning' | 'maxOutputTokens'> {
+  return {
+    ...(typeof p.temperature === 'number' && Number.isFinite(p.temperature)
+      ? { temperature: p.temperature }
+      : {}),
+    ...(isReasoningLevel(p.reasoning) ? { reasoning: p.reasoning } : {}),
+    ...(typeof p.maxOutputTokens === 'number' &&
+    Number.isFinite(p.maxOutputTokens) &&
+    p.maxOutputTokens >= 1
+      ? { maxOutputTokens: Math.floor(p.maxOutputTokens) }
+      : {})
   }
 }
 
@@ -77,9 +100,7 @@ export async function loadLlmConfig(storage: KeyValueStorage): Promise<LLMConfig
     baseUrl: typeof p.baseUrl === 'string' ? p.baseUrl : defaults.baseUrl,
     model: typeof p.model === 'string' ? p.model : defaults.model,
     apiKey: typeof p.apiKey === 'string' ? p.apiKey : defaults.apiKey,
-    ...(typeof p.temperature === 'number' && Number.isFinite(p.temperature)
-      ? { temperature: p.temperature }
-      : {})
+    ...optionalLlmFields(p)
   }
 }
 
@@ -128,6 +149,44 @@ export async function setToken(
 }
 
 /**
+ * Session variables — the non-secret fields of the sign-in response (plan,
+ * role, …) that [script] conditions read (`when plan == "pro" -> …`). They
+ * live and die with the token: saved on sign-in, cleared on sign-out or an
+ * expired session, and restored with the token on reopen.
+ */
+export async function loadSessionVars(
+  storage: KeyValueStorage,
+  dominoId: string
+): Promise<Record<string, unknown>> {
+  try {
+    const raw = await storage.get(KEYS.sessionVars(dominoId))
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {}
+  } catch {
+    return {} // unreadable: the conditions simply see no variables
+  }
+}
+
+export async function saveSessionVars(
+  storage: KeyValueStorage,
+  dominoId: string,
+  vars: Record<string, unknown>
+): Promise<void> {
+  if (Object.keys(vars).length === 0) {
+    await storage.remove(KEYS.sessionVars(dominoId))
+    return
+  }
+  await storage.set(KEYS.sessionVars(dominoId), JSON.stringify(vars))
+}
+
+export async function clearSessionVars(storage: KeyValueStorage, dominoId: string): Promise<void> {
+  await storage.remove(KEYS.sessionVars(dominoId))
+}
+
+/**
  * Per-domino LLM override: one domino may run on a different provider or
  * model than the global default (a test app on a local Ollama, a heavy app
  * on a bigger model…). Stored alongside — never inside — the .domino file,
@@ -145,17 +204,18 @@ export async function loadDominoLlmConfig(
   }
   if (!raw) return null
   try {
-    const parsed = JSON.parse(raw) as Partial<LLMConfig>
+    const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
-    if (typeof parsed.provider !== 'string' || !Object.hasOwn(PROVIDER_META, parsed.provider)) {
+    const p = parsed as Record<string, unknown>
+    if (typeof p.provider !== 'string' || !Object.hasOwn(PROVIDER_META, p.provider)) {
       return null
     }
     return {
-      provider: parsed.provider as ProviderId,
-      model: typeof parsed.model === 'string' ? parsed.model : defaultLlmConfig().model,
-      ...(parsed.apiKey !== undefined ? { apiKey: parsed.apiKey } : {}),
-      ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
-      ...(parsed.temperature !== undefined ? { temperature: parsed.temperature } : {})
+      provider: p.provider as ProviderId,
+      model: typeof p.model === 'string' ? p.model : defaultLlmConfig().model,
+      ...(typeof p.apiKey === 'string' ? { apiKey: p.apiKey } : {}),
+      ...(typeof p.baseUrl === 'string' ? { baseUrl: p.baseUrl } : {}),
+      ...optionalLlmFields(p)
     }
   } catch {
     return null

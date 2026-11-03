@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   describeUiSpecProblem,
   findNode,
+  isBackEvent,
   isCancelEvent,
   isSignOutEvent,
   iterateNodes,
   normalizeGrid,
+  referencedDataKeys,
   resolveDataBindings,
   resolveStateBindings,
   tryValidateUiSpec,
@@ -173,6 +175,28 @@ describe('isCancelEvent', () => {
   })
 })
 
+describe('isBackEvent', () => {
+  it('recognizes back buttons', () => {
+    for (const nodeId of ['back', 'go-back', 'goback', 'detail-back', 'back-btn', 'form_back_2'])
+      expect(isBackEvent({ event: 'click', nodeId }), nodeId).toBe(true)
+  })
+  it('ignores look-alikes and other events', () => {
+    for (const nodeId of [
+      'feedback',
+      'back-order',
+      'backup',
+      'cashback',
+      'send-back',
+      'roll-back-btn',
+      'cash-back',
+      'call-back',
+      'request_send_back'
+    ])
+      expect(isBackEvent({ event: 'click', nodeId }), nodeId).toBe(false)
+    expect(isBackEvent({ event: 'submit', nodeId: 'back' })).toBe(false)
+  })
+})
+
 describe('runaway nesting', () => {
   it('drops children past the depth cap instead of recursing forever', () => {
     let node: unknown = { name: 'Paragraph' }
@@ -328,5 +352,33 @@ describe('resolveDataBindings ({"$data"} → live/API snapshots)', () => {
   it('an unknown key resolves to undefined (prop disappears)', () => {
     const out = resolveDataBindings(node({ rows: { $data: 'nope.items' } }), {})
     expect(out.props?.rows).toBeUndefined()
+  })
+})
+
+describe('nav badges', () => {
+  it('accepts bound badges and keeps an item whose badge is malformed', () => {
+    const spec = validateUiSpec({
+      ...(page([]) as object),
+      nav: [
+        { id: 'inbox', label: 'Inbox', badge: { $data: 'inbox.unread' } },
+        { id: 'cart', label: 'Cart', badge: { $state: 'cartCount' } },
+        { id: 'odd', label: 'Odd', badge: { $data: 'x', extra: 1 } },
+        { id: 'plain', label: 'Plain', badge: 3 }
+      ]
+    })
+    expect(spec.nav).toEqual([
+      { id: 'inbox', label: 'Inbox', badge: { $data: 'inbox.unread' } },
+      { id: 'cart', label: 'Cart', badge: { $state: 'cartCount' } },
+      { id: 'odd', label: 'Odd' },
+      { id: 'plain', label: 'Plain', badge: 3 }
+    ])
+  })
+
+  it('counts nav-bound sources as referenced (polling keeps them fresh)', () => {
+    const spec = validateUiSpec({
+      ...(page([]) as object),
+      nav: [{ id: 'inbox', label: 'Inbox', badge: { $data: 'inbox.unread' } }]
+    })
+    expect([...referencedDataKeys(spec)]).toEqual(['inbox'])
   })
 })

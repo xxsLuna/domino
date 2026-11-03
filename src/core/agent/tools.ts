@@ -36,7 +36,7 @@ const nodeParam = {
 export const renderUiTool: ToolDef = {
   name: 'render_ui',
   description:
-    'Render or re-render the current app screen. Call this for the initial screen and after every user interaction to show the next screen. Streams progressively.',
+    'Render or re-render the current app screen. Call this for the initial screen and after every user interaction to show the next screen (bind known endpoints with {"$data": "api:GET /path.field"} — the runtime fetches them). A valid render ends the turn. Streams progressively.',
   parameters: {
     type: 'object',
     properties: {
@@ -55,7 +55,10 @@ export const renderUiTool: ToolDef = {
                 id: { type: 'string', description: 'Target page id' },
                 label: { type: 'string' },
                 icon: { type: 'string' },
-                badge: { description: 'Count or short label' }
+                badge: {
+                  description:
+                    'Count or short label, or a live binding {"$data": "<key>.<path>"} / {"$state": "<key>"}'
+                }
               },
               required: ['id', 'label']
             }
@@ -83,7 +86,7 @@ export const renderUiTool: ToolDef = {
 export const callApiTool: ToolDef = {
   name: 'call_api',
   description:
-    'Call the loaded app\'s backend. Only paths in the domino [api] allow list are permitted. Call it before render_ui when the screen needs live data.',
+    'Call the loaded app\'s backend. Only paths in the domino [api] allow list are permitted. Use it for writes (POST/PUT/PATCH/DELETE) and for GET endpoints whose response shape is not known yet — known GET endpoints are bound directly in render_ui instead. Several calls in one response run in parallel.',
   parameters: {
     type: 'object',
     properties: {
@@ -98,7 +101,7 @@ export const callApiTool: ToolDef = {
 export const navigateTool: ToolDef = {
   name: 'navigate',
   description:
-    'Switch to another page defined in the UiSpec, or restore an earlier screen by passing page "history:<index>" from the Screen history list (records browser-style history).',
+    'Switch instantly to a page that already exists (an id from the App map page list) whose content does not depend on what was pressed, or restore an earlier screen by passing page "history:<index>" from the Screen history list. Ends the turn — no render_ui after it. An unknown page id is refused.',
   parameters: {
     type: 'object',
     properties: {

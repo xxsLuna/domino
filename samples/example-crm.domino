@@ -1,6 +1,7 @@
 ; Example CRM — login required, skip login when a token already exists.
 [meta]
 name = ExampleCRM
+description = Lead tracking for a small sales team
 logo = https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png
 home = main
 
@@ -23,7 +24,31 @@ success = #10b981
 warning = #f59e0b
 danger = #ef4444
 
+[pages]
+; id = Name | what the page shows | nav (listed in the primary navigation)
+main = Dashboard | pipeline KPIs per stage and the five newest leads | nav
+leads = Leads | every lead as a table (name, company, stage chip, value) | nav
+lead-detail = Lead | one lead's fields and its stage, opened from a leads row
+lead-new = New lead | form (id new-lead-form) with name, company and value
+settings = Settings | the signed-in profile from GET /me and a sign-out button | nav
+
 [script]
 when not logged_in -> goto login
 when logged_in -> goto main
 on auth_failed -> goto login
+
+[data]
+leads = GET /leads every 60s
+me = GET /me
+
+[actions]
+leads-refresh = refresh leads
+new-lead-form = call POST /leads with form ; refresh leads ; goto leads
+new-lead = goto lead-new
+
+[guide]
+Sales reps sign in and work their pipeline.
+GET /leads returns {leads: [{id, name, company, stage, value, owner}]} — bind it with {"$data": "leads.leads"}, newest first.
+GET /leads/{id} returns one lead; POST /leads {name, company, value} creates one (the runtime runs it for the new-lead-form).
+GET /me returns {name, email, role} for the settings page.
+Stages: new, qualified, proposal, won, lost — show them as colored chips (won = success, lost = danger).

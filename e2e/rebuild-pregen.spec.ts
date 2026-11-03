@@ -29,23 +29,34 @@ test.describe('rebuild and pre-generation resume', () => {
     expect((await stats(request)).llm).toBe(beforeRebuild + 1)
     await expect(page.getByRole('button', { name: '이전 화면 (⌘[' })).toBeDisabled()
 
-    // An edit turn interrupts whatever warm-up started…
+    // An edit turn no longer cancels the warm-up: both run side by side, so
+    // the rebuilt app's pages are built while the edit streams.
+    const beforeEdit = (await stats(request)).llm
     await submitEdit(page, request, 'tweak the dashboard wording')
     const afterEdit = await stats(request)
     expect(afterEdit.edits).toBeGreaterThan(0)
+    expect(afterEdit.llm).toBeGreaterThan(beforeEdit + 1)
+    await waitForQuietStats(request, 4_000, 60_000)
 
-    // …and the interrupted warm-up resumes on its own afterwards.
-    await expect
-      .poll(async () => (await stats(request)).llm, { timeout: 30_000 })
-      .toBeGreaterThan(afterEdit.llm)
-    const warmed = await waitForQuietStats(request)
-
-    // A warm page now switches instantly: no extra model turn.
-    const beforeTap = warmed.llm
-    await page.getByRole('button', { name: /^Inbox/ }).click()
-    await expect(page.locator('.runtime-body h1')).toHaveText('Inbox')
-    await expect
-      .poll(async () => (await stats(request)).llm, { timeout: 3_000 })
-      .toBe(beforeTap)
+    // Every warm page now switches instantly: no model turn for the page. A
+    // settled screen may still start a couple of predicted button builds
+    // (ACTION click …) in the background — those are not turns for the tap.
+    const asked: string[] = []
+    page.on('request', (r) => {
+      if (!r.url().includes('chat%2Fcompletions')) return
+      const body = JSON.parse(r.postData() ?? '{}') as { messages?: Array<{ role: string; content?: string }> }
+      const users = (body.messages ?? []).filter((m) => m.role === 'user')
+      asked.push(String(users.at(-1)?.content ?? ''))
+    })
+    for (const [name, heading] of [
+      [/^Inbox/, 'Inbox'],
+      [/^Deals/, 'Deals'],
+      [/^Reports/, 'Reports']
+    ] as const) {
+      await page.getByRole('button', { name }).click()
+      await expect(page.locator('.runtime-body h1')).toHaveText(heading)
+    }
+    await waitForQuietStats(request)
+    expect(asked.filter((text) => !text.startsWith('ACTION click from Button/'))).toEqual([])
   })
 })

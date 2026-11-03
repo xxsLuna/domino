@@ -19,6 +19,14 @@ export type ProviderId = 'chat_completions' | 'responses' | 'anthropic'
  */
 export const LLM_TIMEOUT_MS = 300_000
 
+/**
+ * Longest silence tolerated on an open request — no response headers, or no
+ * body bytes once streaming. Providers send keep-alives or tokens well within
+ * this even while a reasoning model thinks; a connection quiet this long is
+ * dead, and waiting out the whole hard cap only bills and blocks the turn.
+ */
+export const LLM_IDLE_TIMEOUT_MS = 90_000
+
 export interface LLMConfig {
   provider: ProviderId
   /** BYOK key — never logged, never sent anywhere but the provider itself. */
@@ -35,6 +43,12 @@ export interface LLMConfig {
    * and the engine escalates only its corrective round.
    */
   reasoning?: 'none' | 'low' | 'medium' | 'high'
+  /**
+   * Visible output budget per response (Anthropic's required max_tokens; the
+   * thinking budget is added on top). Unset uses the adapter default, always
+   * clamped to what the model can emit.
+   */
+  maxOutputTokens?: number
 }
 
 /**
@@ -72,6 +86,13 @@ export interface ChatMessage {
   /** tool: which call this result answers, and its original tool name. */
   toolCallId?: string
   toolName?: string
+  /**
+   * assistant: provider-specific content blocks that must be replayed
+   * verbatim (Anthropic thinking / redacted_thinking with their signatures).
+   * Opaque to everything but the adapter that produced them — never edit,
+   * trim or reorder; other adapters ignore them.
+   */
+  providerBlocks?: unknown[]
 }
 
 export interface ToolDef {
@@ -86,15 +107,49 @@ export type StreamDelta =
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_args'; id: string; argsDelta: string }
   | { type: 'tool_call_end'; id: string }
-  | { type: 'done' }
+  /**
+   * The response ended. `truncated` is true when the provider stopped on its
+   * output-token limit (Anthropic stop_reason max_tokens, OpenAI
+   * finish_reason length, Responses incomplete/max_output_tokens) — any tool
+   * call still open at that point is cut off, not finished.
+   */
+  | { type: 'done'; truncated?: boolean }
   | { type: 'error'; message: string }
-  /** Terminal token accounting — only providers that report it emit this. */
-  | { type: 'usage'; usage: { prompt?: number; completion?: number; total?: number } }
+  /**
+   * Token accounting for ONE HTTP response — each adapter call is its own
+   * response, and the values are that response's totals so far (cumulative
+   * within it, never across calls). `prompt` includes cached input tokens;
+   * `cached` is the part of `prompt` served from the provider's prompt cache.
+   */
+  | { type: 'usage'; usage: TokenUsage }
+  /**
+   * Opaque blocks the assistant message must carry for a faithful replay
+   * (see ChatMessage.providerBlocks) — the full list for this response,
+   * emitted once before `done`.
+   */
+  | { type: 'provider_blocks'; blocks: unknown[] }
+
+export interface TokenUsage {
+  prompt?: number
+  completion?: number
+  total?: number
+  cached?: number
+}
 
 export interface ChatRequest {
+  /**
+   * The FIRST system message is the stable, cacheable prefix (rules, registry,
+   * app description — identical across turns of one session); any later
+   * system messages are volatile context sent after it, outside the cache
+   * breakpoint.
+   */
   messages: ChatMessage[]
   tools?: ToolDef[]
   temperature?: number
+  /** Caller cancellation (superseded turn, cancelled background build). */
+  signal?: AbortSignal
+  /** Stable per-domino prompt-cache routing key (sent where the provider takes one). */
+  cacheKey?: string
 }
 
 export interface LLMAdapter {
@@ -104,7 +159,14 @@ export interface LLMAdapter {
 
 export const PROVIDER_META: Record<
   ProviderId,
-  { label: string; endpoint: string; defaultBaseUrl: string; defaultModel: string; keyHint: string; note: string }
+  {
+    label: string
+    endpoint: string
+    defaultBaseUrl: string
+    defaultModel: string
+    keyHint: string
+    note: string
+  }
 > = {
   chat_completions: {
     label: 'Chat Completions (OpenAI 호환)',

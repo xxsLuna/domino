@@ -51,7 +51,11 @@ export function streamView(current: UiSpec | null, preview: UiSpec): StreamView 
 
   if (!prev) {
     const hidden = last && !last.grid && next.layout.some((n) => n.grid) ? last : undefined
-    return { spec: preview, pending: hidden ? undefined : last, hidden }
+    // `state` may stream after the nodes that bind it: carry the current values
+    // (or an empty map) so bindings resolve to a value or to nothing — never
+    // to a raw {"$state"} object an input would then keep as its text.
+    const state = preview.state ?? current?.state ?? {}
+    return { spec: { ...preview, state }, pending: hidden ? undefined : last, hidden }
   }
 
   // In-place update: keep every current node, replace those whose new version
@@ -77,5 +81,68 @@ export function streamView(current: UiSpec | null, preview: UiSpec): StreamView 
     },
     pending: lastIsNew && !hidden ? last : undefined,
     hidden
+  }
+}
+
+/* ------------------------------ page skeletons ------------------------------ */
+
+/** Text props a skeleton keeps on the nodes it renders for real (see PageSkeleton). */
+const SKELETON_TEXT_PROPS: Record<string, readonly string[]> = {
+  PageHeader: ['title', 'icon']
+}
+
+/**
+ * A known page reduced to its shape — the input of PageSkeleton while the
+ * real page streams in. Top-level nodes keep their name, id and grid (so each
+ * placeholder sits where the real cell will land, sized by its component);
+ * props and children are dropped, except a header's plain-text title and icon.
+ * Bound or non-text props never survive, so a skeleton shows no stale data.
+ */
+export function skeletonFromPage(page: PageSpec): PageSpec {
+  const layout = page.layout.map((n): CardNode => {
+    const node: CardNode = { name: n.name }
+    if (n.id !== undefined) node.id = n.id
+    if (n.grid) node.grid = n.grid
+    const keep = SKELETON_TEXT_PROPS[n.name]
+    if (keep && n.props) {
+      const props = Object.fromEntries(
+        keep.flatMap((k) => {
+          const v = n.props![k]
+          return typeof v === 'string' || typeof v === 'number' ? [[k, v]] : []
+        })
+      )
+      if (Object.keys(props).length) node.props = props
+    }
+    return node
+  })
+  return { id: page.id, name: page.name, layout }
+}
+
+/**
+ * The generic shape of an app screen — a titled header, a row of four tiles
+ * and a table — for a destination whose layout is not known yet.
+ */
+export function fallbackSkeletonPage(id: string, title: string): PageSpec {
+  const tile = (i: number): CardNode => ({
+    name: 'StatCard',
+    id: `skeleton-tile-${i}`,
+    grid: { x: i * 3, y: 1, w: 3, h: 1 }
+  })
+  return {
+    id,
+    name: title || id,
+    layout: [
+      {
+        name: 'PageHeader',
+        id: 'skeleton-header',
+        grid: { x: 0, y: 0, w: 12, h: 1 },
+        ...(title ? { props: { title } } : {})
+      },
+      tile(0),
+      tile(1),
+      tile(2),
+      tile(3),
+      { name: 'Table', id: 'skeleton-table', grid: { x: 0, y: 2, w: 12, h: 4 } }
+    ]
   }
 }
