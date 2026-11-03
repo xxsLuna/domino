@@ -42,9 +42,16 @@ export interface NavItem {
   label: string
   /** Icon name from the runtime icon set (see prompt) or an emoji. */
   icon?: string
-  /** Small counter/label shown next to the item (e.g. unread count). */
-  badge?: string | number
+  /**
+   * Small counter/label shown next to the item (e.g. unread count). May be a
+   * binding — `{"$data": "<key>.<path>"}` or `{"$state": "<key>"}` — which
+   * the runtime resolves on every render (resolveNavItems in core/ui/nav).
+   */
+  badge?: string | number | NavBadgeBinding
 }
+
+/** A nav badge bound to live data or to the screen's client-side state. */
+export type NavBadgeBinding = { $data: string } | { $state: string }
 
 export interface UiSpec {
   version: 1
@@ -85,6 +92,56 @@ export function isSignOutEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolea
  */
 export function isCancelEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
   return e.event === 'click' && /(?:^|[-_.])cancel(?:[-_.](?:btn|button|\d+))?$/i.test(e.nodeId)
+}
+
+/**
+ * Words that turn "<word>-back" into an action of its own, not a Back button:
+ * "send-back" returns a request, "roll-back" reverts a deploy, "cash-back",
+ * "call-back", "pay-back", "write-back"… Treating those as Back would skip
+ * their write and just show the previous page.
+ */
+const BACK_VERBS = new Set([
+  'send',
+  'roll',
+  'call',
+  'pay',
+  'cash',
+  'give',
+  'write',
+  'push',
+  'play',
+  'kick',
+  'charge',
+  'feed',
+  'fall',
+  'set',
+  'hold',
+  'bring',
+  'take',
+  'put',
+  'get',
+  'come',
+  'turn',
+  'claw',
+  'buy',
+  'draw',
+  'post'
+])
+
+/**
+ * Back buttons ("back", "go-back", "detail-back-btn"): the same id grammar as
+ * cancel — an optional scope prefix naming WHERE ("detail", "form"), never a
+ * verb naming WHAT ("send-back", "roll-back-btn"). The runtime steps back in
+ * its own history instead of asking the model to redraw the previous page.
+ * `feedback` / `back-order` stay plain.
+ */
+export function isBackEvent(e: Pick<ActionEvent, 'event' | 'nodeId'>): boolean {
+  if (e.event !== 'click') return false
+  const m = /(?:^|[-_.])(?:go-?)?back(?:[-_.](?:btn|button|\d+))?$/i.exec(e.nodeId)
+  if (!m) return false
+  const prefix = e.nodeId.slice(0, m.index)
+  const before = prefix.split(/[-_.]/).filter(Boolean).pop()?.toLowerCase()
+  return before === undefined || !BACK_VERBS.has(before)
 }
 
 /**
@@ -135,14 +192,34 @@ const navItemSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   icon: z.string().optional(),
-  badge: z.union([z.string(), z.number()]).optional()
+  badge: z
+    .union([
+      z.string(),
+      z.number(),
+      z.object({ $data: z.string().min(1) }).strict(),
+      z.object({ $state: z.string().min(1) }).strict()
+    ])
+    .optional()
 })
 
-/** Nav items are decorative: drop malformed/half-streamed ones instead of rejecting the spec. */
+/**
+ * Nav items are decorative: drop malformed/half-streamed ones instead of
+ * rejecting the spec. An item whose only problem is its badge keeps its tab
+ * (badge dropped) — a bad counter must never delete a section of the app.
+ */
 const navSchema = z.array(z.unknown()).transform((items) =>
   items.flatMap((item) => {
     const parsed = navItemSchema.safeParse(item)
-    return parsed.success ? [parsed.data] : []
+    if (parsed.success) return [parsed.data]
+    if (item && typeof item === 'object' && 'badge' in item) {
+      const retry = navItemSchema.safeParse({ ...item, badge: undefined })
+      if (retry.success) {
+        const rest = { ...retry.data }
+        delete rest.badge
+        return [rest]
+      }
+    }
+    return []
   })
 )
 
@@ -498,6 +575,11 @@ export function referencedDataKeys(spec: UiSpec): Set<string> {
       }
       walk(node.props)
     }
+  }
+  // Bound nav badges read [data] too: polling keeps them fresh as well.
+  for (const item of spec.nav ?? []) {
+    const path = dataBinding(item.badge)
+    if (path !== null) keys.add(path.split('.')[0])
   }
   return keys
 }

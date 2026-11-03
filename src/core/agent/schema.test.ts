@@ -9,6 +9,7 @@ import {
   hashSchema,
   hasSchemaChange,
   loadSchemaBook,
+  mergeSchemaFields,
   rememberSchema,
   saveSchemaBook,
   schemasKey,
@@ -127,6 +128,28 @@ describe('diffApiSchema', () => {
     const fields = { id: 'number', rows: 'array<object>' }
     const diff = diffApiSchema(fields, { ...fields })
     expect(hasSchemaChange(diff)).toBe(false)
+  })
+})
+
+describe('vague shapes', () => {
+  const FULL = { rows: 'array<object>', 'rows[].id': 'number', 'rows[].name': 'string', total: 'number' }
+
+  it('an empty list or a null is not a change, nor are the sub-keys under it', () => {
+    expect(hasSchemaChange(diffApiSchema(FULL, { rows: 'array', total: 'number' }))).toBe(false)
+    expect(hasSchemaChange(diffApiSchema({ rows: 'array', total: 'number' }, FULL))).toBe(false)
+    expect(hasSchemaChange(diffApiSchema({ note: 'string' }, { note: 'null' }))).toBe(false)
+  })
+
+  it('still reports a real change next to a vague one', () => {
+    const diff = diffApiSchema(FULL, { rows: 'array', total: 'string' })
+    expect(diff.changed).toEqual(['total'])
+    expect(diff.removed).toEqual([])
+  })
+
+  it('remembering keeps what an earlier answer taught across an empty one', () => {
+    expect(mergeSchemaFields(FULL, { rows: 'array', total: 'number' })).toEqual(FULL)
+    const book = rememberSchema(rememberSchema({}, 'GET /x', FULL), 'GET /x', { rows: 'array', total: 'number' })
+    expect(book['GET /x'].fields).toEqual(FULL)
   })
 })
 

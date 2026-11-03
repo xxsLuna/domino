@@ -10,10 +10,11 @@ import {
   shell
 } from 'electron'
 import { join } from 'node:path'
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import type { NetEvent, NetRequest } from '@core/net'
-import { checkForUpdate, installUpdate, RELEASES_URL } from './updater'
+import { checkForUpdate, installUpdate, RELEASES_URL, setBeforeExit } from './updater'
+import { KvStore } from './kvStore'
 
 /** What people see: dock/taskbar, installers, the macOS app menu. */
 const DISPLAY_NAME = 'Domino UI'
@@ -114,6 +115,22 @@ function createWindow(): void {
 
   win.on('ready-to-show', () => win.show())
 
+  // Closing the window tears the renderer down after its first IPC: its
+  // pagehide flush (one awaited write after another) would be cut off. Hold
+  // the close once, let the renderer write and acknowledge, flush the store,
+  // then close for real.
+  let closeFlushed = false
+  win.on('close', (event) => {
+    // A quit already flushed every renderer (before-quit runs first); holding
+    // the close then would cancel the quit.
+    if (closeFlushed || quitStarted) return
+    event.preventDefault()
+    closeFlushed = true
+    void flushEverything([win]).finally(() => {
+      if (!win.isDestroyed()) win.close()
+    })
+  })
+
   // A top-frame navigation away from the app origin would hand the privileged
   // bridge to whatever loads next (window.open is covered below, but plain
   // links, window.location and server redirects are not).
@@ -165,6 +182,49 @@ async function registerDominoProtocol(): Promise<void> {
 }
 
 let pendingOpenFile: string | null = null
+/** The app's key/value store (created once the app is ready). */
+let kvStore: KvStore | null = null
+/** Quit has begun: a late renderer write goes straight to disk, not on a timer. */
+let quitStarted = false
+
+/** How long a renderer gets to write its debounced state before quit goes on. */
+const RENDERER_FLUSH_TIMEOUT_MS = 1_500
+
+/**
+ * Ask one window's renderer to write everything it still holds (views,
+ * history, page blobs, snapshots) and wait for its acknowledgement — at most
+ * RENDERER_FLUSH_TIMEOUT_MS, so a hung renderer can never block quitting.
+ */
+function flushRenderer(win: BrowserWindow): Promise<void> {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) return Promise.resolve()
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return new Promise<void>((resolve) => {
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      ipcMain.removeListener('storage:flush-done', onDone)
+      resolve()
+    }
+    const onDone = (e: Electron.IpcMainEvent, ackId: unknown): void => {
+      if (ackId === id && e.sender === win.webContents) finish()
+    }
+    const timer = setTimeout(finish, RENDERER_FLUSH_TIMEOUT_MS)
+    ipcMain.on('storage:flush-done', onDone)
+    try {
+      win.webContents.send('storage:flush-request', id)
+    } catch {
+      finish()
+    }
+  })
+}
+
+/** Every open renderer writes its state, then the store writes to disk. */
+async function flushEverything(windows: BrowserWindow[]): Promise<void> {
+  await Promise.all(windows.map((w) => flushRenderer(w)))
+  await kvStore?.flush().catch(() => undefined)
+}
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -366,126 +426,103 @@ if (!gotLock) {
       if (trustedSender(event.sender)) void shell.openExternal(RELEASES_URL)
     })
 
-    /* ---------------- secure KV store (BYOK keys, tokens) ---------------- */
-    const securePath = (): string => join(app.getPath('userData'), 'secure-store.json')
+    /* ------------- key/value store (BYOK keys, tokens, app data) ------------- */
+    // Secrets stay encrypted in secure-store.json; bulk per-domino data lives
+    // in one small file per key (see kvStore.ts). Everything is served from
+    // memory, writes are debounced and flushed before quit.
+    const kv = new KvStore({
+      dir: app.getPath('userData'),
+      cipher: {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (value) => safeStorage.encryptString(value).toString('base64'),
+        decrypt: (stored) => safeStorage.decryptString(Buffer.from(stored, 'base64'))
+      },
+      // A failed write reaches every window: the renderer surfaces it.
+      onError: (key, err) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.webContents.isDestroyed()) win.webContents.send('secure:error', key, err.message)
+        }
+      },
+      log: (message) => console.warn(`[kv] ${message}`)
+    })
+    kvStore = kv
+    // An update that exits the process directly (app.exit) flushes first.
+    setBeforeExit(() => kv.flush())
 
-    type StoreRead = { ok: true; data: Record<string, string> } | { ok: false; error: string }
+    ipcMain.handle('secure:get', (e, key: unknown) => {
+      requireTrusted(e.sender)
+      return typeof key === 'string' ? kv.get(key) : null
+    })
 
-    async function readSecureStore(): Promise<StoreRead> {
-      let raw: string
-      try {
-        raw = await readFile(securePath(), 'utf-8')
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, data: {} }
-        throw err
+    ipcMain.handle('secure:getMany', (e, keys: unknown) => {
+      requireTrusted(e.sender)
+      if (!Array.isArray(keys) || !keys.every((k) => typeof k === 'string')) {
+        throw new Error('invalid secure store keys')
       }
-      try {
-        const parsed = JSON.parse(raw) as unknown
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return { ok: true, data: parsed as Record<string, string> }
-        }
-      } catch {
-        /* fall through to the corrupt verdict */
+      return kv.getMany(keys as string[])
+    })
+
+    ipcMain.handle('secure:set', (e, key: unknown, value: unknown) => {
+      requireTrusted(e.sender)
+      if (typeof key !== 'string' || typeof value !== 'string') {
+        throw new Error('invalid secure store arguments')
       }
-      return { ok: false, error: 'secure store is corrupt' }
-    }
+      // Once quitting, the debounce timer (unref'd) would not outlive the
+      // process: write through.
+      if (quitStarted) return kv.set(key, value).then(() => kv.flush())
+      return kv.set(key, value)
+    })
 
-    async function writeSecureStore(data: Record<string, string>): Promise<void> {
-      const dest = securePath()
-      // Write to a temp file first so a crash can never leave a half-written
-      // store behind; mode 0600 keeps BYOK keys readable by this user only.
-      const tmp = `${dest}.${process.pid}.tmp`
-      await writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 })
-      await rename(tmp, dest)
-    }
+    ipcMain.handle('secure:remove', (e, key: unknown) => {
+      requireTrusted(e.sender)
+      if (typeof key !== 'string') throw new Error('invalid secure store key')
+      if (quitStarted) return kv.remove(key).then(() => kv.flush())
+      return kv.remove(key)
+    })
 
-    // Reads and read-modify-writes run one at a time so concurrent IPC calls
-    // can't lose each other's updates.
-    let storeQueue: Promise<unknown> = Promise.resolve()
-    function queueStoreOp<T>(op: () => Promise<T>): Promise<T> {
-      const run = storeQueue.then(op, op)
-      storeQueue = run.catch(() => {})
-      return run
-    }
+    // Every [key, value] — the storage-management settings use it to compute
+    // per-domino sizes.
+    ipcMain.handle('secure:entries', (e) => {
+      requireTrusted(e.sender)
+      return kv.entries()
+    })
 
-    /** Read the store for a mutating op; never write over a corrupt file. */
-    async function readStoreForWrite(): Promise<Record<string, string>> {
-      const read = await readSecureStore()
-      if (!read.ok) throw new Error('secure store is corrupt — refusing to overwrite it')
-      return read.data
-    }
-
-    ipcMain.handle('secure:get', (_e, key: unknown) =>
-      queueStoreOp(async () => {
-        if (typeof key !== 'string') return null
-        const read = await readSecureStore()
-        if (!read.ok) return null
-        const stored = read.data[key]
-        if (stored === undefined) return null
-        if (stored.startsWith('plain:')) return stored.slice(6)
-        if (!safeStorage.isEncryptionAvailable()) return stored
-        try {
-          return safeStorage.decryptString(Buffer.from(stored, 'base64'))
-        } catch {
-          return null
-        }
-      })
-    )
-
-    ipcMain.handle('secure:set', (_e, key: unknown, value: unknown) =>
-      queueStoreOp(async () => {
-        if (typeof key !== 'string' || typeof value !== 'string') {
-          throw new Error('invalid secure store arguments')
-        }
-        const all = await readStoreForWrite()
-        if (safeStorage.isEncryptionAvailable()) {
-          all[key] = safeStorage.encryptString(value).toString('base64')
-        } else {
-          all[key] = `plain:${value}`
-        }
-        await writeSecureStore(all)
-      })
-    )
-
-    ipcMain.handle('secure:remove', (_e, key: unknown) =>
-      queueStoreOp(async () => {
-        if (typeof key !== 'string') throw new Error('invalid secure store key')
-        const all = await readStoreForWrite()
-        delete all[key]
-        await writeSecureStore(all)
-      })
-    )
-
-    // Every [key, decrypted value] — the storage-management settings use it
-    // to compute per-domino sizes. A corrupt store enumerates as empty rather
-    // than taking the settings dialog down.
-    ipcMain.handle('secure:entries', () =>
-      queueStoreOp(async () => {
-        const read = await readSecureStore()
-        if (!read.ok) return [] as Array<[string, string]>
-        const out: Array<[string, string]> = []
-        for (const [key, stored] of Object.entries(read.data)) {
-          if (stored.startsWith('plain:')) {
-            out.push([key, stored.slice(6)])
-            continue
-          }
-          if (!safeStorage.isEncryptionAvailable()) {
-            out.push([key, stored])
-            continue
-          }
-          try {
-            out.push([key, safeStorage.decryptString(Buffer.from(stored, 'base64'))])
-          } catch {
-            /* unreadable entry — skip it, sizes stay approximate */
-          }
-        }
-        return out
-      })
-    )
+    // The renderer flushes its own debounced writes on pagehide; this makes
+    // sure they reach disk before the process goes.
+    ipcMain.handle('secure:flush', (e) => {
+      requireTrusted(e.sender)
+      return kv.flush()
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
+  })
+
+  // Debounced storage writes must land before the process exits. before-quit
+  // fires BEFORE the windows close (Cmd+Q, menu Quit, an updater's
+  // app.quit): every renderer first writes its own debounced state and
+  // acknowledges, then the store goes to disk, then quit resumes.
+  let quitFlushed = false
+  app.on('before-quit', (event) => {
+    quitStarted = true
+    if (quitFlushed) return
+    event.preventDefault()
+    quitFlushed = true
+    void flushEverything(BrowserWindow.getAllWindows()).finally(() => app.quit())
+  })
+
+  // Anything written after that flush (a late renderer set) still lands.
+  let willQuitFlushing = false
+  app.on('will-quit', (event) => {
+    const kv = kvStore
+    if (willQuitFlushing || !kv?.dirty) return
+    event.preventDefault()
+    willQuitFlushing = true
+    void kv
+      .flush()
+      .catch(() => undefined)
+      .finally(() => app.quit())
   })
 
   app.on('window-all-closed', () => {

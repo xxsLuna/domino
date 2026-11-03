@@ -1,8 +1,15 @@
 import { Component, memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Skeleton } from '@heroui/react'
-import { CellContext, LayoutContext, RuntimeContext, type Runtime } from './context'
+import {
+  CellContext,
+  LayoutContext,
+  RuntimeContext,
+  StateKeysContext,
+  type Runtime
+} from './context'
 import { breakpointFor, placeNodes, type Breakpoint, type Placement } from './layout'
 import { getComponent } from './registry'
+import { fallbackSkeletonPage, skeletonFromPage } from './streaming'
 import {
   resolveDataBindings,
   resolveStateBindings,
@@ -85,46 +92,139 @@ export function CardGrid({
   )
   const layout = useMemo(() => ({ bp, density }), [bp, density])
   const nodes = useMemo(() => {
-    let base = hidden ? page.layout.filter((n) => n !== hidden) : page.layout
-    // Runtime-owned [data] sources substitute {"$data": key.path} props; a
-    // refresh just changes the snapshot object and every bound cell re-renders.
-    if (data) base = base.map((n) => resolveDataBindings(n, data))
-    // Live client-side state (spec.state) substitutes {"$state": key} props;
-    // stateless screens skip this entirely (identity fast-path inside).
-    if (!spec.state) return base
-    return base.map((n) => resolveStateBindings(n, spec.state!))
+    const base = hidden ? page.layout.filter((n) => n !== hidden) : page.layout
+    // Bindings always resolve — against empty maps when there is no snapshot
+    // or no state yet (a preview streams `state` after the nodes that bind
+    // it), so a component never receives a raw {"$data"} / {"$state"} object;
+    // a missing value is just undefined. Unbound nodes keep their identity
+    // (fast path inside), so memoized cells and signatures survive.
+    // Runtime-owned [data] sources first: a refresh just swaps the snapshot.
+    const sources = data ?? EMPTY
+    const state = spec.state ?? EMPTY
+    return base.map((n) => resolveStateBindings(resolveDataBindings(n, sources), state))
   }, [page.layout, spec.state, hidden, data])
   const placed = useMemo(() => placeNodes(nodes, bp), [nodes, bp])
+  // Keyed by the key list, not the state object: a local write changes values,
+  // not keys, and must not re-render every field that reads the set.
+  const keyList = JSON.stringify(Object.keys(spec.state ?? EMPTY))
+  const stateKeys = useMemo(() => new Set<string>(JSON.parse(keyList) as string[]), [keyList])
 
   return (
     <RuntimeContext.Provider value={runtime}>
+      <StateKeysContext.Provider value={stateKeys}>
+        <LayoutContext.Provider value={layout}>
+          <div
+            ref={gridRef}
+            className="card-grid"
+            data-bp={bp}
+            data-chrome={chrome}
+            data-streaming={streaming ? 'true' : undefined}
+          >
+            {placed.map(({ node, index, placement }) => {
+              const key = node.id ?? `${node.name}-${index}`
+              return (
+                <GridCell
+                  key={key}
+                  node={node}
+                  signature={node === pending ? `pending:${node.name}` : signatureOf(node)}
+                  placement={placement}
+                  chrome={chrome}
+                  pending={node === pending}
+                  changed={changed?.has(key)}
+                />
+              )
+            })}
+          </div>
+        </LayoutContext.Provider>
+      </StateKeysContext.Provider>
+    </RuntimeContext.Provider>
+  )
+}
+
+const EMPTY: Record<string, unknown> = Object.freeze({}) as Record<string, unknown>
+
+/** Events from a skeleton go nowhere: it is a placeholder, not a page. */
+const INERT_RUNTIME: Runtime = { dispatch: () => {} }
+
+interface PageSkeletonProps {
+  /**
+   * The destination page when its layout is known (an older or stale copy,
+   * a pregen plan): its cells become placeholders in their real positions.
+   * Without a layout a generic header + tiles + table shape stands in.
+   */
+  page?: PageSpec | null
+  /** Destination name shown in the header (defaults to the page's own name). */
+  title?: string
+  density?: 'comfortable' | 'compact'
+  chrome?: 'app' | 'inspect'
+  /** Accessible name of the busy region (e.g. "Composing…"). */
+  label?: string
+}
+
+/**
+ * What the runtime shows the moment the user heads to a page that is not
+ * built yet — before the first render_ui delta arrives — instead of leaving
+ * the old page up (and clickable) for the whole first-token wait. The page
+ * title is real text; every other cell is a placeholder in the slot the page
+ * will use. It is inert: nothing in it can dispatch an event.
+ */
+export function PageSkeleton({
+  page,
+  title,
+  density = 'comfortable',
+  chrome = 'app',
+  label
+}: PageSkeletonProps): React.JSX.Element {
+  const gridRef = useRef<HTMLDivElement>(null)
+  const bp = useContainerBreakpoint(gridRef)
+  const layout = useMemo(() => ({ bp, density }), [bp, density])
+  const skeleton = useMemo(() => {
+    const known = page && page.layout.length ? skeletonFromPage(page) : null
+    if (!known) return fallbackSkeletonPage(page?.id ?? 'pending', title || page?.name || '')
+    // The destination's name wins over a stale copy's header (a detail page
+    // last built for another record would otherwise show that record's name).
+    if (!title) return known
+    return {
+      ...known,
+      layout: known.layout.map((n) =>
+        n.name === 'PageHeader' ? { ...n, props: { ...n.props, title } } : n
+      )
+    }
+  }, [page, title])
+  const placed = useMemo(() => placeNodes(skeleton.layout, bp), [skeleton, bp])
+
+  return (
+    <RuntimeContext.Provider value={INERT_RUNTIME}>
       <LayoutContext.Provider value={layout}>
         <div
           ref={gridRef}
           className="card-grid"
           data-bp={bp}
           data-chrome={chrome}
-          data-streaming={streaming ? 'true' : undefined}
+          data-skeleton="true"
+          aria-busy="true"
+          aria-label={label}
+          inert
         >
-          {placed.map(({ node, index, placement }) => {
-            const key = node.id ?? `${node.name}-${index}`
-            return (
-              <GridCell
-                key={key}
-                node={node}
-                signature={node === pending ? `pending:${node.name}` : signatureOf(node)}
-                placement={placement}
-                chrome={chrome}
-                pending={node === pending}
-                changed={changed?.has(key)}
-              />
-            )
-          })}
+          {placed.map(({ node, index, placement }) => (
+            <GridCell
+              key={node.id ?? `${node.name}-${index}`}
+              node={node}
+              signature={`skeleton:${signatureOf(node)}`}
+              placement={placement}
+              chrome={chrome}
+              // Headers render for real (title only); the rest hold their slot.
+              pending={!(SKELETON_REAL.has(node.name) && node.props?.title)}
+            />
+          ))}
         </div>
       </LayoutContext.Provider>
     </RuntimeContext.Provider>
   )
 }
+
+/** Skeleton nodes rendered as themselves (when titled): they name the destination. */
+const SKELETON_REAL = new Set(['PageHeader'])
 
 /** Track the grid's own width and map it to a layout breakpoint. */
 function useContainerBreakpoint(ref: React.RefObject<HTMLDivElement | null>): Breakpoint {

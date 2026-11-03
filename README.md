@@ -12,7 +12,7 @@ boilerplate — the definition describes the app, and the agent renders it in re
 
 [![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
-[![Tests](https://img.shields.io/badge/tests-116%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/badge/tests-818%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#download)
 
 macOS · Windows · Linux · Android (web build)
@@ -57,8 +57,9 @@ agent, which renders the next screen in real time.
 
 ## Features
 
-- **`.domino` definitions** — INI sections (`[meta]`, `[auth]`, `[api]`, `[ui]`, `[script]`)
-  plus a boolean condition DSL (`when logged_in -> goto main`). Parse errors come with line numbers.
+- **`.domino` definitions** — INI sections (`[meta]`, `[auth]`, `[api]`, `[ui]`, `[pages]`,
+  `[script]`, `[data]`, `[actions]`, `[guide]`) plus a boolean condition DSL
+  (`when logged_in -> goto main`). Parse errors and warnings come with line numbers.
 - **Real-time LLM UI generation** — the agent streams a validated UI spec and renders it
   progressively while it is still being generated; each card mounts once, as soon as it is complete.
 - **HeroUI component registry** — 36 named components built on [HeroUI v3](https://heroui.com)
@@ -205,43 +206,94 @@ success = #10b981       ; per-step colors (Tailwind-style palette)
 warning = #f59e0b
 danger = #ef4444
 
+[pages]
+; The page plan: id = Name | what the page shows | nav (listed in the main navigation).
+; These ids are the ones every screen, nav item and goto uses.
+main = Dashboard | pipeline KPIs and the newest leads | nav
+leads = Leads | every lead as a table, newest first | nav
+lead-new = New lead | form (id new-lead-form) to add a lead
+lead-detail = Lead | one lead, opened from a table row
+
 [script]
 when not logged_in -> goto login
 when logged_in -> goto main
 on auth_failed -> goto login
 
 [data]
-; Runtime-owned live sources: fetched before turns, bound into screens via
+; Runtime-owned READ-ONLY sources: fetched before turns, bound into screens via
 ; {"$data": "key.path"} props, refreshed by actions/polls WITHOUT the model.
+leads = GET /leads every 60s      ; inline comments need a space before ; or #
 ; FEED <url> is RSS/Atom the runtime fetches and parses itself (no [api] call);
 ; FEED @subscriptions is the user's own runtime-managed subscription list.
-feed = FEED @subscriptions every 60s
+; feed = FEED @subscriptions every 60s
 
 [actions]
-; Widget behaviors the runtime executes itself (set / refresh / goto, ";-joined).
-add-feed-form = set rssUrl = form.url ; refresh feed ; goto feed
-feed-refresh = refresh feed
+; Widget behaviors the runtime executes itself (steps joined by ";", comments start with #).
+leads-refresh = refresh leads
+new-lead = goto lead-new
+new-lead-form = call POST /leads with form ; refresh leads ; goto leads   # create, then back to the list
 
 [screens]
 ; Written by "export with the app": every built page + the action graph, so
 ; the file runs as-is on any device with zero LLM calls.
-; spec = {"version":1,"page":"feed", ...}
+; spec = {"version":1,"page":"main", ...}
 
 [guide]
 ; Free text for the UI agent — kept verbatim. Describe the service, each API
 ; (method, path, request/response fields, what to show) and the screens you want.
 Sales reps log in and see their pipeline.
-GET /leads returns [{id, name, company, stage, value}] — show it as a table, newest first.
-POST /leads {name, company, value} creates a lead; afterwards return to the list.
+GET /leads returns [{id, name, company, stage, value}] — bind the leads table to {"$data": "leads"}.
+GET /leads/{id} returns one lead for lead-detail. The lead-new page is a Form with id new-lead-form.
 ```
 
 `[guide]` is passed to the agent as the app's brief (alongside `[meta] description`), so the
 screens, data and wording follow it; the allow list and runtime-owned login still apply.
 
-The `[script]` condition DSL supports identifiers (`logged_in`), `not`, comparisons
-(`==`, `!=`, `<`, `>`), `and` / `or`, parentheses, and dotted paths (`param.plan == "pro"`).
-Commands are `goto <page>`, `render <page>`, and `call <endpoint>`. `on <event>` rules are
-evaluated before `when` rules.
+**`[pages]`** — the app's page plan, one line per screen: `id = Name | purpose | nav`. The
+purpose and the `nav` flag are optional (`settings = Settings | nav` works too). Declared pages
+are built in the background before anyone opens them, the model must use exactly these ids,
+and `[meta] home`, `[script]` routes and `[actions]` gotos are checked against the plan (a
+mismatch is reported as a warning with its line number). `login` is runtime-owned and needs no
+entry. Files without `[pages]` still work; the model then names pages itself.
+
+**`[data]`** — `key = GET /path` or `key = FEED <url>`, optionally `every Ns` (5-600). Only
+`GET` and `FEED` are accepted: sources are re-fetched on every open, before turns and on polls,
+so a `POST`/`PUT`/`PATCH`/`DELETE` source is refused with a warning — writes belong in an
+`[actions]` `call` step. `{stateKey}` in a path fills from page state (the source loads once
+that key is set). Keys keep their case and are matched exactly by `refresh` steps and
+`{"$data": …}` bindings (a `refresh` that differs only in case is fixed up and warned about).
+Every non-FEED path must be covered by `[api] allow`, or it is flagged at load time.
+
+**`[actions]`** — `<widget id> = step ; step ; …`, keyed by the id of the Button, or of the Form
+whose submit triggers it. Steps:
+
+| Step | Effect |
+|------|--------|
+| `set <stateKey> = form.<field>` | copy a submitted field into page state |
+| `refresh <dataKey>` | re-fetch a `[data]` source (bound props update in place) |
+| `goto <page-id>` | switch to that page; a page not built yet is generated under exactly that id |
+| `call <METHOD> /path [with form]` | one request under `[api] allow` (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`); `with form` sends the submitted form as the body. The path may use `{form.field}`, `{row.field}` (the selected Table/List row) and `{stateKey}`, each URI-encoded |
+
+`new-lead-form = call POST /leads with form ; refresh leads ; goto leads` creates a lead, reloads
+the list and returns to it without a single model turn.
+
+The `[script]` condition DSL supports identifiers (`logged_in`, `error`, `event`), `not`,
+comparisons (`==`, `!=`, `<`, `>`), `and` / `or`, parentheses, and dotted paths
+(`param.plan == "pro"`). Commands are `goto <page>`, `render <page>`, and `call [METHOD] <path>`
+(GET by default). `on <event>` rules are evaluated before `when` rules; the runtime fires
+`login`, `logout`, `auth_failed` and its own events (such as `api_error`). After an auth event
+every `when` rule applies; after any other event only the `when` rules that event newly made
+true do (so `when error == "billing" -> goto upgrade` routes, `when logged_in -> goto main`
+doesn't yank the user home on every error). `goto login` is ignored in an app without `[auth]`.
+`error` is the failed request's own code (`{"error": "billing"}`) or its status (`"404"`); the
+sign-in response's non-secret fields (`plan`, `role`, `user.role`…) are variables too, kept with
+the token. A 401 on a request that carried the token signs the user out (token cleared) and fires
+`auth_failed`. A control whose id names an `on <id>` rule fires that event when pressed
+(`on upgrade-cta -> goto upgrade`).
+
+**Diagnostics** — anything the parser drops or doubts while the file still opens (a bad rule, a
+refused `[data]` method, an unknown key, a goto to an undeclared page, a path outside the allow
+list) is reported as a warning with its line number instead of failing silently.
 
 More samples: [`samples/`](samples/) — login required, no-auth, and conditional routing.
 

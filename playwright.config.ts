@@ -21,7 +21,9 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'PORT=8790 node samples/mock-server.mjs',
+      // `env` instead of a `PORT=… node` prefix: that form fails under Windows cmd.
+      command: 'node samples/mock-server.mjs',
+      env: { PORT: '8790' },
       url: 'http://127.0.0.1:8790/stats',
       reuseExistingServer: !process.env.CI,
       timeout: 30_000

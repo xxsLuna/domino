@@ -2,6 +2,8 @@ import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core'
 import { SecureStorage } from '@aparajita/capacitor-secure-storage'
 import { bridgedFetch, setHttpFetch, type NetTransport } from '@core/net'
 import type { KeyValueStorage } from '@core/session/prefs'
+import { isQuotaError, type BulkKeyValueStorage } from '@core/session/kv'
+import { withQuotaRelief, type StorageErrorEvent } from '@core/session/storageAudit'
 
 /**
  * Platform bridge: the renderer talks to Electron through window.dominoBridge
@@ -14,6 +16,10 @@ interface SecureStore {
   set(key: string, value: string): Promise<void>
   remove(key: string): Promise<void>
   entries?(): Promise<Array<[string, string]>>
+  getMany?(keys: string[]): Promise<Array<string | null>>
+  flush?(): Promise<void>
+  onError?(cb: (key: string, message: string) => void): () => void
+  onFlushRequest?(cb: () => Promise<void>): () => void
 }
 
 interface DominoBridge {
@@ -125,10 +131,13 @@ function relayFetch(inner: typeof fetch): typeof fetch {
   }
 }
 
-function localStorageAdapter(): KeyValueStorage {
+function localStorageAdapter(): BulkKeyValueStorage {
   return {
     async get(key) {
       return window.localStorage.getItem(key)
+    },
+    async getMany(keys) {
+      return keys.map((key) => window.localStorage.getItem(key))
     },
     async set(key, value) {
       window.localStorage.setItem(key, value)
@@ -149,7 +158,7 @@ function localStorageAdapter(): KeyValueStorage {
  * the original; a failed copy keeps the legacy value readable forever via the
  * get() fallback, so the LLM key can never be lost by this upgrade.
  */
-function secureAdapter(): KeyValueStorage {
+function secureAdapter(): BulkKeyValueStorage {
   const legacy = localStorageAdapter()
   let migrated: Promise<void> | null = null
   const ensureMigrated = (): Promise<void> => {
@@ -172,11 +181,15 @@ function secureAdapter(): KeyValueStorage {
     }
     return migrated
   }
+  const get = async (key: string): Promise<string | null> => {
+    await ensureMigrated()
+    const value = await SecureStorage.getItem(key)
+    return value !== null ? value : legacy.get(key)
+  }
   return {
-    async get(key) {
-      await ensureMigrated()
-      const value = await SecureStorage.getItem(key)
-      return value !== null ? value : legacy.get(key)
+    get,
+    async getMany(keys) {
+      return Promise.all(keys.map((key) => get(key).catch(() => null)))
     },
     async set(key, value) {
       await ensureMigrated()
@@ -200,22 +213,122 @@ function secureAdapter(): KeyValueStorage {
   }
 }
 
-let cached: KeyValueStorage | null = null
+/* ------------------------- storage failure reporting ------------------------ */
+
+export type { StorageErrorEvent }
+
+const storageListeners = new Set<(e: StorageErrorEvent) => void>()
+
+/**
+ * Get told about storage failures (quota, disk) — the runtime shows them
+ * instead of persistence silently stopping. Returns an unsubscribe.
+ */
+export function onStorageError(listener: (e: StorageErrorEvent) => void): () => void {
+  storageListeners.add(listener)
+  return () => {
+    storageListeners.delete(listener)
+  }
+}
+
+function emitStorageError(e: StorageErrorEvent): void {
+  for (const listener of storageListeners) {
+    try {
+      listener(e)
+    } catch {
+      /* one broken listener must not hide the event from the rest */
+    }
+  }
+}
+
+/* --------------------------------- storage -------------------------------- */
+
+let cached: BulkKeyValueStorage | null = null
 
 export function getStorage(): KeyValueStorage {
   if (cached) return cached
   const bridge = window.dominoBridge
-  if (bridge?.secure) {
-    cached = {
-      get: (key) => bridge.secure!.get(key),
-      set: (key, value) => bridge.secure!.set(key, value),
-      remove: (key) => bridge.secure!.remove(key),
-      ...(bridge.secure.entries ? { entries: () => bridge.secure!.entries!() } : {})
-    }
+  const secure = bridge?.secure
+  if (secure) {
+    cached = withQuotaRelief(
+      {
+        get: (key) => secure.get(key),
+        set: (key, value) => secure.set(key, value),
+        remove: (key) => secure.remove(key),
+        ...(secure.entries ? { entries: () => secure.entries!() } : {}),
+        ...(secure.getMany ? { getMany: (keys: string[]) => secure.getMany!(keys) } : {})
+      },
+      emitStorageError
+    )
+    // The main process writes on its own debounce: its failures arrive here.
+    secure.onError?.((key, message) =>
+      emitStorageError({
+        key,
+        error: new Error(message),
+        quota: isQuotaError(new Error(message)),
+        recovered: false,
+        evicted: []
+      })
+    )
   } else if (isNativeMobile()) {
-    cached = secureAdapter()
+    cached = withQuotaRelief(secureAdapter(), emitStorageError)
   } else {
-    cached = localStorageAdapter()
+    cached = withQuotaRelief(localStorageAdapter(), emitStorageError)
   }
   return cached
+}
+
+/**
+ * Push buffered writes toward disk. The core stores flush their own debounced
+ * writes (ScreenStore.flush / SessionStore.flush); this asks the Electron
+ * main process to write what it still holds in memory. No-op elsewhere.
+ */
+export async function flushStorage(): Promise<void> {
+  try {
+    await window.dominoBridge?.secure?.flush?.()
+  } catch {
+    /* best effort on the way out */
+  }
+}
+
+/** Renderer-side writers the main process waits for before it quits (onQuitFlush). */
+const quitFlushers = new Set<() => Promise<void>>()
+let quitFlushWired = false
+
+/**
+ * Register an async flush the Electron main process runs — and waits for —
+ * before it quits or closes the window: pagehide alone fires too late
+ * (Cmd+Q, app.quit) or is cut off by window teardown after the first IPC.
+ * No-op outside Electron. Returns an unsubscribe.
+ */
+export function onQuitFlush(cb: () => Promise<void>): () => void {
+  quitFlushers.add(cb)
+  const secure = window.dominoBridge?.secure
+  if (!quitFlushWired && secure?.onFlushRequest) {
+    quitFlushWired = true
+    secure.onFlushRequest(async () => {
+      await Promise.all([...quitFlushers].map((f) => f().catch(() => undefined)))
+    })
+  }
+  return () => {
+    quitFlushers.delete(cb)
+  }
+}
+
+/**
+ * Run `cb` whenever the app is about to be hidden or unloaded (pagehide,
+ * tab/app switch, window close) — the moment debounced persistence must be
+ * flushed. Returns an unsubscribe.
+ */
+export function onAppHidden(cb: () => void): () => void {
+  const onVisibility = (): void => {
+    if (document.visibilityState === 'hidden') cb()
+  }
+  window.addEventListener('pagehide', cb)
+  window.addEventListener('beforeunload', cb)
+  document.addEventListener('visibilitychange', onVisibility)
+  return () => {
+    window.removeEventListener('pagehide', cb)
+    window.removeEventListener('beforeunload', cb)
+    document.removeEventListener('visibilitychange', onVisibility)
+  }
 }

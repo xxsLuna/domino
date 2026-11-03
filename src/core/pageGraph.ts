@@ -221,10 +221,24 @@ export function pageMapLines(
   lines.push(
     `Pages (id: name) — ${model.pages.map((p) => `${p.id}: ${p.name}`).join(', ') || '(none yet)'}`
   )
-  const linked = model.edges
-    .filter((e) => e.from !== 'tabs' && e.to && e.kind !== 'state' && e.kind !== 'nav')
-    .map((e) => `${e.from}/${e.label} → ${e.to}`)
+  // A press that stayed on its page updated it in place — never a link. A
+  // row select or form submit lands on a page whose CONTENT depends on the
+  // press: the model must re-render it, so those go on their own line.
+  const widgetKind = (e: GraphEdge): GraphAction['kind'] | undefined =>
+    model.actions.find((a) => a.page === e.from && a.id === e.action)?.kind
+  const moves = model.edges.filter(
+    (e) => e.from !== 'tabs' && e.to && e.to !== e.from && e.kind !== 'state' && e.kind !== 'nav'
+  )
+  const isData = (e: GraphEdge): boolean =>
+    e.kind === 'form' || widgetKind(e) === 'row' || widgetKind(e) === 'form'
+  const linked = moves.filter((e) => !isData(e)).map((e) => `${e.from}/${e.label} → ${e.to}`)
   if (linked.length > 0) lines.push(`Connected actions — ${linked.join('; ')}`)
+  const data = moves.filter(isData).map((e) => `${e.from}/${e.label} → ${e.to}`)
+  if (data.length > 0) {
+    lines.push(
+      `Data actions (destination layout exists — re-render that page id with the pressed record / fresh data, keep its layout and ids; never navigate) — ${data.join('; ')}`
+    )
+  }
   const loose = model.actions
     .filter(
       (a) =>
@@ -263,7 +277,10 @@ export async function loadPageGraph(
         typeof (e as GraphEdge).to === 'string' &&
         typeof (e as GraphEdge).action === 'string' &&
         typeof (e as GraphEdge).label === 'string' &&
-        typeof (e as GraphEdge).kind === 'string'
+        typeof (e as GraphEdge).kind === 'string' &&
+        // Older builds recorded in-place updates (Delete, Refresh, Next) as
+        // self-loop links, which froze those buttons for good: drop them.
+        !((e as GraphEdge).kind === 'action' && (e as GraphEdge).from === (e as GraphEdge).to)
     )
   } catch {
     return []
@@ -290,12 +307,54 @@ export function upsertEdge(edges: GraphEdge[], edge: GraphEdge): GraphEdge[] {
 }
 
 /**
+ * Record the answer to a press: one destination per (page, action) across
+ * the plain-link and data-action kinds — a button that once linked and
+ * later wrote data (or the reverse) keeps only its newest meaning, so a
+ * stale 'action' edge can't keep auto-linking a press that now mutates.
+ */
+export function upsertAnswerEdge(edges: GraphEdge[], edge: GraphEdge): GraphEdge[] {
+  const answers = (e: GraphEdge): boolean => e.kind === 'action' || e.kind === 'form'
+  if (!answers(edge)) return upsertEdge(edges, edge)
+  return [
+    ...edges.filter((e) => !(e.from === edge.from && e.action === edge.action && answers(e))),
+    edge
+  ]
+}
+
+/**
+ * After a page was edited, edges from it whose widget no longer exists on
+ * the edited page are dropped: a removed (or reused) id must not keep
+ * steering auto-links and the model's app map. Kept ids keep their edges.
+ */
+export function pruneEdgesForPage(
+  edges: GraphEdge[],
+  page: { id: string; layout: CardNode[] }
+): GraphEdge[] {
+  const ids = new Set<string>()
+  const walk = (nodes: CardNode[], depth: number): void => {
+    if (depth > 32) return
+    for (const n of nodes) {
+      if (n.id) ids.add(n.id)
+      if (n.children) walk(n.children, depth + 1)
+    }
+  }
+  walk(page.layout, 0)
+  const next = edges.filter((e) => e.from !== page.id || e.kind === 'nav' || ids.has(e.action))
+  return next.length === edges.length ? edges : next
+}
+
+/**
  * Pages the observed presses actually led to, unique and in first-seen order.
  * Pre-generation warms these after nav and script targets: a page the user
- * reached once is the likeliest next press.
+ * reached once is the likeliest next press. A press that stayed on its own
+ * page (an in-place update) leads nowhere new.
  */
 export function observedDests(edges: GraphEdge[]): string[] {
-  return [...new Set(edges.filter((e) => e.kind === 'action' && e.to !== '').map((e) => e.to))]
+  return [
+    ...new Set(
+      edges.filter((e) => e.kind === 'action' && e.to !== '' && e.to !== e.from).map((e) => e.to)
+    )
+  ]
 }
 
 /* -------------------------------- mermaid -------------------------------- */

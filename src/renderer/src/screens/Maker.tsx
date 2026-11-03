@@ -21,6 +21,12 @@ type Phase =
   | { kind: 'questions'; step: Extract<MakerStep, { type: 'questions' }> }
   | { kind: 'result'; step: Extract<MakerStep, { type: 'domino' }> }
 
+/** A catalog message, or English text while the key is not in the catalog yet. */
+const tr = (key: string, fallback: string): string => {
+  const msg = t(key)
+  return msg === key ? fallback : msg
+}
+
 interface Round {
   questions: MakerQuestion[]
   answers: Record<string, string>
@@ -415,6 +421,21 @@ export function Maker({
                 <ul className="list-disc pl-5 text-muted">
                   {phase.step.assumptions.map((a, i) => (
                     <li key={i}>{a}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {phase.step.warnings.length ? (
+              // Consistency problems the repair round could not fix: the file
+              // runs, but these parts may not behave as described.
+              <div className="rounded-2xl bg-warning-soft p-3 text-sm" role="note">
+                <p className="mb-1 flex items-center gap-1 font-medium text-warning-soft-foreground">
+                  <Icon name="alert" size={14} />
+                  {tr('maker.warnings', 'Parts that may not work as described')}
+                </p>
+                <ul className="list-disc pl-5 text-muted">
+                  {phase.step.warnings.map((w, i) => (
+                    <li key={i}>{w.replace(/^line \d+: /, '')}</li>
                   ))}
                 </ul>
               </div>

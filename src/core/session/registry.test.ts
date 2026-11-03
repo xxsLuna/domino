@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { DominoSource, KeyValueStorage } from './prefs'
 import { pushRecent } from './prefs'
-import { clearCachedText, getCachedText, putCachedText, sourceKey } from './registry'
+import {
+  clearCachedText,
+  getCachedText,
+  putCachedText,
+  sourceKey,
+  textCacheLimit
+} from './registry'
 
 function memStorage(): KeyValueStorage & { map: Map<string, string> } {
   const map = new Map<string, string>()
@@ -125,5 +131,14 @@ describe('pushRecent identity', () => {
     const list = await pushRecent(s, { source: text('same'), name: 'B' })
     expect(list).toHaveLength(1)
     expect(list[0].name).toBe('B')
+  })
+})
+
+describe('textCacheLimit', () => {
+  it('gives an export with its [screens] embed a larger budget', () => {
+    expect(textCacheLimit('[meta]\nname = A\n')).toBe(512_000)
+    expect(textCacheLimit('[meta]\nname = A\n\n[screens] ; app\nspec = {}\n')).toBe(1_500_000)
+    // A mention inside prose is not a section.
+    expect(textCacheLimit('[guide]\nSee the [screens] section.\n')).toBe(512_000)
   })
 })

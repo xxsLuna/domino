@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseDomino } from '../domino/parse'
-import { buildSystemPrompt } from './prompt'
+import type { DominoFile } from '../domino/types'
+import { buildSystemPrompt, buildSystemPrompts } from './prompt'
 
 const promptFor = (source: string): string =>
   buildSystemPrompt(parseDomino(source).domino!, { loggedIn: false })
@@ -162,5 +163,129 @@ describe('buildSystemPrompt (FEED sources)', () => {
       feeds: [{ url: 'https://a.test/rss', title: 'A' }]
     })
     expect(prompt).toContain('- A: https://a.test/rss')
+  })
+})
+
+describe('buildSystemPrompts (stable / dynamic split)', () => {
+  const domino = parseDomino(
+    '[meta]\nname = X\n[auth]\nrequired = true\nlogin_endpoint = /login\n[data]\nstats = GET /stats\n'
+  ).domino!
+
+  it('keeps everything that changes between turns out of the stable prefix', () => {
+    const a = buildSystemPrompts(domino, {
+      loggedIn: false,
+      knownSchemas: { 'GET /leads': { rows: 'array<object>' } },
+      dataSnapshots: { stats: { open: 3 } },
+      pageMap: ['Pages (id: name) — main: Home'],
+      feeds: []
+    })
+    const b = buildSystemPrompts(domino, {
+      loggedIn: true,
+      knownSchemas: { 'GET /other': { id: 'number' } },
+      dataSnapshots: { stats: { open: 9 } },
+      pageMap: ['Pages (id: name) — main: Home, leads: Leads']
+    })
+    expect(a.stable).toBe(b.stable)
+    expect(a.dynamic).not.toBe(b.dynamic)
+    expect(a.stable).not.toContain('Currently logged in')
+    expect(a.dynamic).toContain('Currently logged in: no')
+    expect(b.dynamic).toContain('Currently logged in: yes')
+    expect(a.stable).not.toContain('# App map')
+    expect(a.dynamic).toContain('# App map')
+    expect(a.stable).not.toContain('"open":3')
+    expect(a.dynamic).toContain('- stats → {"open":3}')
+    expect(a.dynamic).toContain('# Known API responses')
+    // The declarations themselves are stable.
+    expect(a.stable).toContain('- stats = GET /stats')
+  })
+
+  it('memoizes the stable prefix per definition object', () => {
+    const one = buildSystemPrompts(domino, { loggedIn: false }).stable
+    expect(buildSystemPrompts(domino, { loggedIn: true }).stable).toBe(one)
+  })
+
+  it('buildSystemPrompt is stable + dynamic', () => {
+    const opts = { loggedIn: true, pageMap: ['Pages (id: name) — main: Home'] }
+    const { stable, dynamic } = buildSystemPrompts(domino, opts)
+    expect(buildSystemPrompt(domino, opts)).toBe(`${stable}\n${dynamic}`)
+  })
+})
+
+describe('buildSystemPrompt (binding instead of fetching)', () => {
+  const domino = parseDomino('[meta]\nname = X\n[data]\nstats = GET /stats\n').domino!
+
+  it('tells the model known endpoints bind directly without call_api', () => {
+    const prompt = buildSystemPrompt(domino, {
+      loggedIn: false,
+      knownSchemas: { 'GET /leads': { total: 'number', 'rows[].id': 'number' } }
+    })
+    expect(prompt).toContain('can be BOUND directly in render_ui with NO call_api')
+    expect(prompt).toContain('runtime fetches every bound GET endpoint itself')
+    expect(prompt).toContain('{"$data": "api:GET /leads.total"}')
+    expect(prompt).toContain('issue ALL the call_api calls together in one response')
+    expect(prompt).not.toContain('with the response embedded')
+  })
+
+  it('pastes only declared [data] snapshots, never remembered call_api bodies', () => {
+    const prompt = buildSystemPrompt(domino, {
+      loggedIn: false,
+      dataSnapshots: { stats: { open: 3 }, 'api:GET /leads': { rows: [{ secret: 'body-text' }] } }
+    })
+    expect(prompt).toContain('- stats → {"open":3}')
+    expect(prompt).toContain('api:GET /leads')
+    expect(prompt).not.toContain('body-text')
+  })
+
+  it('samples big snapshots to a few rows', () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({ i }))
+    const prompt = buildSystemPrompt(domino, { loggedIn: false, dataSnapshots: { stats: { rows } } })
+    expect(prompt).toContain('…+45 more')
+  })
+})
+
+describe('buildSystemPrompt (navigation rules)', () => {
+  it('limits navigate to record-independent pages and says it ends the turn', () => {
+    const prompt = promptFor('[meta]\nname = X\n')
+    expect(prompt).toContain('your turn ENDS: never call render_ui after a navigate')
+    expect(prompt).toContain('Data-dependent destinations are RE-RENDERED, never navigated to')
+    expect(prompt).toContain('re-renders the current page id — never navigate for it')
+    expect(prompt).not.toContain('outside a normal flow')
+  })
+
+  it('app map rules send data actions to a re-render', () => {
+    const domino = parseDomino('[meta]\nname = X\n').domino!
+    const prompt = buildSystemPrompt(domino, { loggedIn: false, pageMap: ['Pages (id: name) — a: A'] })
+    expect(prompt).toContain('Row selects, form submits and other data actions re-render')
+  })
+})
+
+describe('buildSystemPrompt ([actions] without [data])', () => {
+  it('lists goto-only actions even when the file has no [data]', () => {
+    const prompt = promptFor('[meta]\nname = X\n[actions]\nopen-settings = goto settings\n')
+    expect(prompt).toContain('# Runtime-owned controls ([actions])')
+    expect(prompt).toContain('- open-settings: goto settings')
+    expect(prompt).not.toContain('# Live data sources')
+  })
+})
+
+describe('buildSystemPrompt (page plan)', () => {
+  it('lists the [pages] plan with purposes and nav flags', () => {
+    const base = parseDomino('[meta]\nname = X\n').domino!
+    const domino = {
+      ...base,
+      pages: [
+        { id: 'dash', name: 'Dashboard', nav: true },
+        { id: 'lead-detail', name: 'Lead', purpose: 'one lead with its activity', nav: false }
+      ]
+    } as DominoFile
+    const { stable } = buildSystemPrompts(domino, { loggedIn: false })
+    expect(stable).toContain('# Page plan')
+    expect(stable).toContain('- dash: Dashboard (nav)')
+    expect(stable).toContain('- lead-detail: Lead — one lead with its activity')
+    expect(stable).toContain('Use exactly these ids')
+  })
+
+  it('omits the plan section without [pages]', () => {
+    expect(promptFor('[meta]\nname = X\n')).not.toContain('# Page plan')
   })
 })

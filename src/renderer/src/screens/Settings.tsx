@@ -13,6 +13,13 @@ import {
 } from '@heroui/react'
 import { PROVIDER_META, type LLMConfig, type ProviderId } from '@core/llm/types'
 import {
+  REASONING_LEVELS,
+  anthropicOmitsTemperature,
+  isOpenAIReasoningModel,
+  isReasoningLevel,
+  type ReasoningLevel
+} from '@core/llm/reasoning'
+import {
   DEFAULT_TOKEN_WARN,
   clearDominoLlmConfig,
   loadDominoLlmConfig,
@@ -43,6 +50,22 @@ interface SettingsProps {
   /** Called after the per-domino override is saved or cleared. */
   onDominoChanged?: () => void
   onClose: () => void
+}
+
+/** The reasoning select's label for a level ('default' = leave it to the runtime). */
+function reasoningLabel(level: ReasoningLevel | 'default'): string {
+  switch (level) {
+    case 'default':
+      return t('set.reasoningDefault')
+    case 'none':
+      return t('set.reasoningNone')
+    case 'low':
+      return t('set.reasoningLow')
+    case 'medium':
+      return t('set.reasoningMedium')
+    case 'high':
+      return t('set.reasoningHigh')
+  }
 }
 
 function fmtBytes(n: number): string {
@@ -295,23 +318,58 @@ export function Settings({
               <Input placeholder={meta.defaultModel} />
             </TextField>
 
-            <div className="flex flex-col gap-1">
-              <span className="text-sm">
-                {t('set.temp')}{' '}
-                <span className="text-muted">({(draft.temperature ?? 0.7).toFixed(1)})</span>
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.1}
-                value={draft.temperature ?? 0.7}
-                onChange={(e) => edit({ temperature: Number(e.target.value) })}
-                aria-label={t('set.temp')}
-                className="h-2 w-full cursor-pointer accent-[var(--accent)]"
-              />
-              <span className="text-xs text-muted">{t('set.tempNote')}</span>
-            </div>
+            <Select
+              value={draft.reasoning ?? 'default'}
+              onChange={(key) => {
+                const v = String(key)
+                edit({ reasoning: isReasoningLevel(v) ? v : undefined })
+              }}
+              fullWidth
+            >
+              <Label>{t('set.reasoning')}</Label>
+              <Select.Trigger>
+                <Select.Value>{({ selectedText }) => selectedText}</Select.Value>
+                <Select.Indicator />
+              </Select.Trigger>
+              <Description>{t('set.reasoningNote')}</Description>
+              <Select.Popover>
+                <ListBox>
+                  {(['default', ...REASONING_LEVELS] as const).map((level) => (
+                    <ListBox.Item key={level} id={level} textValue={reasoningLabel(level)}>
+                      {reasoningLabel(level)}
+                      <ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox>
+              </Select.Popover>
+            </Select>
+
+            {/* OpenAI reasoning models (o-series, gpt-5) and the newer Claude
+                models (Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable) reject a
+                temperature: the adapters never send one, so the slider would
+                only lie. */}
+            {isOpenAIReasoningModel(draft.model) ||
+            (draft.provider === 'anthropic' && anthropicOmitsTemperature(draft.model)) ? (
+              <p className="text-xs text-muted">{t('set.tempReasoning')}</p>
+            ) : (
+              <div className="flex flex-col gap-1">
+                <span className="text-sm">
+                  {t('set.temp')}{' '}
+                  <span className="text-muted">({(draft.temperature ?? 0.7).toFixed(1)})</span>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={draft.temperature ?? 0.7}
+                  onChange={(e) => edit({ temperature: Number(e.target.value) })}
+                  aria-label={t('set.temp')}
+                  className="h-2 w-full cursor-pointer accent-[var(--accent)]"
+                />
+                <span className="text-xs text-muted">{t('set.tempNote')}</span>
+              </div>
+            )}
 
             <TextField
               type={showKey ? 'text' : 'password'}

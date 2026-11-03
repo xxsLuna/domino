@@ -210,7 +210,8 @@ describe('string-encoded specs (some models stringify the spec argument)', () =>
   it('takes a plain object spec as is', () => {
     expect(specFromArgs(JSON.stringify({ spec: JSON.parse(inner) }))).toEqual({
       spec: JSON.parse(inner),
-      repaired: false
+      repaired: false,
+      salvaged: false
     })
     expect(specFromArgs('not json').spec).toBeNull()
   })
@@ -303,8 +304,12 @@ describe('runAgentTurn with a misbehaving model', () => {
     const history: ChatMessage[] = [{ role: 'user', content: 'go' }]
     await run(fakeAdapter([hugeBad, JSON.stringify({ spec: JSON.parse(inner) })]), history)
     const failed = history.find((m) => m.role === 'assistant')?.toolCalls?.[0]
-    expect(failed!.args.length).toBeLessThanOrEqual(2_001)
-    expect(failed!.args.endsWith('…')).toBe(true)
+    // A short head, wrapped as valid JSON: strict OpenAI-compatible backends
+    // re-parse every replayed tool-call argument string.
+    expect(failed!.args.length).toBeLessThanOrEqual(2_100)
+    const parsed = JSON.parse(failed!.args)
+    expect(parsed.invalid).toBe(true)
+    expect(parsed.head.length).toBe(2_000)
   })
 
   it('escalates to the deeper adapter only for the corrective round', async () => {

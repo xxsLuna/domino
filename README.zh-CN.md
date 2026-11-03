@@ -11,7 +11,7 @@
 
 [![Build](https://github.com/xxsLuna/domino/actions/workflows/build.yml/badge.svg)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/xxsLuna/domino?display_name=tag&sort=semver)](https://github.com/xxsLuna/domino/releases)
-[![Tests](https://img.shields.io/badge/tests-116%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/badge/tests-818%20passed-brightgreen)](https://github.com/xxsLuna/domino/actions/workflows/build.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android-lightgrey)](#下载)
 
 macOS · Windows · Linux · Android（Web 构建）
@@ -55,8 +55,9 @@ macOS · Windows · Linux · Android（Web 构建）
 
 ## 特性
 
-- **`.domino` 定义** —— INI 分节（`[meta]`、`[auth]`、`[api]`、`[ui]`、`[script]`）
-  加上布尔条件 DSL（`when logged_in -> goto main`）。解析错误附带行号。
+- **`.domino` 定义** —— INI 分节（`[meta]`、`[auth]`、`[api]`、`[ui]`、`[pages]`、`[script]`、
+  `[data]`、`[actions]`、`[guide]`）加上布尔条件 DSL（`when logged_in -> goto main`）。
+  解析错误和警告都附带行号。
 - **LLM 实时生成界面** —— 智能体流式输出经过校验的界面规格，生成过程中即渐进渲染；
   每张卡片在完整到达时只挂载一次。
 - **HeroUI 组件注册表** —— 基于 [HeroUI v3](https://heroui.com)（React Aria + Tailwind CSS v4）
@@ -194,24 +195,87 @@ success = #10b981       ; 分步颜色（Tailwind 风格调色板）
 warning = #f59e0b
 danger = #ef4444
 
+[pages]
+; 页面规划：id = 名称 | 页面展示的内容 | nav（出现在主导航中）
+; 所有页面、导航项和 goto 都使用这里的 id。
+main = 仪表盘 | 各阶段 KPI 与最新线索 | nav
+leads = 线索 | 以表格列出全部线索，最新在前 | nav
+lead-new = 新建线索 | 新建线索的表单（id new-lead-form）
+lead-detail = 线索详情 | 从表格行打开的单条线索
+
 [script]
 when not logged_in -> goto login
 when logged_in -> goto main
 on auth_failed -> goto login
 
+[data]
+; 运行时自有的只读数据源：每回合前获取，通过 {"$data": "key.path"} 绑定到界面，
+; 由 actions / 轮询刷新，无需模型参与。
+leads = GET /leads every 60s      ; 行内注释的 ; 或 # 前需要空格
+; FEED <url> 是运行时自行获取并解析的 RSS/Atom（不经过 [api]）；
+; FEED @subscriptions 是用户在运行时管理的订阅列表。
+; feed = FEED @subscriptions every 60s
+
+[actions]
+; 由运行时直接执行的控件行为（步骤用 ";" 连接，注释以 # 开头）。
+leads-refresh = refresh leads
+new-lead = goto lead-new
+new-lead-form = call POST /leads with form ; refresh leads ; goto leads   # 创建后返回列表
+
+[screens]
+; 由“连同应用一起导出”写入：所有已生成页面 + 操作关系图，
+; 文件在任何设备上都能零 LLM 调用直接运行。
+; spec = {"version":1,"page":"main", ...}
+
 [guide]
 ; 给界面智能体的自由文本，原样保留。描述服务、每个 API（方法、路径、请求/响应字段、要显示什么）和需要的页面。
 Sales reps log in and see their pipeline.
-GET /leads returns [{id, name, company, stage, value}] — show it as a table, newest first.
-POST /leads {name, company, value} creates a lead; afterwards return to the list.
+GET /leads returns [{id, name, company, stage, value}] — bind the leads table to {"$data": "leads"}.
+GET /leads/{id} returns one lead for lead-detail. The lead-new page is a Form with id new-lead-form.
 ```
 
 `[guide]` 会和 `[meta] description` 一起作为应用说明交给智能体，页面、数据和文案都会据此生成；
 白名单和由运行时负责的登录规则依然生效。
 
-`[script]` 条件 DSL 支持标识符（`logged_in`）、`not`、比较（`==`、`!=`、`<`、`>`）、
-`and` / `or`、括号和点路径（`param.plan == "pro"`）。命令为 `goto <page>`、
-`render <page>`、`call <endpoint>`。`on <event>` 规则优先于 `when` 规则求值。
+**`[pages]`** —— 应用的页面规划，每行一个页面：`id = 名称 | 用途 | nav`。用途和 `nav`
+标记都可省略（`settings = 设置 | nav` 也可以）。声明的页面会在用户打开之前于后台生成，
+模型必须使用完全相同的 id；`[meta] home`、`[script]` 路由和 `[actions]` 的 goto 都会与
+规划核对（不一致时给出带行号的警告）。`login` 由运行时负责，无需声明。没有 `[pages]`
+的文件依然可用，此时由模型自行命名页面。
+
+**`[data]`** —— `key = GET /path` 或 `key = FEED <url>`，可加 `every Ns`（5-600）。只接受
+`GET` 与 `FEED`：数据源会在每次打开、每回合前以及轮询时重新获取，因此 `POST` / `PUT` /
+`PATCH` / `DELETE` 数据源会被拒绝并给出警告 —— 写操作请放进 `[actions]` 的 `call` 步骤。
+路径中的 `{stateKey}` 取自页面状态（该键有值后数据源才会加载）。键保留大小写，`refresh`
+步骤和 `{"$data": …}` 绑定都按原样精确匹配（仅大小写不同的 `refresh` 会被自动纠正并提示）。
+非 FEED 路径必须被 `[api] allow` 覆盖，否则加载时就会被标出。
+
+**`[actions]`** —— `<控件 id> = 步骤 ; 步骤 ; …`，键是按钮的 id，或提交时触发的表单 id。步骤：
+
+| 步骤 | 作用 |
+|------|------|
+| `set <stateKey> = form.<field>` | 把提交的字段写入页面状态 |
+| `refresh <dataKey>` | 重新获取一个 `[data]` 数据源（绑定的属性原地更新） |
+| `goto <page-id>` | 切换到该页面；尚未生成的页面会以完全相同的 id 生成 |
+| `call <METHOD> /path [with form]` | 在 `[api] allow` 范围内发出一次请求（`GET`/`POST`/`PUT`/`PATCH`/`DELETE`）；`with form` 把提交的表单作为请求体。路径可使用 `{form.field}`、`{row.field}`（所选表格/列表行）和 `{stateKey}`，均经过 URI 编码 |
+
+`new-lead-form = call POST /leads with form ; refresh leads ; goto leads` 会创建线索、重新加载
+列表并返回列表，整个过程不需要任何一次模型回合。
+
+`[script]` 条件 DSL 支持标识符（`logged_in`、`error`、`event`）、`not`、比较（`==`、`!=`、
+`<`、`>`）、`and` / `or`、括号和点路径（`param.plan == "pro"`）。命令为 `goto <page>`、
+`render <page>`、`call [METHOD] <path>`（默认 GET）。`on <event>` 规则优先于 `when` 规则求值；
+运行时会触发 `login`、`logout`、`auth_failed` 以及自身事件（如 `api_error`）。认证事件之后
+所有 `when` 规则都会生效；其他事件之后只有因该事件新变为真的 `when` 规则才会生效（因此
+`when error == "billing" -> goto upgrade` 会跳转，而 `when logged_in -> goto main` 不会在每次
+出错时把用户拉回首页）。没有 `[auth]` 的应用中 `goto login` 会被忽略。
+`error` 是失败请求自身的错误码（`{"error": "billing"}`）或其状态码（`"404"`）；登录响应中非机密的
+字段（`plan`、`role`、`user.role`…）也是变量，随 token 一起保存。携带 token 的请求返回 401 时，
+运行时会注销用户（清除 token）并触发 `auth_failed`。id 与某条 `on <id>` 规则同名的控件被按下时会
+触发该事件（`on upgrade-cta -> goto upgrade`）。
+
+**诊断** —— 文件仍能打开、但被解析器丢弃或存疑的内容（错误的规则、被拒绝的 `[data]` 方法、
+未知键、指向未声明页面的 goto、白名单之外的路径）都会以带行号的警告报告，而不是静默失效。
 
 更多示例见 [`samples/`](samples/) —— 需要登录、免登录、条件路由各一个。
 

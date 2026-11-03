@@ -3,6 +3,7 @@ import {
   Children,
   createContext,
   useContext,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -44,7 +45,7 @@ import {
   TextField
 } from '@heroui/react'
 import type { CardNode } from '../spec'
-import { useCell, useLayout, useRuntime } from './context'
+import { useCell, useLayout, useRuntime, useStateKeys } from './context'
 import { Icon } from './icons'
 
 export { RuntimeContext, useRuntime, type Runtime } from './context'
@@ -76,8 +77,26 @@ const useSize = (): 'sm' | 'md' => (useLayout().density === 'compact' ? 'sm' : '
 const useFieldVariant = (): 'primary' | 'secondary' =>
   useContext(SurfaceContext) ? 'secondary' : 'primary'
 
+/**
+ * True for an unresolved binding object — `{"$state": "<key>"}` or
+ * `{"$data": "<key>.<path>"}` — still sitting in a prop (a preview streamed
+ * before its `state`, a source not fetched yet). Such a prop has no value yet:
+ * it must render as empty, never as its JSON.
+ */
+export function isBindingObject(v: unknown): boolean {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false
+  const keys = Object.keys(v)
+  if (keys.length !== 1 || (keys[0] !== '$state' && keys[0] !== '$data')) return false
+  return typeof (v as Record<string, unknown>)[keys[0]] === 'string'
+}
+
+/** Display text of a free-form prop: '' for nothing (or an unresolved binding), JSON for odd objects. */
 const text = (v: unknown): string =>
-  v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
+  v === null || v === undefined || isBindingObject(v)
+    ? ''
+    : typeof v === 'object'
+      ? JSON.stringify(v)
+      : String(v)
 const truthy = (v: unknown): boolean => v === true || v === 'true' || v === 1
 
 type Tone = 'default' | 'accent' | 'success' | 'warning' | 'danger'
@@ -430,12 +449,37 @@ export function Badge({
   )
 }
 
+/**
+ * The page a Link's href points at inside the app, or null for anything else.
+ * Generated apps have no URL router: "#leads", "page:leads", "/leads" and a
+ * bare "leads" all name the page "leads". Absolute URLs, any other scheme and
+ * multi-segment paths ("/leads/42") are not page ids — those stay plain
+ * clicks for the model. So is an id with a non-empty query or fragment
+ * ("#order-detail?id=42"): it names a RECORD, and switching to the stored
+ * page would show whichever record it was built for — the click (with its
+ * href) reaches the model, which renders that record.
+ */
+export function internalPageTarget(href: unknown): string | null {
+  if (typeof href !== 'string') return null
+  let rest = href.trim()
+  if (rest === '' || rest.startsWith('//')) return null
+  const page = /^page:/i.exec(rest)
+  if (page) rest = rest.slice(page[0].length)
+  else if (/^[a-z][a-z0-9+.-]*:/i.test(rest)) return null
+  rest = rest.replace(/^(?:#!?\/?|\.?\/)/, '')
+  const extra = /[?#](.*)$/.exec(rest)
+  if (extra && extra[1].trim() !== '') return null
+  rest = rest.replace(/[?#].*$/, '').replace(/\/$/, '')
+  return /^[\w-]+$/.test(rest) ? rest : null
+}
+
 export function Link({
   text: value,
   href,
+  to,
   nodeId,
   nodeName
-}: NodeProps & { text?: string; href?: string }) {
+}: NodeProps & { text?: string; href?: string; to?: string }) {
   const runtime = useRuntime()
   const external = typeof href === 'string' && /^(https?:|mailto:|tel:)/i.test(href)
   if (external) {
@@ -446,11 +490,22 @@ export function Link({
       </HLink>
     )
   }
+  // An in-app link is navigation, not a click: the runtime switches to a page
+  // it has already built without a model turn (and records the edge).
+  const target =
+    internalPageTarget(href) ?? (typeof to === 'string' && to ? internalPageTarget(`#${to}`) : null)
   return (
     <HLink
       className="text-accent"
       onPress={() =>
-        runtime.dispatch({ event: 'click', nodeId, nodeName, data: href ? { href } : undefined })
+        target
+          ? runtime.dispatch({ event: 'navigate', nodeId, nodeName, data: { page: target, href } })
+          : runtime.dispatch({
+              event: 'click',
+              nodeId,
+              nodeName,
+              data: href ? { href } : undefined
+            })
       }
     >
       {text(value)}
@@ -505,8 +560,7 @@ export function Form({
   // sent only a Cancel (or nothing at all) — render the missing primary in,
   // labeled by submitText or a default. Also covers Cancel + submitText,
   // which the old "only when no buttons" rule silently dropped.
-  const autoSubmit =
-    !hasSubmit && (fields.length > 0 || (!buttons.length && Boolean(submitText)))
+  const autoSubmit = !hasSubmit && (fields.length > 0 || (!buttons.length && Boolean(submitText)))
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault()
@@ -615,6 +669,124 @@ const INPUT_TYPES = new Set([
   'month'
 ])
 
+/**
+ * The name a field submits under. Models often give a field only an id (or
+ * only a label); FormData skips unnamed controls, so the value would vanish
+ * from the submit. Fall back to the node id, then the label text.
+ */
+export function fieldName(name: unknown, nodeId?: string, label?: unknown): string | undefined {
+  const explicit = text(name).trim()
+  if (explicit) return explicit
+  if (nodeId) return nodeId
+  const fromLabel = text(label).trim()
+  return fromLabel || undefined
+}
+
+const NOT_SENT = Symbol('not-sent')
+
+/**
+ * A control value the user edits locally that still follows its prop: when
+ * the prop itself changes — a new `{"$state"}` value, a stepper button, back /
+ * forward restoring an older screen, a second control bound to the same key —
+ * the control adopts it; otherwise edits stay local. Uncontrolled
+ * `default*` props can't do this (react-aria reads them once, at mount).
+ *
+ * `sent` records the value this control last reported to the runtime, so its
+ * own echo (a debounced text change coming back as the new prop) never
+ * overwrites what the user typed since.
+ */
+export function syncedValue<T>(
+  s: { value: T; seen: T; sent: T | typeof NOT_SENT },
+  external: T
+): { value: T; seen: T; sent: T | typeof NOT_SENT } {
+  if (Object.is(s.seen, external)) return s
+  return { value: Object.is(external, s.sent) ? s.value : external, seen: external, sent: NOT_SENT }
+}
+
+function useSynced<T>(external: T): { value: T; set: (v: T) => void; sent: (v: T) => void } {
+  const [s, setS] = useState<{ value: T; seen: T; sent: T | typeof NOT_SENT }>(() => ({
+    value: external,
+    seen: external,
+    sent: NOT_SENT
+  }))
+  const next = syncedValue(s, external)
+  // Adjusting state while rendering (React's "previous props" pattern): the
+  // new value shows in this very render, with no effect-driven flash.
+  if (next !== s) setS(next)
+  return {
+    value: next.value,
+    set: (value) => setS((cur) => ({ ...cur, value })),
+    sent: (sent) => setS((cur) => ({ ...cur, sent }))
+  }
+}
+
+/** True when this field's name is a client-side state key (see StateKeysContext). */
+const useIsStateKey = (key: string | undefined): boolean => {
+  const keys = useStateKeys()
+  return key !== undefined && keys.has(key)
+}
+
+/** Debounce for text fields bound to state: the runtime persists each write. */
+const TEXT_CHANGE_DELAY = 250
+
+/**
+ * Text fields bound to a state key report their value (debounced, flushed on
+ * blur) so every node sharing the key updates without a model
+ * turn. Other text fields never dispatch — their value travels with the
+ * Form submit or a nearby Button click.
+ */
+function useTextChange(
+  enabled: boolean,
+  emit: (value: string) => void
+): { change: (value: string) => void; flush: () => void } {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pending = useRef<{ value: string } | null>(null)
+  const emitRef = useRef(emit)
+  emitRef.current = emit
+  const flush = (): void => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+    const p = pending.current
+    pending.current = null
+    if (p) emitRef.current(p.value)
+  }
+  // Unmount drops a change still waiting: it would land on whatever page
+  // replaced this one. Leaving a field blurs it first, which flushes.
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current)
+    },
+    []
+  )
+  return {
+    change: (value) => {
+      if (!enabled) return
+      pending.current = { value }
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(flush, TEXT_CHANGE_DELAY)
+    },
+    flush
+  }
+}
+
+/** A number field's state value stays a number ("" → null) so counters keep their type. */
+function textStateValue(value: string, type: string): unknown {
+  if (type !== 'number') return value
+  if (value.trim() === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : value
+}
+
+/**
+ * How a typed text field value comes back as its own prop once the runtime
+ * stored it: number fields store a number, so "1.0" echoes as "1", "-0" as
+ * "0" and "007" as "7". Recording this as `sent` lets syncedValue know the
+ * echo for this field's own write and keep what the user typed.
+ */
+export function stateEcho(value: string, type: string): string {
+  return type === 'number' ? text(textStateValue(value, type)) : value
+}
+
 export function Input({
   label,
   name,
@@ -625,19 +797,45 @@ export function Input({
   required,
   readOnly,
   disabled,
-  icon
-}: FieldProps & { type?: string; icon?: string }) {
+  icon,
+  nodeId,
+  nodeName
+}: NodeProps & FieldProps & { type?: string; icon?: string }) {
+  const runtime = useRuntime()
   const variant = useFieldVariant()
   const t = INPUT_TYPES.has(String(type)) ? String(type) : 'text'
+  // A password goes by its input type, never by a fallback name: an unnamed
+  // one submits as "password" — what the login intercept looks for and what
+  // redaction masks — instead of its node id ("pw") or label ("비밀번호"),
+  // which would carry the plaintext into the prompt and the history.
+  const key = t === 'password' ? text(name).trim() || 'password' : fieldName(name, nodeId, label)
+  const field = useSynced(text(value))
+  const { change, flush } = useTextChange(useIsStateKey(key), (v) => {
+    // A number field's echo comes back as the NUMBER's text ("1.0" → 1 →
+    // "1"): record that form as sent, so the echo is recognised as this
+    // field's own and what the user typed ("1.0", "-0", "007") stays.
+    field.sent(stateEcho(v, t))
+    runtime.dispatch({
+      event: 'change',
+      nodeId,
+      nodeName,
+      data: { name: key, value: textStateValue(v, t) }
+    })
+  })
   return (
     <TextField
-      name={name}
+      name={key}
       type={t}
-      defaultValue={value === undefined || value === null ? undefined : text(value)}
+      value={field.value}
+      onChange={(v) => {
+        field.set(v)
+        change(v)
+      }}
+      onBlur={flush}
       isRequired={truthy(required)}
       isReadOnly={truthy(readOnly)}
       isDisabled={truthy(disabled)}
-      aria-label={label ? undefined : text(placeholder || name || 'input')}
+      aria-label={label ? undefined : text(placeholder || key || 'input')}
       variant={variant}
       fullWidth
     >
@@ -665,16 +863,30 @@ export function Textarea({
   rows = 4,
   description,
   required,
-  disabled
-}: FieldProps & { rows?: number }) {
+  disabled,
+  nodeId,
+  nodeName
+}: NodeProps & FieldProps & { rows?: number }) {
+  const runtime = useRuntime()
   const variant = useFieldVariant()
+  const key = fieldName(name, nodeId, label)
+  const field = useSynced(text(value))
+  const { change, flush } = useTextChange(useIsStateKey(key), (v) => {
+    field.sent(v)
+    runtime.dispatch({ event: 'change', nodeId, nodeName, data: { name: key, value: v } })
+  })
   return (
     <TextField
-      name={name}
-      defaultValue={value === undefined || value === null ? undefined : text(value)}
+      name={key}
+      value={field.value}
+      onChange={(v) => {
+        field.set(v)
+        change(v)
+      }}
+      onBlur={flush}
       isRequired={truthy(required)}
       isDisabled={truthy(disabled)}
-      aria-label={label ? undefined : text(placeholder || name || 'text')}
+      aria-label={label ? undefined : text(placeholder || key || 'text')}
       variant={variant}
       fullWidth
     >
@@ -689,18 +901,32 @@ export function Textarea({
   )
 }
 
-/** Outside a Form, choice controls report changes straight to the agent (filters, toggles). */
+/**
+ * Outside a Form, choice controls report changes straight to the agent
+ * (filters, toggles). Inside a Form they stay quiet until submit — except a
+ * control named after a state key, which the runtime applies locally.
+ */
+export function reportsChange(
+  inForm: boolean,
+  key: string | undefined,
+  stateKeys: ReadonlySet<string>
+): boolean {
+  return !inForm || (key !== undefined && stateKeys.has(key))
+}
+
 function useChangeDispatch(nodeId?: string, nodeName?: string, name?: string) {
   const runtime = useRuntime()
   const inForm = useContext(FormContext)
-  return inForm
+  const key = name ?? nodeId
+  const stateKeys = useStateKeys()
+  return !reportsChange(inForm, key, stateKeys)
     ? undefined
     : (value: unknown) =>
         runtime.dispatch({
           event: 'change',
           nodeId,
           nodeName,
-          data: { name: name ?? nodeId, value }
+          data: { name: key, value }
         })
 }
 
@@ -717,22 +943,28 @@ export function Select({
   nodeName
 }: NodeProps & FieldProps & { options?: unknown }) {
   const opts = toOptions(options)
-  const onChange = useChangeDispatch(nodeId, nodeName, name)
+  const key = fieldName(name, nodeId, label)
+  const onChange = useChangeDispatch(nodeId, nodeName, key)
   const variant = useFieldVariant()
-  const initial = value === undefined || value === null ? undefined : text(value)
+  const initial = text(value) || undefined
   // Accept a label as the value too ("Asia/Seoul" vs. {label: "Seoul", value: "Asia/Seoul"}).
-  const defaultKey =
+  const external =
     opts.find((o) => o.value === initial)?.value ?? opts.find((o) => o.label === initial)?.value
+  const field = useSynced<string | null>(external ?? null)
   return (
     <HSelect
-      name={name}
+      name={key}
       placeholder={placeholder ?? (opts[0] ? undefined : '—')}
-      defaultValue={defaultKey}
+      value={field.value}
       isRequired={truthy(required)}
       isDisabled={truthy(disabled)}
-      aria-label={label ? undefined : text(placeholder || name || 'select')}
+      aria-label={label ? undefined : text(placeholder || key || 'select')}
       variant={variant}
-      onChange={onChange ? (key) => onChange(key === null ? null : String(key)) : undefined}
+      onChange={(k) => {
+        const next = k === null || k === undefined ? null : String(k)
+        field.set(next)
+        onChange?.(next)
+      }}
       fullWidth
     >
       {label ? <Label>{text(label)}</Label> : null}
@@ -760,21 +992,28 @@ export function Checkbox({
   name,
   defaultChecked,
   checked,
+  value,
   description,
   disabled,
   nodeId,
   nodeName
 }: NodeProps & FieldProps & { defaultChecked?: boolean; checked?: boolean }) {
-  const onChange = useChangeDispatch(nodeId, nodeName, name)
+  const key = fieldName(name, nodeId, label)
+  const onChange = useChangeDispatch(nodeId, nodeName, key)
   const variant = useFieldVariant()
+  // `checked` / `value` are where a {"$state"} binding usually lands.
+  const field = useSynced(truthy(checked ?? defaultChecked ?? value))
   return (
     <HCheckbox
-      name={name}
-      defaultSelected={truthy(defaultChecked ?? checked)}
+      name={key}
+      isSelected={field.value}
       isDisabled={truthy(disabled)}
       variant={variant}
-      aria-label={controlLabel(label) ?? text(name)}
-      onChange={onChange}
+      aria-label={controlLabel(label) ?? text(key)}
+      onChange={(v) => {
+        field.set(v)
+        onChange?.(v)
+      }}
     >
       <HCheckbox.Content>
         <HCheckbox.Control>
@@ -813,19 +1052,26 @@ export function RadioGroup({
   nodeName
 }: NodeProps & FieldProps & { options?: unknown; orientation?: string }) {
   const opts = toOptions(options)
-  const onChange = useChangeDispatch(nodeId, nodeName, name)
+  const key = fieldName(name, nodeId, label)
+  const onChange = useChangeDispatch(nodeId, nodeName, key)
   const { bp } = useLayout()
   const variant = useFieldVariant()
-  const initial = value === undefined || value === null ? undefined : text(value)
+  const initial = text(value) || undefined
+  const field = useSynced<string | null>(
+    opts.find((o) => o.value === initial || o.label === initial)?.value ?? null
+  )
   return (
     <HRadioGroup
-      name={name}
-      defaultValue={opts.find((o) => o.value === initial || o.label === initial)?.value}
+      name={key}
+      value={field.value}
       orientation={orientation === 'horizontal' && bp !== 'sm' ? 'horizontal' : 'vertical'}
       isRequired={truthy(required)}
-      aria-label={label ? undefined : text(name)}
+      aria-label={label ? undefined : text(key)}
       variant={variant}
-      onChange={onChange}
+      onChange={(v) => {
+        field.set(v)
+        onChange?.(v)
+      }}
     >
       {label ? <Label>{text(label)}</Label> : null}
       {description ? <Description>{text(description)}</Description> : null}
@@ -867,23 +1113,29 @@ export function Switch({
   name,
   defaultChecked,
   checked,
+  value,
   description,
   disabled,
   nodeId,
   nodeName
 }: NodeProps & FieldProps & { defaultChecked?: boolean; checked?: boolean }) {
-  const onChange = useChangeDispatch(nodeId, nodeName, name)
+  const key = fieldName(name, nodeId, label)
+  const onChange = useChangeDispatch(nodeId, nodeName, key)
+  const field = useSynced(truthy(checked ?? defaultChecked ?? value))
   // The help text sits inside the <label>; name the switch by its label alone and
   // announce the help as its description.
   const descriptionId = useId()
   return (
     <HSwitch
-      name={name}
-      defaultSelected={truthy(defaultChecked ?? checked)}
+      name={key}
+      isSelected={field.value}
       isDisabled={truthy(disabled)}
-      aria-label={controlLabel(label) ?? text(name)}
+      aria-label={controlLabel(label) ?? text(key)}
       aria-describedby={description ? descriptionId : undefined}
-      onChange={onChange}
+      onChange={(v) => {
+        field.set(v)
+        onChange?.(v)
+      }}
       className="w-full"
     >
       <HSwitch.Content className="flex w-full items-center justify-between gap-4">
@@ -959,8 +1211,11 @@ export function buttonSubmits(
 ): boolean {
   const type = props?.type
   const variant = props?.variant
+  // Outside a Form there is nothing to submit: even type="submit" (a model's
+  // PageHeader "Save") must stay a working click, not a dead submit button.
+  if (!inForm) return false
   if (type === 'submit') return true
-  if (!inForm || type === 'button') return false
+  if (type === 'button') return false
   const v = BUTTON_VARIANTS.has(String(variant))
     ? String(variant)
     : variant === 'link'
@@ -970,6 +1225,59 @@ export function buttonSubmits(
 }
 
 const hasHangul = (s: string): boolean => /[가-힣]/.test(s)
+
+/** The slice of the DOM collectLooseFields reads (a grid cell, in practice). */
+interface FieldContainer {
+  querySelectorAll(selector: string): ArrayLike<{
+    name: string
+    value: string
+    type?: string
+    checked?: boolean
+    closest(selector: string): unknown
+  }>
+}
+
+/**
+ * Values of named fields that sit next to a Button but outside any Form —
+ * "a Card with an Input and an Add button". Without this the click arrives
+ * with no data and the typed text is lost. Returns null unless at least one
+ * text-like field holds a value, so header / nav buttons (and cards of
+ * toggles) keep sending bare clicks the runtime can replay or auto-link.
+ * Search boxes are left out: they report through their own "search" event.
+ */
+export function collectLooseFields(
+  root: FieldContainer | null | undefined
+): Record<string, unknown> | null {
+  if (!root) return null
+  const out: Record<string, unknown> = {}
+  let typed = false
+  const els = root.querySelectorAll('input[name], textarea[name], select[name]')
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i]
+    if (!el.name || el.closest('form')) continue
+    const type = (el.type ?? '').toLowerCase()
+    if (type === 'search' || type === 'submit' || type === 'button' || type === 'reset') continue
+    if (type === 'password') {
+      // Sent under "password" (masked by redaction) unless its own name
+      // already says so — never as the free-form name it may have.
+      const key = /pass|pwd|secret|pin/i.test(el.name) ? el.name : 'password'
+      if (el.value !== '') {
+        typed = true
+        out[key] = el.value
+      }
+      continue
+    }
+    if (type === 'checkbox') {
+      out[el.name] = Boolean(el.checked)
+    } else if (type === 'radio') {
+      if (el.checked) out[el.name] = el.value
+    } else {
+      if (el.value !== '') typed = true
+      if (!(el.name in out) || el.value !== '') out[el.name] = el.value
+    }
+  }
+  return typed ? out : null
+}
 
 export function Button({
   text: label,
@@ -1011,8 +1319,16 @@ export function Button({
   const caption = text(label || 'Button')
 
   const act = (): void => {
-    if (submits) ref.current?.form?.requestSubmit()
-    else runtime.dispatch({ event: 'click', nodeName, nodeId })
+    if (submits) {
+      ref.current?.form?.requestSubmit()
+      return
+    }
+    // Outside a Form, a button beside filled-in fields carries their values.
+    const cell = inForm ? null : ref.current?.closest('.grid-cell')
+    const fields = cell
+      ? collectLooseFields({ querySelectorAll: (q) => cell.querySelectorAll<HTMLInputElement>(q) })
+      : null
+    runtime.dispatch({ event: 'click', nodeName, nodeId, data: fields ? { fields } : undefined })
   }
 
   const content = (
@@ -1073,12 +1389,12 @@ export function Button({
  *  thousands of entries must not freeze the renderer (a note shows the cut). */
 const MAX_LIST_ROWS = 200
 
-interface Column {
+export interface Column {
   key: string
   label: string
 }
 
-function toColumns(columns: unknown, rows: unknown[]): Column[] {
+export function toColumns(columns: unknown, rows: unknown[]): Column[] {
   if (Array.isArray(columns) && columns.length) {
     return columns.map((c, i) => {
       if (c && typeof c === 'object') {
@@ -1150,9 +1466,12 @@ export function Table({
   const cols = toColumns(columns, body)
   const interactive = truthy(rowAction)
   const select = (index: number): void => {
-    const cells = rowCells(body[index], cols)
-    const row = Object.fromEntries(cols.map((c, i) => [c.label || c.key, cellText(cells[i])]))
-    runtime.dispatch({ event: 'select', nodeId, nodeName, data: { index, row } })
+    runtime.dispatch({
+      event: 'select',
+      nodeId,
+      nodeName,
+      data: tableSelectData(body[index], cols, index)
+    })
   }
   const header = (
     <>
@@ -1282,6 +1601,65 @@ function humanize(id: string | undefined): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
+/** Fields of a source record carried by a select event — enough to identify and describe it. */
+const MAX_RECORD_FIELDS = 40
+const MAX_RECORD_TEXT = 200
+
+/**
+ * The scalar fields of a row/item as the API delivered it — hidden ones (id,
+ * slug, href) included, chip cells reduced to their text, long strings
+ * capped, nested objects/arrays left out — so a select event stays small but
+ * still names the record. Null for a non-object row.
+ */
+export function recordOf(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const out: Record<string, unknown> = {}
+  let n = 0
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (n >= MAX_RECORD_FIELDS) break
+    const flat = cellText(v)
+    if (flat === null || typeof flat === 'number' || typeof flat === 'boolean') out[k] = flat
+    else if (typeof flat === 'string')
+      out[k] = flat.length > MAX_RECORD_TEXT ? flat.slice(0, MAX_RECORD_TEXT) : flat
+    else continue
+    n++
+  }
+  return out
+}
+
+/** The record's own identity, under the names APIs use for it. */
+function recordId(rec: Record<string, unknown>): unknown {
+  for (const k of ['id', 'key', '_id', 'uuid', 'slug']) {
+    const v = rec[k]
+    if (typeof v === 'string' ? v !== '' : typeof v === 'number') return v
+  }
+  return undefined
+}
+
+/**
+ * Data of a Table rowAction "select": `row` is the visible cells keyed by
+ * column label (what the user saw), `record` the source row's own fields —
+ * including ones not shown as columns, like its id — and `id` the record's
+ * identity. Without `record`/`id` the model had to look the row up by its
+ * display name: extra API rounds, sometimes the wrong record.
+ */
+export function tableSelectData(
+  raw: unknown,
+  cols: Column[],
+  index: number
+): Record<string, unknown> {
+  const cells = rowCells(raw, cols)
+  const row = Object.fromEntries(cols.map((c, i) => [c.label || c.key, cellText(cells[i])]))
+  const data: Record<string, unknown> = { index, row }
+  const record = recordOf(raw)
+  if (record) {
+    data.record = record
+    const id = recordId(record)
+    if (id !== undefined) data.id = id
+  }
+  return data
+}
+
 function cellText(v: unknown): unknown {
   if (v && typeof v === 'object' && !Array.isArray(v)) {
     const rec = v as Record<string, unknown>
@@ -1291,6 +1669,8 @@ function cellText(v: unknown): unknown {
 }
 
 interface ListItem {
+  /** The source item, carried whole (scalar fields) by its select event. */
+  raw?: unknown
   id?: string
   title: string
   description?: string
@@ -1307,7 +1687,8 @@ function toListItems(items: unknown): ListItem[] {
     if (it === null || typeof it !== 'object') return { title: text(it) }
     const r = it as Record<string, unknown>
     return {
-      id: r.id === undefined ? undefined : text(r.id),
+      raw: it,
+      id: r.id === undefined || r.id === null || r.id === '' ? undefined : text(r.id),
       title: text(r.title ?? r.label ?? r.name ?? r.text),
       description: r.description || r.subtitle ? text(r.description ?? r.subtitle) : undefined,
       icon: r.icon ? text(r.icon) : undefined,
@@ -1317,6 +1698,18 @@ function toListItems(items: unknown): ListItem[] {
       badgeVariant: r.badgeVariant ? text(r.badgeVariant) : undefined
     }
   })
+}
+
+/** Data of a List item "select": its id and title plus the whole source item (scalars). */
+export function listSelectData(item: {
+  id?: string
+  title: string
+  raw?: unknown
+}): Record<string, unknown> {
+  const data: Record<string, unknown> = { id: item.id, title: item.title }
+  const record = recordOf(item.raw)
+  if (record) data.record = record
+  return data
 }
 
 export function List({
@@ -1394,7 +1787,7 @@ export function List({
                     event: 'select',
                     nodeId,
                     nodeName,
-                    data: { id: item.id, title: item.title }
+                    data: listSelectData(item)
                   })
                 }
               >
@@ -1597,7 +1990,11 @@ export function Alert({
         ) : null}
         {action ? (
           <div className="mt-2 flex justify-end">
-            <HButton size="sm" variant={status === 'danger' ? 'primary' : 'secondary'} onPress={action.onPress}>
+            <HButton
+              size="sm"
+              variant={status === 'danger' ? 'primary' : 'secondary'}
+              onPress={action.onPress}
+            >
               {text(action.label)}
             </HButton>
           </div>

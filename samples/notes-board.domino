@@ -1,6 +1,7 @@
 ; Notes board — no auth, straight to the main page.
 [meta]
 name = NotesBoard
+description = A shared board of short notes
 home = main
 
 [api]
@@ -11,5 +12,20 @@ allow = /notes, /notes/*
 theme = light
 primary = #059669
 
+[pages]
+main = Notes | every note as a card grid, newest first, with a "new note" button | nav
+note-new = New note | form (id new-note-form) with title and body
+
 [script]
 when not logged_in -> goto main
+
+[data]
+notes = GET /notes every 30s
+
+[actions]
+new-note = goto note-new
+new-note-form = call POST /notes with form ; refresh notes ; goto main
+
+[guide]
+GET /notes returns [{id, title, body, updatedAt}] — bind the grid to {"$data": "notes"}.
+POST /notes {title, body} creates a note; the runtime runs it for new-note-form and returns to main.

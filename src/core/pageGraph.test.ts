@@ -7,7 +7,11 @@ import {
   pageMapLines,
   buildPageGraph,
   collectActions,
+  loadPageGraph,
+  pruneEdgesForPage,
+  savePageGraph,
   toMermaid,
+  upsertAnswerEdge,
   upsertEdge,
   type GraphEdge
 } from './pageGraph'
@@ -187,5 +191,85 @@ describe('observedDests (pre-gen targets from the observed graph)', () => {
 
   it('is empty for an empty graph', () => {
     expect(observedDests([])).toEqual([])
+  })
+})
+
+describe('self-loops and data actions', () => {
+  const spec = specOf([
+    {
+      id: 'list',
+      name: '목록',
+      layout: [
+        { name: 'Table', id: 'rows', props: { rowAction: true } },
+        { name: 'Button', id: 'refresh-list', props: { text: '새로고침' } },
+        { name: 'Button', id: 'go-new', props: { text: '새 항목' } }
+      ]
+    },
+    { id: 'detail', name: '상세', layout: [] },
+    { id: 'new', name: '새 항목', layout: [] }
+  ])
+  const domino = dominoOf('[meta]\nname = X\n')
+
+  it('keeps in-place updates off the map and lists data actions on their own line', () => {
+    const observed: GraphEdge[] = [
+      { from: 'list', to: 'list', action: 'refresh-list', label: '새로고침', kind: 'action' },
+      { from: 'list', to: 'detail', action: 'rows', label: '행 선택', kind: 'action' },
+      { from: 'list', to: 'new', action: 'go-new', label: '새 항목', kind: 'action' }
+    ]
+    const lines = pageMapLines(spec, [], domino, observed)
+    const connected = lines.find((l) => l.startsWith('Connected actions'))!
+    const data = lines.find((l) => l.startsWith('Data actions'))!
+    expect(connected).toContain('list/새 항목 → new')
+    expect(connected).not.toContain('새로고침')
+    expect(connected).not.toContain('detail')
+    expect(data).toContain('list/행 선택 → detail')
+  })
+
+  it('observedDests skips self-loops', () => {
+    expect(
+      observedDests([
+        { from: 'list', to: 'list', action: 'x', label: 'X', kind: 'action' },
+        { from: 'list', to: 'new', action: 'y', label: 'Y', kind: 'action' }
+      ])
+    ).toEqual(['new'])
+  })
+
+  it('loadPageGraph drops persisted self-loop action edges', async () => {
+    const store = new Map<string, string>()
+    const storage = {
+      get: async (k: string) => store.get(k) ?? null,
+      set: async (k: string, v: string) => void store.set(k, v),
+      remove: async (k: string) => void store.delete(k)
+    }
+    await savePageGraph(storage, 'd', [
+      { from: 'list', to: 'list', action: 'del', label: 'Delete', kind: 'action' },
+      { from: 'list', to: 'list', action: 'ref', label: 'Refresh', kind: 'data' },
+      { from: 'list', to: 'new', action: 'go-new', label: 'New', kind: 'action' }
+    ])
+    const edges = await loadPageGraph(storage, 'd')
+    expect(edges.map((e) => e.action)).toEqual(['ref', 'go-new'])
+  })
+
+  it('upsertAnswerEdge keeps one answer per page+action across action/form kinds', () => {
+    const link: GraphEdge = { from: 'p', to: 'a', action: 'x', label: 'X', kind: 'action' }
+    const write: GraphEdge = { from: 'p', to: 'b', action: 'x', label: 'X', kind: 'form' }
+    const nav: GraphEdge = { from: 'p', to: 'c', action: 'x', label: 'X', kind: 'nav' }
+    const edges = upsertAnswerEdge(upsertAnswerEdge([link, nav], write), write)
+    expect(edges).toEqual([nav, write])
+  })
+
+  it('pruneEdgesForPage drops edges whose widget left the edited page', () => {
+    const edges: GraphEdge[] = [
+      { from: 'list', to: 'new', action: 'go-new', label: 'New', kind: 'action' },
+      { from: 'list', to: 'old', action: 'gone', label: 'Gone', kind: 'action' },
+      { from: 'other', to: 'old', action: 'gone', label: 'Gone', kind: 'action' }
+    ]
+    const page = { id: 'list', layout: [{ name: 'Button', id: 'go-new' }] }
+    expect(pruneEdgesForPage(edges, page).map((e) => `${e.from}/${e.action}`)).toEqual([
+      'list/go-new',
+      'other/gone'
+    ])
+    const untouched = edges.slice(0, 1)
+    expect(pruneEdgesForPage(untouched, page)).toBe(untouched)
   })
 })

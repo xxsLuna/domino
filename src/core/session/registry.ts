@@ -15,6 +15,19 @@ import { hashContext } from './session'
 const MAX_CACHED_TEXTS = 10
 /** A single cached text over this many chars is skipped (localStorage budget). */
 const MAX_TEXT_CHARS = 512_000
+/**
+ * An export "with the app" carries every built page in its [screens]
+ * section: it gets a larger budget, or a big exported app would never open
+ * offline again (storage pressure is handled by quota relief, which drops
+ * the text cache first).
+ */
+const MAX_APP_TEXT_CHARS = 1_500_000
+const HAS_SCREENS = /^[ \t]*\[screens\][ \t]*(?:[;#].*)?$/im
+
+/** The text-cache budget for one source text. */
+export function textCacheLimit(text: string): number {
+  return HAS_SCREENS.test(text) ? MAX_APP_TEXT_CHARS : MAX_TEXT_CHARS
+}
 
 const INDEX_KEY = 'domino:text-index'
 const textKey = (hash: string): string => `domino:text:${hash}`
@@ -91,7 +104,7 @@ export async function putCachedText(
   source: DominoSource,
   text: string
 ): Promise<void> {
-  if (!cacheable(source) || !text || text.length > MAX_TEXT_CHARS) return
+  if (!cacheable(source) || !text || text.length > textCacheLimit(text)) return
   try {
     const key = sourceKey(source)
     const hash = hashContext(text)
