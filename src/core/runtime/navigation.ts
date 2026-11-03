@@ -1,4 +1,10 @@
-import { canAutoLink, isMutatingControl, isReplayableEvent } from '../actionPolicy'
+import {
+  canAutoLink,
+  declaredPageLink,
+  isMutatingControl,
+  isOpenerControl,
+  isReplayableEvent
+} from '../actionPolicy'
 import type { PlannedPage } from '../agent/pregen'
 import type { GraphEdge } from '../pageGraph'
 import { resolvePageId } from '../pageLinks'
@@ -133,6 +139,32 @@ const norm = (s: string): string => s.trim().replace(/\s+/g, ' ').toLowerCase()
 const ID_PREFIX = /^(?:go|goto|go-to|open|view|show|nav|to|btn|link)[-_.]/i
 const ID_SUFFIX = /[-_.](?:btn|button|link|page)$/i
 
+interface DestinationContext {
+  known: UiSpec | null
+  nav: readonly NavItem[]
+  plan: readonly PlannedPage[]
+  currentPage: string
+}
+
+/**
+ * The page a Button/Link `to` names, resolved like any page reference: a
+ * built page (by id, nav id or name) first, then a [pages] plan entry (by id
+ * or name); an explicit `to` is trusted even when nothing matches yet.
+ */
+export function declaredDestination(
+  node: CardNode | null,
+  ctx: Pick<DestinationContext, 'known' | 'nav' | 'plan'>
+): { pageId: string; built: boolean } | null {
+  const target = declaredPageLink(node)
+  if (!target) return null
+  const built = resolvePageId([...ctx.nav], ctx.known?.pages ?? [], target)
+  if (built) return { pageId: built, built: true }
+  const planned =
+    ctx.plan.find((p) => norm(p.id) === norm(target)) ??
+    ctx.plan.find((p) => norm(p.name) === norm(target))
+  return { pageId: planned?.id ?? target, built: false }
+}
+
 /**
  * The page a plain control names itself, before any press was observed:
  * an explicit `to` prop (Button/Link), an id that IS a page id once the
@@ -143,12 +175,7 @@ const ID_SUFFIX = /[-_.](?:btn|button|link|page)$/i
  */
 export function namedDestination(
   node: CardNode | null,
-  ctx: {
-    known: UiSpec | null
-    nav: readonly NavItem[]
-    plan: readonly PlannedPage[]
-    currentPage: string
-  }
+  ctx: DestinationContext
 ): { pageId: string; built: boolean } | null {
   if (!node || (node.name !== 'Button' && node.name !== 'Link')) return null
   if (isMutatingControl(node)) return null
@@ -167,15 +194,8 @@ export function namedDestination(
   const plannedById = (raw: string): string | null =>
     ctx.plan.find((p) => norm(p.id) === norm(raw))?.id ?? null
 
-  const to = node.props?.to
-  if (typeof to === 'string' && to.trim()) {
-    const target = to.trim().replace(/^(?:#\/?|page:)/, '')
-    const built = resolvePageId(nav, pages, target)
-    if (built) return accept(built, true)
-    const planned =
-      plannedById(target) ?? ctx.plan.find((p) => norm(p.name) === norm(target))?.id ?? null
-    return accept(planned ?? target, false)
-  }
+  const declared = declaredDestination(node, ctx)
+  if (declared) return accept(declared.pageId, declared.built)
 
   if (node.id) {
     const stem = node.id.replace(ID_PREFIX, '').replace(ID_SUFFIX, '')
@@ -227,6 +247,11 @@ export interface PressPlan {
   recordDependent: boolean
   /** Destination hint for the turn prompt (declared, named, or observed). */
   guidedTo: string | null
+  /**
+   * A built page the turn should switch to (after any write) instead of
+   * designing it again — set only when the press still needs a turn.
+   */
+  reuse: string | null
   /** What the answer records on landing. */
   answer: PressAnswer
 }
@@ -239,6 +264,10 @@ export interface PressPlan {
  *   leads there (canAutoLink) or the control names the page itself (`to`,
  *   its id, its label). A destination whose canonical copy shows one record
  *   is never auto-linked: that copy belongs to another press.
+ * - **Reuse** — an opener press ("추가", "Add": it may write, so it still
+ *   needs a turn) heading for a built, record-independent page: the turn
+ *   makes its write, if any, and switches to that page instead of
+ *   designing it again.
  * - **Replayable** — only isReplayableEvent presses on non-mutating
  *   controls, and never a plain click on a record's page (the same button
  *   on another record's detail page must not replay the first record's
@@ -304,9 +333,34 @@ export function planPress(input: PressInput): PressPlan {
         x.to !== pageId
     )
   const navTarget = e.event === 'navigate' ? String(e.data?.page ?? e.nodeId) : null
+  // An opener's own `to` names its page although the press may write
+  // (namedDestination skips it): the first build then lands under that id.
+  const opener = isOpenerControl(node, { inForm })
+  const declared = opener ? declaredDestination(node, { known, nav, plan }) : null
   const guidedTo =
-    input.declaredTarget ?? navTarget ?? (named ? named.pageId : null) ?? observed?.to ?? null
-  return { switchTo, replayable, recordDependent, guidedTo, answer }
+    input.declaredTarget ??
+    navTarget ??
+    (named ? named.pageId : null) ??
+    observed?.to ??
+    (declared && declared.pageId !== pageId ? declared.pageId : null) ??
+    null
+
+  // An opener still needs a turn (it may write), but its page is already
+  // built: where its latest answer landed without writing, or the page its
+  // `to` names. Never after a write (that page may have to show new data),
+  // never a record's page, never for a control that always acts (Pay,
+  // Delete, a danger or confirm button).
+  let reuse: string | null = null
+  if (!switchTo && !recordDependent && plainClick && !input.declaredTarget && opener) {
+    const candidate = observed
+      ? observed.kind === 'action'
+        ? observed.to
+        : null
+      : (declared?.pageId ?? null)
+    const target = candidate ? builtTarget(candidate) : null
+    if (target && !recordPages.has(target)) reuse = target
+  }
+  return { switchTo, replayable, recordDependent, guidedTo, reuse, answer }
 }
 
 /**

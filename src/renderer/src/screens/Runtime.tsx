@@ -3084,13 +3084,19 @@ export function Runtime({
         : null
       const dest = destination && destination.pageId !== cs?.page ? destination : null
       const observed = !declaredTarget && guidedTo !== null && e.event !== 'navigate'
+      // A built destination is reused, not designed again ("추가" buttons
+      // regenerated their entry form on every press): the turn makes the
+      // press's write, if any, then switches — or re-renders when the page
+      // must show that write's result.
       const prompt = declaredTarget
         ? `The user acted on the current screen (see ACTION above). The app declares that this action opens page "${declaredTarget}" — render that page (use exactly that page id).`
-        : observed
-          ? `The user acted on the current screen (see ACTION above). This action leads to page "${guidedTo}" — render that page${
-              plan.recordDependent ? ' for this press (fresh record/data)' : ''
-            } (use exactly that page id; bind its known endpoints, call_api only for unknown ones or writes).`
-          : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`
+        : plan.reuse
+          ? `The user acted on the current screen (see ACTION above). This action leads to page "${plan.reuse}", which is already built. If the action changes data, make that call_api write first. Then finish with navigate to "${plan.reuse}" (its bound data refreshes on show) when the stored page is still right for this press — an entry form, or a list whose data is bound. Render it again only when it must show something this press produced (the record just created, a confirmation).`
+          : observed
+            ? `The user acted on the current screen (see ACTION above). This action leads to page "${guidedTo}" — render that page${
+                plan.recordDependent ? ' for this press (fresh record/data)' : ''
+              } (use exactly that page id; bind its known endpoints, call_api only for unknown ones or writes).`
+            : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`
       const opts: TurnOptions & { action: InflightAction } = {
         action: { nodeId: e.nodeId, event: e.event, pageId },
         answers: plan.answer,

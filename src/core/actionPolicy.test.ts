@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { canAutoLink, isMutatingControl, isReplayableEvent } from './actionPolicy'
+import {
+  canAutoLink,
+  declaredPageLink,
+  isMutatingControl,
+  isOpenerControl,
+  isReplayableEvent
+} from './actionPolicy'
 import type { CardNode } from './spec'
 
 const button = (id: string, props: Record<string, unknown> = {}): CardNode => ({
@@ -108,7 +114,11 @@ describe('canAutoLink', () => {
 })
 
 describe('actions that create or start something', () => {
-  const press = (id: string, text: string) => ({ name: 'Button', id, props: { text } })
+  const press = (id: string, text: string, props: Record<string, unknown> = {}) => ({
+    name: 'Button',
+    id,
+    props: { text, ...props }
+  })
   it('are mutating: their first press must reach the API', () => {
     for (const [id, text] of [
       ['add-to-cart', 'Add to cart'],
@@ -118,9 +128,56 @@ describe('actions that create or start something', () => {
       ['start-timer', 'Start'],
       ['duplicate', 'Duplicate'],
       ['invite', 'Invite'],
-      ['apply', '신청하기']
+      ['apply', '신청하기'],
+      ['add-item', '품목 추가']
     ]) {
       expect(isMutatingControl(press(id, text)), id).toBe(true)
     }
+  })
+
+  it('stay mutating with an explicit `to`: words and `to` never prove a press only opens a page', () => {
+    expect(isMutatingControl(press('add-item', '품목 추가', { to: 'item_add' }))).toBe(true)
+    expect(isMutatingControl(press('add-to-cart', '장바구니에 추가', { to: 'cart' }))).toBe(true)
+  })
+})
+
+describe('openers ("추가", "Add", "Join")', () => {
+  const add = button('add-item', { text: '품목 추가', to: 'item_add' })
+
+  it('are never auto-linked, whatever edge was observed: one answer says nothing about the next press', () => {
+    expect(canAutoLink({ to: 'item_add', kind: 'action' }, add, 'main')).toBe(false)
+    expect(
+      canAutoLink(
+        { to: 'cart', kind: 'action' },
+        button('add-to-cart', { text: 'Add to cart' }),
+        'p'
+      )
+    ).toBe(false)
+  })
+
+  it('isOpenerControl: only an opener verb made the control mutating', () => {
+    expect(isOpenerControl(add)).toBe(true)
+    expect(isOpenerControl(button('join', { text: '참여하기' }))).toBe(true)
+    // Always-acting verbs and structural signals are not openers.
+    expect(isOpenerControl(button('pay', { text: '결제' }))).toBe(false)
+    expect(isOpenerControl(button('delete', { text: 'Delete' }))).toBe(false)
+    expect(isOpenerControl(button('add', { text: 'Add', variant: 'danger' }))).toBe(false)
+    expect(isOpenerControl(button('add', { text: 'Add', confirm: 'Sure?' }))).toBe(false)
+    expect(isOpenerControl(button('add', { text: 'Add' }), { inForm: true })).toBe(false)
+    // Plain controls and missing nodes are not openers either.
+    expect(isOpenerControl(button('view-all', { text: 'View all' }))).toBe(false)
+    expect(isOpenerControl(null)).toBe(false)
+  })
+})
+
+describe('declaredPageLink', () => {
+  it('reads a Button/Link `to` without decorations', () => {
+    expect(declaredPageLink(button('a', { to: ' #/item_add ' }))).toBe('item_add')
+    expect(declaredPageLink(button('a', { to: 'page:stats' }))).toBe('stats')
+    expect(declaredPageLink(button('a', { to: '#' }))).toBeNull()
+    expect(declaredPageLink(button('a', { to: ' ' }))).toBeNull()
+    expect(declaredPageLink(button('a'))).toBeNull()
+    expect(declaredPageLink({ name: 'Card', id: 'c', props: { to: 'x' } })).toBeNull()
+    expect(declaredPageLink(null)).toBeNull()
   })
 })
