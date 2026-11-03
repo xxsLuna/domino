@@ -78,7 +78,9 @@ describe('navigate', () => {
       })
     )
     expect(seen).toHaveLength(1)
-    expect(updates.filter((u) => u.type === 'navigated')).toEqual([{ type: 'navigated', page: 'leads' }])
+    expect(updates.filter((u) => u.type === 'navigated')).toEqual([
+      { type: 'navigated', page: 'leads', calledApi: false }
+    ])
     expect(errors(updates)).toEqual([])
     expect(JSON.parse(history.at(-1)!.content)).toEqual({ ok: true, page: 'leads' })
   })
@@ -320,7 +322,7 @@ describe('write ordering', () => {
     setHttpFetch(async () => new Response('{}', { status: 200 }))
     const updates = await collect(
       runAgentTurn({
-        adapter: scripted([{ calls: [navigate('leads'), callApi('/leads/7', 'DELETE')] }]),
+        adapter: scripted([{ calls: [navigate('leads'), callApi('/leads', 'DELETE')] }]),
         system: 's',
         history: [{ role: 'user', content: 'go' }],
         api: API,
@@ -329,6 +331,82 @@ describe('write ordering', () => {
     )
     const kinds = updates.filter((u) => u.type === 'api_result' || u.type === 'navigated').map((u) => u.type)
     expect(kinds).toEqual(['api_result', 'navigated'])
+  })
+
+  it('refuses a navigate beside a failed write and lets the model show the error', async () => {
+    setHttpFetch(async () => new Response('{"error":"out of stock"}', { status: 409 }))
+    const seen: ChatRequest[] = []
+    const updates = await collect(
+      runAgentTurn({
+        adapter: scripted(
+          [{ calls: [callApi('/leads', 'POST', { a: 1 }), navigate('leads')] }, { calls: [render()] }],
+          seen
+        ),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        knownPages: ['leads']
+      })
+    )
+    expect(updates.some((u) => u.type === 'navigated')).toBe(false)
+    expect(seen).toHaveLength(2)
+    const nav = toolResults(seen[1]).find((r) => 'ok' in r && r.ok === false)
+    expect(nav.error).toMatch(/POST \/leads → 409 failed/)
+    expect(nav.error).not.toMatch(/retry/)
+    expect(finals(updates)).toHaveLength(1)
+    expect(errors(updates)).toEqual([])
+  })
+
+  it('a write with an unknown outcome (timeout, network: status 0) does not stop the switch', async () => {
+    setHttpFetch(async () => {
+      throw new TypeError('network down')
+    })
+    const updates = await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [callApi('/leads', 'POST', { a: 1 }), navigate('leads')] }]),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        knownPages: ['leads']
+      })
+    )
+    const api = updates.find((u) => u.type === 'api_result')
+    expect(api && api.type === 'api_result' ? api.result.status : null).toBe(0)
+    expect(updates.some((u) => u.type === 'navigated')).toBe(true)
+  })
+
+  it('announces a write before sending it, and tells a navigate about calls beside it', async () => {
+    setHttpFetch(async () => new Response('{}', { status: 200 }))
+    const updates = await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [callApi('/leads', 'POST', { a: 1 }), callApi('/a'), navigate('leads')] }]),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        knownPages: ['leads']
+      })
+    )
+    const kinds = updates
+      .filter((u) => u.type === 'api_call' || u.type === 'api_result' || u.type === 'navigated')
+      .map((u) => (u.type === 'api_result' ? `api_result:${u.method}` : u.type))
+    // One announcement, for the write only; reads settle after the switch.
+    expect(kinds).toEqual(['api_call', 'api_result:POST', 'navigated', 'api_result:GET'])
+    const nav = updates.find((u) => u.type === 'navigated')
+    expect(nav && nav.type === 'navigated' ? nav.calledApi : null).toBe(true)
+  })
+
+  it('a failed read beside a navigate does not stop the switch', async () => {
+    setHttpFetch(async () => new Response('{}', { status: 500 }))
+    const updates = await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [callApi('/leads'), navigate('leads')] }]),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        knownPages: ['leads']
+      })
+    )
+    expect(updates.some((u) => u.type === 'navigated')).toBe(true)
   })
 
   it('a read-only build reports the refused write before its render', async () => {

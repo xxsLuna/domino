@@ -1,6 +1,13 @@
-import { canAutoLink, isMutatingControl, isReplayableEvent } from '../actionPolicy'
+import {
+  canAutoLink,
+  declaredPageLink,
+  isMutatingControl,
+  isOpenerControl,
+  isReplayableEvent
+} from '../actionPolicy'
 import type { PlannedPage } from '../agent/pregen'
-import type { GraphEdge } from '../pageGraph'
+import type { ChatMessage } from '../llm/types'
+import { withoutLearned, type GraphEdge } from '../pageGraph'
 import { resolvePageId } from '../pageLinks'
 import { hashContext, type SessionStore } from '../session/session'
 import {
@@ -42,6 +49,29 @@ export interface PressAnswer {
    * destination's content then depends on WHICH record, not just the button.
    */
   dataKey?: string
+  /**
+   * An opener whose `to` names this built page and that was never seen
+   * writing: a pure switch here (no API call) is learned (see answerEdge).
+   */
+  learn?: string
+  /** An opener ("추가", "Add"): its writes are remembered (see writerKey). */
+  opener?: true
+  /**
+   * An opener seen writing (a write it sent, kept by the runtime as a writer
+   * mark), or whose latest answer is a data action: never learned. A data
+   * action alone is not kept as a mark — a press on a record's page records
+   * one without writing anything.
+   */
+  writes?: true
+}
+
+/**
+ * What a write mark is kept under: the action id alone. One action keeps
+ * one id on every page ("one action, one id"), so a write seen on one page
+ * blocks learning it on all of them.
+ */
+export function writerKey(press: Pick<PressAnswer, 'action'>): string {
+  return press.action
 }
 
 /** The pressed node on the current page, and whether it sits inside a Form. */
@@ -94,8 +124,17 @@ export function pressDataKey(e: {
  * for a data-free, read-only open of another page, and a `form` (data
  * action) edge for everything else — those are never auto-linked, and the
  * model's app map lists them as "re-render with fresh data".
+ *
+ * `pureSwitch`: the answer was the turn's first landing, a navigate with no
+ * API call at all, and the press never wrote this session. Landing then on
+ * the page the press may learn (`learn`) marks the link `reused`.
  */
-export function answerEdge(press: PressAnswer, landed: string, mutated: boolean): GraphEdge | null {
+export function answerEdge(
+  press: PressAnswer,
+  landed: string,
+  mutated: boolean,
+  pureSwitch = false
+): GraphEdge | null {
   if (!landed || landed === press.from) return null
   const plain =
     !mutated &&
@@ -106,8 +145,27 @@ export function answerEdge(press: PressAnswer, landed: string, mutated: boolean)
     to: landed,
     action: press.action,
     label: press.label,
-    kind: plain ? 'action' : 'form'
+    kind: plain ? 'action' : 'form',
+    ...(plain && pureSwitch && !press.writes && press.learn === landed
+      ? { reused: true as const }
+      : {})
   }
+}
+
+/** Whether a turn's own messages called call_api with anything but GET. */
+export function messagesWrite(messages: readonly ChatMessage[]): boolean {
+  return messages.some((m) =>
+    (m.toolCalls ?? []).some((c) => {
+      if (c.name !== 'call_api') return false
+      try {
+        const args = JSON.parse(c.args) as { method?: unknown }
+        return String(args.method ?? 'GET').toUpperCase() !== 'GET'
+      } catch {
+        // Unreadable arguments: assume the worst.
+        return true
+      }
+    })
+  )
 }
 
 /**
@@ -133,6 +191,32 @@ const norm = (s: string): string => s.trim().replace(/\s+/g, ' ').toLowerCase()
 const ID_PREFIX = /^(?:go|goto|go-to|open|view|show|nav|to|btn|link)[-_.]/i
 const ID_SUFFIX = /[-_.](?:btn|button|link|page)$/i
 
+interface DestinationContext {
+  known: UiSpec | null
+  nav: readonly NavItem[]
+  plan: readonly PlannedPage[]
+  currentPage: string
+}
+
+/**
+ * The page a Button/Link `to` names, resolved like any page reference: a
+ * built page (by id, nav id or name) first, then a [pages] plan entry (by id
+ * or name); an explicit `to` is trusted even when nothing matches yet.
+ */
+export function declaredDestination(
+  node: CardNode | null,
+  ctx: Pick<DestinationContext, 'known' | 'nav' | 'plan'>
+): { pageId: string; built: boolean } | null {
+  const target = declaredPageLink(node)
+  if (!target) return null
+  const built = resolvePageId([...ctx.nav], ctx.known?.pages ?? [], target)
+  if (built) return { pageId: built, built: true }
+  const planned =
+    ctx.plan.find((p) => norm(p.id) === norm(target)) ??
+    ctx.plan.find((p) => norm(p.name) === norm(target))
+  return { pageId: planned?.id ?? target, built: false }
+}
+
 /**
  * The page a plain control names itself, before any press was observed:
  * an explicit `to` prop (Button/Link), an id that IS a page id once the
@@ -143,12 +227,7 @@ const ID_SUFFIX = /[-_.](?:btn|button|link|page)$/i
  */
 export function namedDestination(
   node: CardNode | null,
-  ctx: {
-    known: UiSpec | null
-    nav: readonly NavItem[]
-    plan: readonly PlannedPage[]
-    currentPage: string
-  }
+  ctx: DestinationContext
 ): { pageId: string; built: boolean } | null {
   if (!node || (node.name !== 'Button' && node.name !== 'Link')) return null
   if (isMutatingControl(node)) return null
@@ -167,15 +246,8 @@ export function namedDestination(
   const plannedById = (raw: string): string | null =>
     ctx.plan.find((p) => norm(p.id) === norm(raw))?.id ?? null
 
-  const to = node.props?.to
-  if (typeof to === 'string' && to.trim()) {
-    const target = to.trim().replace(/^(?:#\/?|page:)/, '')
-    const built = resolvePageId(nav, pages, target)
-    if (built) return accept(built, true)
-    const planned =
-      plannedById(target) ?? ctx.plan.find((p) => norm(p.name) === norm(target))?.id ?? null
-    return accept(planned ?? target, false)
-  }
+  const declared = declaredDestination(node, ctx)
+  if (declared) return accept(declared.pageId, declared.built)
 
   if (node.id) {
     const stem = node.id.replace(ID_PREFIX, '').replace(ID_SUFFIX, '')
@@ -216,17 +288,26 @@ export interface PressInput {
   recordPages: ReadonlyMap<string, string>
   /** The [actions] goto this press declares (not built yet). */
   declaredTarget?: string
+  /** Openers (writerKey) ever seen sending a write: never learned as links. */
+  writers?: ReadonlySet<string>
 }
 
 export interface PressPlan {
   /** A built page to switch to right now — no model turn. */
   switchTo: string | null
+  /** switchTo follows a learned (`reused`) link: re-record it as one. */
+  confirmed: boolean
   /** The press's answer may be read from / written to the screen caches. */
   replayable: boolean
   /** Its destination depends on the press (record, query, write). */
   recordDependent: boolean
   /** Destination hint for the turn prompt (declared, named, or observed). */
   guidedTo: string | null
+  /**
+   * A built page the turn should switch to (after any write) instead of
+   * designing it again — set only when the press still needs a turn.
+   */
+  reuse: string | null
   /** What the answer records on landing. */
   answer: PressAnswer
 }
@@ -239,6 +320,13 @@ export interface PressPlan {
  *   leads there (canAutoLink) or the control names the page itself (`to`,
  *   its id, its label). A destination whose canonical copy shows one record
  *   is never auto-linked: that copy belongs to another press.
+ * - **Reuse** — an opener press ("추가", "Add": it may write, so it still
+ *   needs a turn) heading for a built, record-independent page: the turn
+ *   makes its write, if any, and switches to that page instead of
+ *   designing it again.
+ * - **Learn** — an opener whose `to` names a built page and that was never
+ *   seen writing: a pure switch to that page is recorded as a link, and the
+ *   next press follows it with no turn (canAutoLink).
  * - **Replayable** — only isReplayableEvent presses on non-mutating
  *   controls, and never a plain click on a record's page (the same button
  *   on another record's detail page must not replay the first record's
@@ -263,36 +351,12 @@ export function planPress(input: PressInput): PressPlan {
     isReplayableEvent(e) &&
     (navigation || !isMutatingControl(node, { inForm })) &&
     !(fromRecord !== undefined && e.event === 'click')
-  const answer: PressAnswer = {
-    from: pageId,
-    action: e.nodeId,
-    label: nodeLabel(node, e.nodeId),
-    event: e.event,
-    ...(dataKey !== undefined ? { dataKey } : {})
-  }
   const pages = known?.pages ?? []
   const builtTarget = (id: string): string | null => {
     const resolved = resolvePageId([...nav], pages, id)
     return resolved && resolved !== pageId ? resolved : null
   }
-
-  let switchTo: string | null = null
-  let named: { pageId: string; built: boolean } | null = null
-  if (plainClick && !inForm && fromRecord === undefined) {
-    // Newest observation first: the latest answer is what the button does now.
-    for (let i = edges.length - 1; i >= 0 && !switchTo; i--) {
-      const edge = edges[i]
-      if (edge.from !== pageId || edge.action !== e.nodeId) continue
-      if (!canAutoLink(edge, node, pageId)) continue
-      const target = builtTarget(edge.to)
-      if (target && !recordPages.has(target)) switchTo = target
-    }
-    if (!switchTo) {
-      named = namedDestination(node, { known, nav, plan, currentPage: pageId })
-      if (named?.built && !recordPages.has(named.pageId)) switchTo = named.pageId
-    }
-  }
-
+  // The press's latest answer (link or data action).
   const observed = [...edges]
     .reverse()
     .find(
@@ -303,10 +367,84 @@ export function planPress(input: PressInput): PressPlan {
         x.to !== '' &&
         x.to !== pageId
     )
+  // An opener's own `to` names its page although the press may write
+  // (namedDestination skips it): the first build then lands under that id.
+  const opener = isOpenerControl(node, { inForm })
+  const declared = opener ? declaredDestination(node, { known, nav, plan }) : null
+  // Seen writing once (a data-action answer, or a write sent at all): never
+  // learned, for good.
+  const writes =
+    opener &&
+    (observed?.kind === 'form' || Boolean(input.writers?.has(writerKey({ action: e.nodeId }))))
+  const learnable =
+    opener &&
+    !writes &&
+    plainClick &&
+    fromRecord === undefined &&
+    !recordDependent &&
+    !input.declaredTarget &&
+    declared?.built === true &&
+    declared.pageId !== pageId &&
+    !recordPages.has(declared.pageId)
+      ? declared.pageId
+      : null
+  const answer: PressAnswer = {
+    from: pageId,
+    action: e.nodeId,
+    label: nodeLabel(node, e.nodeId),
+    event: e.event,
+    ...(dataKey !== undefined ? { dataKey } : {}),
+    ...(learnable ? { learn: learnable } : {}),
+    ...(opener ? { opener: true as const } : {}),
+    ...(writes ? { writes: true as const } : {})
+  }
+
+  let switchTo: string | null = null
+  let confirmed = false
+  let named: { pageId: string; built: boolean } | null = null
+  if (plainClick && !inForm && fromRecord === undefined) {
+    // Newest observation first: the latest answer is what the button does now.
+    for (let i = edges.length - 1; i >= 0 && !switchTo; i--) {
+      const edge = edges[i]
+      if (edge.from !== pageId || edge.action !== e.nodeId) continue
+      if (!canAutoLink(edge, node, pageId, learnable)) continue
+      const target = builtTarget(edge.to)
+      if (target && !recordPages.has(target)) {
+        switchTo = target
+        confirmed = edge.reused === true
+      }
+    }
+    if (!switchTo) {
+      named = namedDestination(node, { known, nav, plan, currentPage: pageId })
+      if (named?.built && !recordPages.has(named.pageId)) switchTo = named.pageId
+    }
+  }
+
   const navTarget = e.event === 'navigate' ? String(e.data?.page ?? e.nodeId) : null
   const guidedTo =
-    input.declaredTarget ?? navTarget ?? (named ? named.pageId : null) ?? observed?.to ?? null
-  return { switchTo, replayable, recordDependent, guidedTo, answer }
+    input.declaredTarget ??
+    navTarget ??
+    (named ? named.pageId : null) ??
+    observed?.to ??
+    (declared && declared.pageId !== pageId ? declared.pageId : null) ??
+    null
+
+  // An opener still needs a turn (it may write), but its page is already
+  // built: where its latest answer landed without writing, or the page its
+  // `to` names. Never after a write (that page may have to show new data),
+  // never a record's page, never for a control that always acts (Pay,
+  // Delete, a danger or confirm button).
+  let reuse: string | null = null
+  if (!switchTo && !recordDependent && plainClick && !input.declaredTarget && opener) {
+    const candidate = observed
+      ? observed.kind === 'action'
+        ? observed.to
+        : null
+      : (declared?.pageId ?? null)
+    const target = candidate ? builtTarget(candidate) : null
+    if (target && !recordPages.has(target)) reuse = target
+  }
+  return { switchTo, confirmed, replayable, recordDependent, guidedTo, reuse, answer }
 }
 
 /**
@@ -511,7 +649,7 @@ export function mergeEmbeddedEdges(
     const key = `${e.from}|${e.action}`
     if (seen.has(key)) continue
     seen.add(key)
-    out.push(e)
+    out.push(withoutLearned([e])[0])
   }
   return out
 }

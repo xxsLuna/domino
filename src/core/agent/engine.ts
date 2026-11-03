@@ -50,7 +50,13 @@ export type AgentUpdate =
       /** The call was refused without executing (read-only background build). */
       blocked?: boolean
     }
-  | { type: 'navigated'; page: string }
+  /**
+   * The model switched to a built page. `calledApi`: its response also
+   * called call_api (reads settle only after this update).
+   */
+  | { type: 'navigated'; page: string; calledApi: boolean }
+  /** A write is about to be sent (yielded before awaiting it). */
+  | { type: 'api_call'; method: string; path: string }
   /** Streaming render_ui argument size — drives the top rendering gauge. */
   | { type: 'progress'; chars: number }
   /**
@@ -474,6 +480,12 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
       // A call that failed or answered in a new shape: the screen needs
       // another look even when this response already rendered one.
       let apiNeedsFollowUp = false
+      // Writes of this response that certainly did not land (an error status,
+      // or refused before sending): a navigate beside them would end the turn
+      // on a page that looks as if they worked. Status 0 (timeout, network)
+      // is an unknown outcome — the server may have acted — so it never
+      // counts: inviting a resend could duplicate the write.
+      const failedWrites: string[] = []
 
       /** Run (or refuse) one call_api, record its result, and describe the update. */
       async function* settleApi(index: number): AsyncGenerator<AgentUpdate> {
@@ -482,6 +494,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         const path = String(parsed?.path ?? '')
         if (blockedWrite(method)) {
           apiNeedsFollowUp = true
+          failedWrites.push(`${method} ${path} (refused: read-only build)`)
           const error = `call_api ${method} is not allowed in a background build (read-only) — render the screen without performing writes.`
           added.push({
             role: 'tool',
@@ -499,6 +512,10 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           startReads(index + 1)
           return
         }
+        // Announce a write before it goes out: a caller that is superseded
+        // meanwhile must still know this press wrote (the result may land
+        // long after a newer turn started).
+        if (method !== 'GET') yield { type: 'api_call', method, path }
         const result = await (pendingApi.get(tc.id) ?? runApi(parsed))
         // A write has landed: reads queued behind it may start now.
         if (method !== 'GET') startReads(index + 1)
@@ -517,6 +534,9 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         // endpoint called again in a later pass is not "changed" twice.
         if (schema) turnSchemas[endpoint] = mergeSchemaFields(prev, schema)
         if (!success || changed) apiNeedsFollowUp = true
+        if (method !== 'GET' && result.status >= 400) {
+          failedWrites.push(`${method} ${result.path} → ${result.status}`)
+        }
         // Record before yielding so an already-executed (possibly non-idempotent)
         // call is never lost to an abandoned turn — the model would repeat it.
         added.push({
@@ -597,6 +617,14 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             content = { ok: true, page: target ?? page, note: 'render_ui in the same response was shown instead' }
           } else if (navigatedOk) {
             content = { ok: false, error: 'ignored — one navigate per response' }
+          } else if (failedWrites.length > 0) {
+            // Not a failedNav: the page exists, a write didn't land. The data
+            // round that follows shows what went wrong (the model sees which
+            // call failed, and that the others went through).
+            content = {
+              ok: false,
+              error: `ignored — ${failedWrites.join(', ')} failed; render a screen that shows what went wrong instead of switching pages`
+            }
           } else if (target) {
             navigatedOk = true
             rendered = true
@@ -611,7 +639,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             }
           }
           added.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, content: JSON.stringify(content) })
-          if (switchTo) yield { type: 'navigated', page: switchTo }
+          if (switchTo) yield { type: 'navigated', page: switchTo, calledApi }
         } else {
           added.push({
             role: 'tool',
