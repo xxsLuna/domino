@@ -50,7 +50,13 @@ export type AgentUpdate =
       /** The call was refused without executing (read-only background build). */
       blocked?: boolean
     }
-  | { type: 'navigated'; page: string }
+  /**
+   * The model switched to a built page. `calledApi`: its response also
+   * called call_api (reads settle only after this update).
+   */
+  | { type: 'navigated'; page: string; calledApi: boolean }
+  /** A write is about to be sent (yielded before awaiting it). */
+  | { type: 'api_call'; method: string; path: string }
   /** Streaming render_ui argument size — drives the top rendering gauge. */
   | { type: 'progress'; chars: number }
   /**
@@ -506,6 +512,10 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           startReads(index + 1)
           return
         }
+        // Announce a write before it goes out: a caller that is superseded
+        // meanwhile must still know this press wrote (the result may land
+        // long after a newer turn started).
+        if (method !== 'GET') yield { type: 'api_call', method, path }
         const result = await (pendingApi.get(tc.id) ?? runApi(parsed))
         // A write has landed: reads queued behind it may start now.
         if (method !== 'GET') startReads(index + 1)
@@ -629,7 +639,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
             }
           }
           added.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, content: JSON.stringify(content) })
-          if (switchTo) yield { type: 'navigated', page: switchTo }
+          if (switchTo) yield { type: 'navigated', page: switchTo, calledApi }
         } else {
           added.push({
             role: 'tool',

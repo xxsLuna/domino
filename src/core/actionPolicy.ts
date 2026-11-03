@@ -103,9 +103,10 @@ const MUTATING_WORDS = new Set([
  * the page where that happens ("Add item" → an entry form). Neither the
  * words, a `to`, nor one observed answer can tell which for the next press
  * (already joined, job already running…), so they count as mutating like
- * MUTATING_WORDS; see isOpenerControl for what the runtime does instead.
- * An app that knows a button only opens a page declares it in [actions]
- * (`add-item = goto item_add`) and gets the switch with no model turn.
+ * MUTATING_WORDS. Two model signals together let one link anyway: the
+ * button declares its page (`to`) and a press was answered by a pure switch
+ * to exactly that page (see canAutoLink). An app that knows a button only
+ * opens a page can also declare it in [actions] (`add-item = goto item_add`).
  */
 const OPENER_WORDS = new Set([
   'add',
@@ -267,16 +268,30 @@ export function isReplayableEvent(e: { event: string; data?: Record<string, unkn
  * state change), and the control itself must not mutate anything. An
  * unknown widget (null) only links through nav edges — the tab bar is
  * navigation by definition.
+ *
+ * An opener ("품목 추가", "Add") links only along a learned edge (`reused`)
+ * to `learnable`: the built page its own `to` names right now, given only
+ * while the press has never been seen writing (see planPress). An edge
+ * alone is never enough — graphs from older builds recorded writes as plain
+ * links — and an edit that drops or changes the `to` drops the link.
  */
 export function canAutoLink(
-  edge: Pick<GraphEdge, 'to' | 'kind'> | null | undefined,
+  edge: Pick<GraphEdge, 'to' | 'kind' | 'reused'> | null | undefined,
   node: CardNode | null | undefined,
-  fromPage: string
+  fromPage: string,
+  learnable?: string | null
 ): boolean {
   if (!edge || !edge.to || edge.to === fromPage) return false
   if (edge.kind !== 'action' && edge.kind !== 'nav') return false
   if (!node) return edge.kind === 'nav'
-  return !isMutatingControl(node)
+  if (!isMutatingControl(node)) return true
+  return (
+    isOpenerControl(node) &&
+    edge.kind === 'action' &&
+    edge.reused === true &&
+    Boolean(learnable) &&
+    edge.to === learnable
+  )
 }
 
 /**

@@ -155,6 +155,33 @@ describe('openers ("추가", "Add", "Join")', () => {
     ).toBe(false)
   })
 
+  it('follow a learned link only to the page their `to` names right now', () => {
+    const learned = { to: 'item_add', kind: 'action' as const, reused: true as const }
+    expect(canAutoLink(learned, add, 'main', 'item_add')).toBe(true)
+    // Nothing learnable (never declared, seen writing, record page…), or the
+    // `to` now names another page.
+    expect(canAutoLink(learned, add, 'main')).toBe(false)
+    expect(canAutoLink(learned, add, 'main', null)).toBe(false)
+    expect(canAutoLink(learned, add, 'main', 'item_wizard')).toBe(false)
+    // A learned flag on a data action or a self-loop means nothing.
+    expect(canAutoLink({ ...learned, kind: 'form' }, add, 'main', 'item_add')).toBe(false)
+    expect(canAutoLink({ ...learned, to: 'main' }, add, 'main', 'main')).toBe(false)
+  })
+
+  it('a learned link never clears a verb that always acts or a structural signal', () => {
+    const learned = { to: 'x', kind: 'action' as const, reused: true as const }
+    expect(canAutoLink(learned, button('delete', { text: 'Delete', to: 'x' }), 'main', 'x')).toBe(
+      false
+    )
+    expect(canAutoLink(learned, button('save', { text: '저장', to: 'x' }), 'main', 'x')).toBe(false)
+    expect(
+      canAutoLink(learned, button('add', { text: 'Add', to: 'x', variant: 'danger' }), 'main', 'x')
+    ).toBe(false)
+    expect(
+      canAutoLink(learned, button('add', { text: 'Add', to: 'x', confirm: 'Sure?' }), 'main', 'x')
+    ).toBe(false)
+  })
+
   it('isOpenerControl: only an opener verb made the control mutating', () => {
     expect(isOpenerControl(add)).toBe(true)
     expect(isOpenerControl(button('join', { text: '참여하기' }))).toBe(true)

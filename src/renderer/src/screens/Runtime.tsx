@@ -93,11 +93,13 @@ import {
   keepCanonicalPage,
   cacheableAnswer,
   dismissesPage,
+  messagesWrite,
   namedDestination,
   navWithPlan,
   nodeContext,
   mergeEmbeddedEdges,
   planPress,
+  writerKey,
   recordPagesFromHistory,
   replayView,
   turnKnownPages,
@@ -129,10 +131,13 @@ import {
 import type { ActionDecl } from '@core/domino/types'
 import {
   loadPageGraph,
+  loadWriterPresses,
   observedDests,
   pageMapLines,
   pruneEdgesForPage,
   savePageGraph,
+  saveWriterPresses,
+  withoutLearned,
   upsertAnswerEdge,
   type GraphEdge
 } from '@core/pageGraph'
@@ -265,6 +270,26 @@ export function Runtime({
   } | null>(null)
   /** Cancels the lane's running turn (superseded, interrupted, unmounted). */
   const turnAbortRef = useRef<AbortController | null>(null)
+  /**
+   * Opener actions (writerKey) seen sending a write — even one that then
+   * failed, was interrupted or retried, and across restarts: such an action
+   * is never learned as a plain link (a retry that only switches would look
+   * pure). Only openers can be learned, so only openers are kept.
+   */
+  const wrotePressesRef = useRef(new Set<string>())
+  /** Remember (and persist) that an opener sent a write; newest last. */
+  const markWriter = useCallback(
+    (press: PressAnswer): void => {
+      if (!press.opener) return
+      const key = writerKey(press)
+      const set = wrotePressesRef.current
+      if (set.has(key) && [...set].pop() === key) return
+      set.delete(key)
+      set.add(key)
+      void saveWriterPresses(storage, domino.id, set)
+    },
+    [domino.id, storage]
+  )
   /** The press the running user turn answers — a second press of it is dropped. */
   const turnActionRef = useRef<InflightAction | null>(null)
   /** A sign-in request is in flight — a second press of the form is the same request. */
@@ -905,6 +930,8 @@ export function Runtime({
         answers?: PressAnswer
         /** The answering turn wrote data: a data-action edge, never a link. */
         mutated?: boolean
+        /** The answer was a pure switch (see answerEdge): it may be learned. */
+        pureSwitch?: boolean
         /**
          * A later screen of the same turn: overwrite the history moment the
          * turn already pushed (at this index) instead of pushing another one
@@ -921,7 +948,7 @@ export function Runtime({
       // navigates back to its list must not mark that list.
       const navPage = isNavPage(spec.page)
       if (answers) {
-        const edge = answerEdge(answers, spec.page, opts?.mutated === true)
+        const edge = answerEdge(answers, spec.page, opts?.mutated === true, opts?.pureSwitch === true)
         if (edge) recordGraphEdge(edge)
         // Which record the page's canonical copy now shows (none: a plain page).
         if (recordLanding && !navPage) {
@@ -1475,6 +1502,9 @@ export function Runtime({
       turnDepsRef.current = {}
       /** A write ran this turn: its screen answers THIS press only — never replayed. */
       let mutated = false
+      /** Any call_api ran this turn: its answer is never a pure switch. */
+      let calledApi = false
+      const press = isEdit ? undefined : opts?.answers
       /**
        * One press is one history moment: the history index this turn's first
        * screen landed at (a later screen of the same turn — a second
@@ -1619,6 +1649,11 @@ export function Runtime({
             case 'text':
               setStatus(update.text.trim().slice(-160))
               break
+            case 'api_call':
+              // Marked before the write goes out: a newer turn for the same
+              // press, started while this one waits, must not learn it.
+              if (press) markWriter(press)
+              break
             case 'api_result':
               setStatus(`API ${update.result.status} · ${update.result.path}`)
               // Keep a bounded, newest-first log for the drawer's API section.
@@ -1626,8 +1661,10 @@ export function Runtime({
               // The session expired: the runtime signed out, which already
               // interrupted this turn — the model never answers a dead token.
               if (!update.blocked && reportApiResult(update.result, Boolean(api.token))) break
+              calledApi = true
               if (update.method && update.method !== 'GET' && !update.blocked) {
                 mutated = true
+                if (press) markWriter(press)
                 // The lists this write changed are stale from now on.
                 if (update.result.status > 0 && update.result.status < 400) {
                   invalidateAfterWrite(update.result.path)
@@ -1703,11 +1740,20 @@ export function Runtime({
               // An ordinary action → page answer: cached (and persisted) like
               // a rendered one when the turn ends, so the same press switches
               // instantly next time.
+              // The turn's only answer, a switch with no API call by a press
+              // never seen writing: it may be learned as a link.
+              const pureSwitch =
+                landedAt === undefined &&
+                !mutated &&
+                !calledApi &&
+                !update.calledApi &&
+                !(press && wrotePressesRef.current.has(writerKey(press)))
               if (landedAt === undefined) landedPress = takeAnswers()
               finalizeSpec(next, cacheKey, undefined, {
                 cache: false,
                 answers: landedPress,
                 mutated,
+                pureSwitch,
                 ...(landedAt !== undefined ? { replaceAt: landedAt } : {})
               })
               landedAt = session.index
@@ -1749,6 +1795,9 @@ export function Runtime({
         // tool call must reach the next turn's history. Append-only, so a turn
         // that started meanwhile keeps whatever it pushed in the meantime.
         const mine = fork.slice(snapLen)
+        // A write the model sent, even one this turn never saw land (an
+        // interrupt, a failure): the press is never learned as a link.
+        if (press && messagesWrite(mine)) markWriter(press)
         if (mine.length && historyEpochRef.current === epoch) {
           historyRef.current.push(...mine)
           // Bound what the next turn re-sends: older screens become stubs and
@@ -1795,6 +1844,7 @@ export function Runtime({
       landEdit,
       llmCacheKey,
       logApi,
+      markWriter,
       prefetchForTurn,
       refreshAfterWrite,
       rememberApiSnapshot,
@@ -2109,7 +2159,7 @@ export function Runtime({
     ;(async () => {
       // Every persisted piece loads at once — seven sequential storage reads
       // used to stand between opening a domino and its first screen.
-      const [token, tokenWarn, book, snaps, edges, feeds, screens, vars, lastData] =
+      const [token, tokenWarn, book, snaps, edges, feeds, screens, vars, lastData, writers] =
         await Promise.all([
           getToken(storage, domino.id),
           loadTokenWarn(storage),
@@ -2120,8 +2170,10 @@ export function Runtime({
           // Screens and views built against another definition read as outdated.
           ScreenStore.open(storage, domino.id, { fingerprint, onPersistError }),
           loadSessionVars(storage, domino.id),
-          loadDataSnaps(storage, domino.id, domino.data)
+          loadDataSnaps(storage, domino.id, domino.data),
+          loadWriterPresses(storage, domino.id)
         ])
+      for (const key of writers) wrotePressesRef.current.add(key)
       if (cancelled) return
       sessionTokenRef.current = token
       // `skip_if_logged_in = false`: a stored session still signs in again —
@@ -2144,7 +2196,11 @@ export function Runtime({
         ...apiSnapBindings(snaps),
         ...dataSnapRef.current
       }
-      graphEdgesRef.current = edges
+      // A stored token opened signed out (`skip_if_logged_in = false`): the
+      // links learned in that signed-in session say nothing about this side.
+      const graph = token && !loggedInRef.current ? withoutLearned(edges) : edges
+      if (graph !== edges) void savePageGraph(storage, domino.id, graph)
+      graphEdgesRef.current = graph
       // An export "with the app" seeds this device's action graph — what this
       // device observed itself always wins (mergeEmbeddedEdges).
       // Only an embed stamped with THIS definition is current: one exported
@@ -2153,8 +2209,8 @@ export function Runtime({
       const embedCurrent = Boolean(domino.screens && domino.screens.def === fingerprint)
       const embeddedGraph = (embedCurrent ? (domino.screens?.graph ?? []) : []) as GraphEdge[]
       if (embeddedGraph.length > 0) {
-        const merged = mergeEmbeddedEdges(edges, embeddedGraph)
-        if (merged.length !== edges.length) {
+        const merged = mergeEmbeddedEdges(graph, embeddedGraph)
+        if (merged.length !== graph.length) {
           graphEdgesRef.current = merged
           setGraphTick((t) => t + 1)
           void savePageGraph(storage, domino.id, merged)
@@ -2519,6 +2575,14 @@ export function Runtime({
       navRef.current = []
       knownRef.current = null
       recordPagesRef.current.clear()
+      // A link learned on one side ("already joined") says nothing about the
+      // other side or the next person: learn it again.
+      const unlearned = withoutLearned(graphEdgesRef.current)
+      if (unlearned !== graphEdgesRef.current) {
+        graphEdgesRef.current = unlearned
+        setGraphTick((t) => t + 1)
+        void savePageGraph(storage, domino.id, unlearned)
+      }
       stateRef.current = {}
       pendingStateWrites.current = {}
       // The signed-in stack is not kept after sign-out: the next person on
@@ -2594,6 +2658,7 @@ export function Runtime({
       schemaHashes,
       session,
       showSpec,
+      storage,
       syncNav
     ]
   )
@@ -3015,11 +3080,12 @@ export function Runtime({
         plan: plannedPages(domino),
         edges: graphEdgesRef.current,
         recordPages: recordPagesRef.current,
+        writers: wrotePressesRef.current,
         ...(declaredTarget ? { declaredTarget } : {})
       })
       if (plan.switchTo && cs) {
         // Instant: a plain link to a page that is already built.
-        const edge = answerEdge(plan.answer, plan.switchTo, false)
+        const edge = answerEdge(plan.answer, plan.switchTo, false, plan.confirmed)
         if (edge) recordGraphEdge(edge)
         interruptTurn()
         finalizeSpec(withKnownPages({ ...cs, page: plan.switchTo }, known), null)
@@ -3771,7 +3837,7 @@ export function Runtime({
           // section goes: [guide], [data], [actions] after it all stay.
           const out = withScreensSection(
             text,
-            { spec: known, graph: graphEdgesRef.current, def: fingerprint },
+            { spec: known, graph: withoutLearned(graphEdgesRef.current), def: fingerprint },
             [
             `완성된 앱 포함 내보내기 — 페이지 ${known.pages.length}개와 액션 연결이 함께 저장됩니다.`,
             '이 파일을 여는 누구나 LLM 없이 그대로 앱을 실행할 수 있습니다.'
