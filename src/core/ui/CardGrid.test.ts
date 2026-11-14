@@ -68,7 +68,7 @@ describe('CardGrid binding resolution', () => {
 })
 
 describe('bound values render as text a human can read', () => {
-  const card = (value: unknown): CardNode => ({
+  const card = (_value?: unknown): CardNode => ({
     name: 'StatCard',
     id: 's',
     grid: grid(0),
@@ -138,6 +138,56 @@ describe('bound values render as text a human can read', () => {
     expect(out).not.toContain('could not be displayed')
   })
 
+  it('a Table with pageSize pages loaded rows locally and shows a pager', () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ n: `row-${i + 1}` }))
+    const out = html(
+      [
+        {
+          name: 'Table',
+          id: 't',
+          grid: grid(0),
+          props: { columns: ['n'], rows, pageSize: 2 }
+        }
+      ]
+    )
+    expect(out).toContain('row-1')
+    expect(out).toContain('row-2')
+    expect(out).not.toContain('row-3') // first page holds only pageSize rows
+    expect(out).toContain('aria-label="Pagination"')
+    expect(out).not.toContain('렌더링 상한') // paging, not a truncation notice
+  })
+  it('a Table without pageSize keeps the whole set (no pager)', () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ n: `row-${i + 1}` }))
+    const out = html([
+      { name: 'Table', id: 't', grid: grid(0), props: { columns: ['n'], rows } }
+    ])
+    expect(out).toContain('row-5')
+    expect(out).not.toContain('aria-label="Pagination"')
+  })
+  it('an Accordion shows a data record\'s description as its body', () => {
+    const out = html([
+      {
+        name: 'Accordion',
+        id: 'a',
+        grid: grid(0),
+        props: { items: [{ title: 'Q one', description: 'because the answer lives in description' }] }
+      }
+    ])
+    expect(out).toContain('Q one')
+    expect(out).toContain('because the answer lives in description')
+  })
+  it('a List of {label,value} pair records shows the value, not a bare label', () => {
+    const out = html([
+      {
+        name: 'List',
+        id: 'l',
+        grid: grid(0),
+        props: { items: [{ label: 'Email', value: 'ana@test.dev' }] }
+      }
+    ])
+    expect(out).toContain('Email')
+    expect(out).toContain('ana@test.dev')
+  })
   it('an empty bound List says "No items" instead of blank space', () => {
     const out = html(
       [{ name: 'List', id: 'l', grid: grid(0), props: { items: { $data: 'x.items' } } }],

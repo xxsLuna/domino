@@ -379,9 +379,11 @@ export function Accordion({
   const fromItems = Array.isArray(items)
     ? items.map((it) => {
         const rec = (typeof it === 'object' && it ? it : { title: it }) as Record<string, unknown>
+        // Data records say "description" where the spec says "content" — the
+        // same tolerance toListItems has, or a bound Accordion opens empty.
         return {
-          title: text(rec.title ?? rec.label),
-          body: <p className="text-sm text-muted">{text(rec.content ?? rec.text)}</p>
+          title: text(rec.title ?? rec.label ?? rec.name),
+          body: <p className="text-sm text-muted">{text(rec.content ?? rec.text ?? rec.body ?? rec.description ?? rec.subtitle)}</p>
         }
       })
     : []
@@ -1492,6 +1494,7 @@ export function Table({
   rows,
   rowAction,
   emptyText,
+  pageSize,
   nodeId,
   nodeName
 }: NodeProps & {
@@ -1500,13 +1503,25 @@ export function Table({
   rows?: unknown
   rowAction?: boolean
   emptyText?: string
+  pageSize?: number
 }) {
   const runtime = useRuntime()
   const { bp } = useLayout()
   const nested = useContext(SurfaceContext)
-  const totalRows = Array.isArray(rows) ? rows.length : 0
-  const body = Array.isArray(rows) ? rows.slice(0, MAX_LIST_ROWS) : []
-  const cols = toColumns(columns, body)
+  const rawRows = Array.isArray(rows) ? rows : []
+  const totalRows = rawRows.length
+  const capped = rawRows.slice(0, MAX_LIST_ROWS)
+  // Client-side paging: when a pageSize is set and more rows fit than one
+  // screen, the pager flips local React state — an instant page turn with no
+  // model round trip (the standalone Pagination is for server-side paging).
+  const size = Math.max(0, Math.floor(Number(pageSize) || 0))
+  const [pageNum, setPageNum] = useState(1)
+  const paged = size > 0 && capped.length > size
+  const pages = paged ? Math.ceil(capped.length / size) : 1
+  const cur = Math.min(pageNum, pages)
+  const body = paged ? capped.slice((cur - 1) * size, cur * size) : capped
+  const pager = paged ? <PagerStrip current={cur} pages={pages} go={setPageNum} /> : null
+  const cols = toColumns(columns, capped)
   const interactive = truthy(rowAction)
   const select = (index: number): void => {
     runtime.dispatch({
@@ -1519,9 +1534,9 @@ export function Table({
   const header = (
     <>
       {title ? <h3 className="px-1 pb-3 text-base font-semibold">{text(title)}</h3> : null}
-      {totalRows > body.length ? (
+      {!paged && totalRows > capped.length ? (
         <p className="px-1 pb-2 text-xs text-muted">
-          렌더링 상한으로 처음 {body.length}행만 표시합니다 (전체 {totalRows}행)
+          렌더링 상한으로 처음 {capped.length}행만 표시합니다 (전체 {totalRows}행)
         </p>
       ) : null}
     </>
@@ -1596,6 +1611,7 @@ export function Table({
             )
           })}
         </ul>
+        {pager}
       </Surface>
     )
   }
@@ -1633,6 +1649,7 @@ export function Table({
           </HTable.Content>
         </HTable.ScrollContainer>
       </HTable>
+      {pager}
     </div>
   )
 }
@@ -1733,7 +1750,12 @@ function toListItems(items: unknown): ListItem[] {
       raw: it,
       id: r.id === undefined || r.id === null || r.id === '' ? undefined : text(r.id),
       title: text(r.title ?? r.label ?? r.name ?? r.text),
-      description: r.description || r.subtitle ? text(r.description ?? r.subtitle) : undefined,
+      description:
+        r.description || r.subtitle
+          ? text(r.description ?? r.subtitle)
+          : r.value !== undefined && (typeof r.value === 'string' || typeof r.value === 'number')
+            ? text(r.value) // {"label","value"} pair records: show the value, not a bare label
+            : undefined,
       icon: r.icon ? text(r.icon) : undefined,
       avatar: r.avatar ? text(r.avatar) : undefined,
       meta: r.meta || r.time ? text(r.meta ?? r.time) : undefined,
@@ -1758,12 +1780,23 @@ export function listSelectData(item: {
 export function List({
   items,
   ordered,
+  pageSize,
   nodeId,
   nodeName
-}: NodeProps & { items?: unknown; ordered?: boolean }) {
+}: NodeProps & { items?: unknown; ordered?: boolean; pageSize?: number }) {
   const runtime = useRuntime()
-  const total = Array.isArray(items) ? items.length : 0
-  const list = toListItems(Array.isArray(items) ? items.slice(0, MAX_LIST_ROWS) : items)
+  const raw = Array.isArray(items) ? items : []
+  const total = raw.length
+  const capped = raw.slice(0, MAX_LIST_ROWS)
+  // Client-side paging (see Table): a pageSize turns the List into an instant
+  // local pager instead of one long scroll.
+  const size = Math.max(0, Math.floor(Number(pageSize) || 0))
+  const [pageNum, setPageNum] = useState(1)
+  const paged = size > 0 && capped.length > size
+  const pages = paged ? Math.ceil(capped.length / size) : 1
+  const cur = Math.min(pageNum, pages)
+  const list = toListItems(paged ? capped.slice((cur - 1) * size, cur * size) : capped)
+  const pager = paged ? <PagerStrip current={cur} pages={pages} go={setPageNum} /> : null
   const rich = list.some((i) => i.description || i.icon || i.avatar || i.badge || i.meta || i.id)
 
   // Same contract as Table: an empty (or not-yet-resolved) list says so —
@@ -1782,11 +1815,12 @@ export function List({
             <li key={i}>{item.title}</li>
           ))}
         </Tag>
-        {total > list.length ? (
+        {!paged && total > capped.length ? (
           <p className="pl-5 text-xs text-muted">
-            렌더링 상한으로 처음 {list.length}개만 표시합니다 (전체 {total}개)
+            렌더링 상한으로 처음 {capped.length}개만 표시합니다 (전체 {total}개)
           </p>
         ) : null}
+        {pager}
       </>
     )
   }
@@ -1852,11 +1886,12 @@ export function List({
   return (
     <Surface className="p-3">
       {rows}
-      {total > list.length ? (
+      {!paged && total > capped.length ? (
         <p className="px-2 pt-2 text-xs text-muted">
-          렌더링 상한으로 처음 {list.length}개만 표시합니다 (전체 {total}개)
+          렌더링 상한으로 처음 {capped.length}개만 표시합니다 (전체 {total}개)
         </p>
       ) : null}
+      {pager}
     </Surface>
   )
 }
@@ -2151,18 +2186,22 @@ function pageWindow(page: number, total: number): Array<number | null> {
   return out
 }
 
-export function Pagination({
-  page,
-  total,
-  nodeId,
-  nodeName
-}: NodeProps & { page?: number; total?: number }) {
-  const runtime = useRuntime()
+/**
+ * The strip itself, shared by the spec's Pagination (server-side: a press
+ * dispatches a "page" event for the model/API to answer) and the local
+ * Table/List pagers (client-side: a press just sets React state — instant,
+ * no model round trip).
+ */
+function PagerStrip({
+  current,
+  pages,
+  go
+}: {
+  current: number
+  pages: number
+  go: (p: number) => void
+}) {
   const { bp } = useLayout()
-  const pages = Math.max(1, Number(total) || 1)
-  const current = Math.max(1, Math.min(pages, Number(page) || 1))
-  const go = (p: number): void =>
-    runtime.dispatch({ event: 'page', nodeId, nodeName, data: { page: p } })
   return (
     <HPagination size="sm" className="justify-center" aria-label="Pagination">
       <HPagination.Content>
@@ -2199,6 +2238,24 @@ export function Pagination({
         </HPagination.Item>
       </HPagination.Content>
     </HPagination>
+  )
+}
+
+export function Pagination({
+  page,
+  total,
+  nodeId,
+  nodeName
+}: NodeProps & { page?: number; total?: number }) {
+  const runtime = useRuntime()
+  const pages = Math.max(1, Number(total) || 1)
+  const current = Math.max(1, Math.min(pages, Number(page) || 1))
+  return (
+    <PagerStrip
+      current={current}
+      pages={pages}
+      go={(p) => runtime.dispatch({ event: 'page', nodeId, nodeName, data: { page: p } })}
+    />
   )
 }
 
