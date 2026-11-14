@@ -807,13 +807,57 @@ export function bindingGaps(spec: UiSpec, sources: Record<string, unknown>, limi
   }
   for (const page of spec.pages) for (const node of iterateNodes(page.layout)) check(node.props, 0)
   for (const item of spec.nav ?? []) check(item.badge, 0)
-  // Two silent-failure classes that resolve "fine" but render empty forever.
+  // Silent-failure classes that resolve "fine" but render empty forever.
   // They keep their OWN dedup sets: `seen` already holds every path the main
   // walk touched, including the clean-resolving `[]` filters these passes
   // exist to catch.
   checkTableColumns(spec, sources, gaps, limit)
   checkEmptyFilters(spec, sources, gaps, limit)
+  checkOpaqueScalars(spec, sources, gaps, limit)
   return gaps.slice(0, limit)
+}
+
+/** Props that must carry a scalar to be readable; a whole object shows nothing. */
+const SCALAR_PROPS: Record<string, string[]> = { StatCard: ['value'], Progress: ['value'] }
+
+/** Keys the renderer can turn into text on its own (see components text()). */
+const DISPLAYABLE_KEYS = ['text', 'label', 'title', 'name', 'value']
+
+/**
+ * A scalar prop (a StatCard's big number) bound to a WHOLE response object
+ * resolves without complaint — and renders as blank space, because the
+ * object has no key the renderer could read. Reports it with the object's
+ * keys so the re-bind picks a real scalar (a count, a total).
+ */
+function checkOpaqueScalars(
+  spec: UiSpec,
+  sources: Record<string, unknown>,
+  gaps: BindingGap[],
+  limit: number
+): void {
+  const seen = new Set<string>()
+  for (const page of spec.pages) {
+    for (const node of iterateNodes(page.layout)) {
+      if (gaps.length >= limit) return
+      const props = SCALAR_PROPS[node.name]
+      if (!props || !isRecord(node.props)) continue
+      for (const prop of props) {
+        if (gaps.length >= limit) return
+        const path = dataBinding(node.props[prop])
+        if (path === null) continue
+        const held = Object.keys(sources).find(
+          (k) => path === k || path.startsWith(`${k}.`) || path.startsWith(`${k}[`)
+        )
+        if (!held) continue
+        const v = lookupDataPath(sources, path)
+        if (!isRecord(v) || DISPLAYABLE_KEYS.some((k) => k in v)) continue
+        const desc = `${node.name} "${node.id ?? node.name}" ${prop}`
+        if (seen.has(desc)) continue
+        seen.add(desc)
+        gaps.push({ path: desc, key: held, fields: Object.keys(v).slice(0, 24) })
+      }
+    }
+  }
 }
 
 /** Same spelling fusion the table renderer uses for column↔field matching. */

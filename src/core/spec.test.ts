@@ -477,6 +477,26 @@ describe('bindingGaps (a fresh render vs the snapshots the runtime holds)', () =
     // Field exists, values simply do not match: not a gap.
     expect(bindingGaps(specOf({ rows: { $data: 'leads.rows[?name==\'nobody\']' } }), sources)).toEqual([])
   })
+
+  const statSpec = (value: unknown): ReturnType<typeof validateUiSpec> =>
+    validateUiSpec({
+      ...(page([{ name: 'StatCard', id: 's', props: { label: 'Total', value } }]) as object)
+    })
+
+  it('flags a StatCard value bound to a whole response object with no readable key', () => {
+    const body = { items: [{ id: 1 }], total: 9, count: 7 }
+    const gaps = bindingGaps(statSpec({ $data: 'api:GET /invoices' }), { 'api:GET /invoices': body })
+    expect(gaps).toHaveLength(1)
+    expect(gaps[0].path).toBe('StatCard "s" value')
+    expect(gaps[0].fields).toEqual(['items', 'total', 'count'])
+  })
+
+  it('accepts scalar values and objects the renderer can read (a title)', () => {
+    expect(bindingGaps(statSpec({ $data: 'leads.total' }), sources)).toEqual([])
+    expect(
+      bindingGaps(statSpec({ $data: 'meta' }), { meta: { title: 'Nine', x: 1 } })
+    ).toEqual([])
+  })
 })
 
 describe('nav badges', () => {
