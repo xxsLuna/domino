@@ -376,6 +376,9 @@ describe('resolveDataBindings ({"$data"} → live/API snapshots)', () => {
     expect(neq.props?.rows).toEqual([tasks.tasks.tasks[1]])
     const truthy = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[?done]' } }), tasks)
     expect(truthy.props?.rows).toEqual([tasks.tasks.tasks[1]])
+    // TodoLite writes [?!done] for its "open" list without being told the syntax.
+    const negated = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[?!done]' } }), tasks)
+    expect(negated.props?.rows).toEqual([tasks.tasks.tasks[0], tasks.tasks.tasks[2]])
     const gt = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[?size>15]' } }), tasks)
     expect(gt.props?.rows).toEqual([tasks.tasks.tasks[1], tasks.tasks.tasks[2]])
   })
@@ -446,9 +449,25 @@ describe('bindingGaps (a fresh render vs the snapshots the runtime holds)', () =
     expect(bindingGaps(specOf({ rows: { $data: 'orders.rows' } }), sources)).toEqual([])
   })
 
-  it('passes paths that resolve, including filter paths yielding []', () => {
+  it('passes paths that resolve, and empty panels a truthy filter legitimately yields', () => {
     expect(bindingGaps(specOf({ rows: { $data: 'leads.rows' } }), sources)).toEqual([])
-    expect(bindingGaps(specOf({ rows: { $data: "leads.rows[?stage=='gone']" } }), sources)).toEqual([])
+    // No row is archived TODAY is a legitimately empty panel, not a bug.
+    const archived = validateUiSpec({
+      ...(page([
+        { name: 'Table', id: 't', props: { rows: { $data: 'a.rows[?archived]' } } }
+      ]) as object)
+    })
+    expect(
+      bindingGaps(archived, { a: { rows: [{ name: 'Ana', archived: false }] } })
+    ).toEqual([])
+  })
+
+  it('flags an == filter whose value appears in NO record (a guessed enum)', () => {
+    const gaps = bindingGaps(specOf({ rows: { $data: "leads.rows[?stage=='gone']" } }), sources)
+    expect(gaps).toHaveLength(1)
+    // The note carries what the model needs to fix it: the real values.
+    expect(gaps[0].note).toContain('no record in "leads" has stage == "gone"')
+    expect(gaps[0].note).toContain('new')
   })
 
   it('flags a Table column no row carries, naming the real fields', () => {
@@ -469,14 +488,12 @@ describe('bindingGaps (a fresh render vs the snapshots the runtime holds)', () =
     expect(bindingGaps(spec, { g: { rows: [{ plusOnes: 2 }] } })).toEqual([])
   })
 
-  it('flags a filter on a field no item has; passes a legitimately empty filter', () => {
+  it('flags a filter on a field no item has', () => {
     const guess = specOf({ rows: { $data: 'leads.rows[?completed]' } })
     const gaps = bindingGaps(guess, sources)
     expect(gaps).toHaveLength(1)
     expect(gaps[0].path).toBe('leads.rows[?completed]')
     expect(gaps[0].fields).toEqual(['name', 'stage'])
-    // Field exists, values simply do not match: not a gap.
-    expect(bindingGaps(specOf({ rows: { $data: 'leads.rows[?name==\'nobody\']' } }), sources)).toEqual([])
   })
 
   const statSpec = (value: unknown): ReturnType<typeof validateUiSpec> =>

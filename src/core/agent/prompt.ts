@@ -1,5 +1,5 @@
 import type { DominoFile } from '../domino/types'
-import type { BindingGap } from '../spec'
+import { gapMessage, type BindingGap } from '../spec'
 import { iconNames } from '../ui/icons'
 import { COMPONENT_DEFS } from '../ui/registry'
 import type { ToolCall } from '../llm/types'
@@ -114,7 +114,7 @@ ${aboutApp(domino)}
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
 - Show backend data by BINDING it, not by copying it: any prop that displays it (Table "rows", List "items", StatCard "value", KeyValue…) takes {"$data": "<bind>.<json path>"} (e.g. "rows": {"$data": "api:GET /leads.rows"}). Bindings re-resolve against the latest response on every render and survive restarts; copied values cost tokens and go stale. Copy at most a row or two when a literal example helps (an empty-state illustration), never whole lists.
 - The real bodies you were SHOWN beat any documentation: when the guide (or a page plan) names a field that the Live data / Known API responses do not carry, the guide is wrong — bind the fields the real data has, and choose other columns entirely rather than keeping one whose field does not exist (a "—" column is a broken promise to the user).
-- Bound paths also support list selection: index "items[0]" / "items[-1]" and filters "items[?status=='new']" (==, !=, >, >=, <, <=, =~ contains, or a bare "[?done]" truthy test). To show a subset (a tab panel, a "today" list), bind the FILTERED path — never hand-copy the matching rows into the screen.
+- Bound paths also support list selection: index "items[0]" / "items[-1]" and filters "items[?status=='new']" (==, !=, >, >=, <, <=, =~ contains, a bare "[?done]" truthy test, and its negation "[?!done]" — the open-items half of a done/todo split). To show a subset (a tab panel, a "today" list), bind the FILTERED path — never hand-copy the matching rows into the screen.
 - If a render_ui result carries "bindingWarnings", some of your paths resolve to nothing in data the runtime already holds — those props will show "—". Re-render the same page binding only fields the listed data actually has.
 - Keep a screen compact: at most ~15 layout nodes, and at most ~20 rows in any Table or List (longer payloads are trimmed from your context anyway — show the head, and let pagination or a $data binding carry the rest).
 - render_ui's tool result may carry "notes" — repairs the runtime made to your spec (an unknown component, a page id that wasn't in pages, dropped nodes). The screen was shown; avoid the same mistake in later renders.
@@ -180,6 +180,7 @@ ${authStaticRules(domino)}
 - navigate: answer with navigate when the destination page ALREADY EXISTS (it is in the App map's page list) and its content does not depend on what was pressed — nav items, plain buttons listed under "Connected actions", "back to the list". The runtime switches instantly to the stored screen and your turn ENDS: never call render_ui after a navigate, and never navigate to an id that is not in the page list (design that page with render_ui instead).
 - Data-dependent destinations are RE-RENDERED, never navigated to: a detail page for the selected record (row select / list item), the result of a form submit, search/filter/pagination results. call_api only if needed (a write, or an unknown shape), then render_ui for that SAME page id — keep its stored layout and ids and fill it with the selected record or updated list (plus a success Alert after a create/update/delete). An action that updates the current page (refresh, delete, next, complete, mark done) re-renders the current page id — never navigate for it.
 - A Button or Link that simply opens another page of this app carries "to": "<exact page id>" (a page in the map or one you are about to build) — the runtime then switches on the very first press with no model turn. Never set "to" on buttons that write, delete, submit or depend on a record. Give record pages resource-qualified ids ("order-detail", "customer-edit"), never a bare "detail" or "edit": one id per resource, reused for every record.
+- Every Button that CHANGES server data (Archive, Delete, Approve, Complete, Save) must be backed: an [actions] rule that names it, or a write endpoint inside the [api] allow list you will call for it. A file whose allow list holds only GETs has NO deleting or archiving — never draw such a button anyway: its press can never write, and a named action that does nothing is worse than no button at all.
 ${liveDataStaticSection(domino)}${actionsSection(domino)}${feedStaticSection(domino)}
 # Interaction rules
 - User events arrive as messages like "ACTION {event} from <name>/<id> data {...}". Events: click (Button), submit (Form, data = field values by name), navigate (nav, Breadcrumbs), select (Table row with rowAction, List item: data has the row/item), search (SearchField: {name, query}), change (Select/Switch/Checkbox/RadioGroup outside a Form: {name, value}), page (Pagination: {page}).
@@ -471,17 +472,13 @@ export function describeToolCall(tc: ToolCall): string {
  * prompt lists the gaps (path + the fields the data really holds) directly.
  */
 export function bindingRepairPrompt(pageId: string, gaps: BindingGap[]): string {
-  const list = gaps
-    .map(
-      (g) =>
-        `- ${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
-    )
-    .join('\n')
+  const list = gaps.map((g) => `- ${gapMessage(g)}`).join('\n')
   return (
     `BACKGROUND FIX (no user is waiting). The "${pageId}" page is on screen, but its data has now arrived and these bindings resolve to nothing:\n` +
     `${list}\n` +
     `Re-render the SAME page id "${pageId}" with the SAME elements, layout, ids and actions — change ONLY the {"$data"} bindings, ` +
     `each to a field the data actually has (the Live data / Known API responses sections list them). ` +
+    `For a filter whose VALUE appears in no record, filter on one of the real values listed, or drop the filter and split the list differently. ` +
     `When a value a prop wanted exists nowhere in the data, drop that prop or element instead of guessing another name.`
   )
 }
