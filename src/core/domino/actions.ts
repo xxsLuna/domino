@@ -27,8 +27,15 @@ export function formatActionStep(step: ActionStep): string {
       return `refresh ${step.source}`
     case 'goto':
       return `goto ${step.page}`
-    case 'call':
-      return `call ${step.method} ${step.path}${step.body === 'form' ? ' with form' : ''}`
+    case 'call': {
+      const body = step.body === 'form' ? ' with form' : ''
+      const fields = step.fields
+        ? ` body ${Object.entries(step.fields)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ')}`
+        : ''
+      return `call ${step.method} ${step.path}${body}${fields}`
+    }
   }
 }
 
@@ -97,4 +104,56 @@ export function interpolateCallPath(
     return encodeURIComponent(value)
   })
   return missing ? null : out
+}
+
+/**
+ * Resolve a `body k=v` pair's value: literals pass through, `{…}` placeholders
+ * fill from the press data / page state exactly as in a path (but a body
+ * value is JSON, so no URI-encoding). Null when a placeholder has no value —
+ * the call must not run half-filled.
+ */
+export function interpolateBodyValue(
+  value: string,
+  ctx: { data?: Record<string, unknown>; state?: Record<string, unknown> }
+): string | null {
+  let missing = false
+  const out = value.replace(/\{([^}]*)\}/g, (_m, inner: string) => {
+    const m = CALL_INTERPOLATION.exec(inner)
+    if (!m) {
+      missing = true
+      return ''
+    }
+    const filled = m[1] ? eventField(ctx.data, m[2]) : scalar(own(ctx.state, m[2]))
+    if (filled === null) {
+      missing = true
+      return ''
+    }
+    return filled
+  })
+  return missing ? null : out
+}
+
+/** The whole `body` map filled; null if any placeholder is unfillable. */
+export function interpolateBodyFields(
+  fields: Record<string, string>,
+  ctx: { data?: Record<string, unknown>; state?: Record<string, unknown> }
+): Record<string, string> | null {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(fields)) {
+    const filled = interpolateBodyValue(value, ctx)
+    if (filled === null) return null
+    out[key] = filled
+  }
+  return out
+}
+
+/**
+ * The id of the record a `select` event names. Table/List selects carry the
+ * whole record next to `id`; the scalar id is what detail-page action rules
+ * reference as `{selected}` (the runtime parks it in page state).
+ */
+export function selectedRecordId(
+  data: Record<string, unknown> | undefined
+): string | null {
+  return eventField(data, 'id')
 }

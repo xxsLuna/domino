@@ -257,10 +257,16 @@ GET /leads/{id} returns one lead for lead-detail. The lead-new page is a Form wi
 | `set <stateKey> = form.<field>` | 把提交的字段写入页面状态 |
 | `refresh <dataKey>` | 重新获取一个 `[data]` 数据源（绑定的属性原地更新） |
 | `goto <page-id>` | 切换到该页面；尚未生成的页面会以完全相同的 id 生成 |
-| `call <METHOD> /path [with form]` | 在 `[api] allow` 范围内发出一次请求（`GET`/`POST`/`PUT`/`PATCH`/`DELETE`）；`with form` 把提交的表单作为请求体。路径可使用 `{form.field}`、`{row.field}`（所选表格/列表行）和 `{stateKey}`，均经过 URI 编码 |
+| `call <METHOD> /path [with form] [body k=v,…]` | 在 `[api] allow` 范围内发出一次请求（`GET`/`POST`/`PUT`/`PATCH`/`DELETE`）；`with form` 把提交的表单作为请求体，`body status=approved` 追加固定字段（值本身也可以是占位符；同名字段以表单值优先）。路径可使用 `{form.field}`、`{row.field}`（所选表格/列表行）和 `{stateKey}`，均经过 URI 编码 |
 
 `new-lead-form = call POST /leads with form ; refresh leads ; goto leads` 会创建线索、重新加载
-列表并返回列表，整个过程不需要任何一次模型回合。
+列表并返回列表，整个过程不需要任何一次模型回合。点选表格行或列表项时，运行时会把该记录的 id
+写入页面状态的 `selected`，详情页的规则因此同样是确定性的：
+
+```
+del-note = call DELETE /notes/{selected} ; refresh notes ; goto main
+approve  = call PATCH /requests/{selected} body status=approved ; refresh requests ; goto main
+```
 
 `[script]` 条件 DSL 支持标识符（`logged_in`、`error`、`event`）、`not`、比较（`==`、`!=`、
 `<`、`>`）、`and` / `or`、括号和点路径（`param.plan == "pro"`）。命令为 `goto <page>`、

@@ -51,7 +51,7 @@ import {
 } from '@core/agent/pregen'
 import { compactHistory } from '@core/agent/history'
 import { nextSpecChars, renderProgress } from '@core/agent/progress'
-import { interpolateCallPath } from '@core/domino/actions'
+import { interpolateBodyFields, interpolateCallPath, selectedRecordId } from '@core/domino/actions'
 import {
   bootNeedsLogin,
   scriptEventOutcome,
@@ -458,6 +458,13 @@ export function Runtime({
   const stateRef = useRef<Record<string, unknown>>({})
   /** Local writes made while a turn was streaming; merged when it lands. */
   const pendingStateWrites = useRef<Record<string, unknown>>({})
+  /**
+   * The record the user last opened through a Table row / List item, kept by
+   * the runtime itself (state.selected is its carrier). A model's state echo
+   * or a history moment may omit the key — declared rules like
+   * `del = call DELETE /notes/{selected}` must not lose the record then.
+   */
+  const selectedRef = useRef<string | null>(null)
   /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
   const [progress, setProgress] = useState<number | null>(null)
 
@@ -991,6 +998,11 @@ export function Runtime({
       if (spec.state !== undefined) {
         stateRef.current = { ...spec.state, ...pendingStateWrites.current }
       }
+      // selected is runtime-owned: whatever the model echoed (or dropped),
+      // the record the user last opened stays addressable for [actions].
+      if (selectedRef.current !== null) {
+        stateRef.current = { ...stateRef.current, selected: selectedRef.current }
+      }
       // A non-edit screen (click hit, boot, instant-nav) makes the previous
       // edit's result the new baseline — no cells left to glow.
       if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
@@ -1429,6 +1441,9 @@ export function Runtime({
         clearEditHighlight()
       }
       stateRef.current = { ...(snap.spec.state ?? {}) }
+      if (selectedRef.current !== null) {
+        stateRef.current = { ...stateRef.current, selected: selectedRef.current }
+      }
       pendingStateWrites.current = {}
       // Time travel: the moment's own copies become canonical again — and
       // with them, which record its page shows.
@@ -2673,6 +2688,7 @@ export function Runtime({
       recordPagesRef.current.clear()
       stateRef.current = {}
       pendingStateWrites.current = {}
+      selectedRef.current = null
       // The signed-in stack is not kept after sign-out: the next person on
       // this device must not walk Back into it.
       if (!loggedIn) await session.forget(historyKey(domino.id, true))
@@ -3312,10 +3328,14 @@ export function Runtime({
         } else if (step.kind === 'refresh') {
           await fetchSource(step.source)
         } else if (step.kind === 'call') {
-          // `call METHOD /path [with form]`: {form.x}/{row.x} from the press,
-          // {key} from page state — a half-filled path never runs.
+          // `call METHOD /path [with form] [body k=v]`: {form.x}/{row.x} from
+          // the press, {key} from page state — a half-filled path or body
+          // never runs.
           const path = interpolateCallPath(step.path, { data: e.data, state: stateRef.current })
-          if (!path) {
+          const literals = step.fields
+            ? interpolateBodyFields(step.fields, { data: e.data, state: stateRef.current })
+            : {}
+          if (!path || literals === null) {
             armResultToast(
               { kind: 'notice', text: t('rt.callMissing', { path: step.path }), target: null },
               6_000
@@ -3323,10 +3343,17 @@ export function Runtime({
             return
           }
           const api = apiRuntime()
+          const hasLiterals = Object.keys(literals).length > 0
           const result = await executeApi(api, {
             path,
             method: step.method,
-            body: step.body === 'form' ? e.data : undefined
+            // Declared body fields are the base; a submitted form's own
+            // fields win over same-named literals.
+            body: hasLiterals
+              ? { ...literals, ...(step.body === 'form' ? e.data : undefined) }
+              : step.body === 'form'
+                ? e.data
+                : undefined
           })
           logApi(`${step.method} ${path}`, result.status, result.ms ?? 0)
           // An expired session signs out (and lands on the login side).
@@ -3430,6 +3457,20 @@ export function Runtime({
               return
             }
           }
+        }
+      }
+
+      // A row/item select names the record the rest of the app is about: its
+      // scalar id is parked in state.selected, so a detail page's declared
+      // rule (`del = call DELETE /notes/{selected} ; goto main`) resolves
+      // without a model turn — the same way a form carries its own values.
+      // The select itself still continues to the model: the first detail
+      // page must be drawn.
+      if (e.event === 'select') {
+        const id = selectedRecordId(e.data)
+        if (id !== null) {
+          selectedRef.current = id
+          applyLocalState('selected', id)
         }
       }
 

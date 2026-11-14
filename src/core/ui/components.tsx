@@ -1459,12 +1459,22 @@ function rowCells(row: unknown, cols: Column[]): unknown[] {
       const n = cellKeyNorm(k)
       if (!fused.has(n)) fused.set(n, k)
     }
+    // Unique-prefix pass: a "Created" label means createdAt when no other
+    // field starts that way — a human-styled shorthand must not read as a
+    // gap the data could fill. Ambiguous prefixes are left unfilled.
+    const prefixHit = (want: string): string | undefined => {
+      if (want.length < 4) return undefined
+      const hits = [...fused.entries()].filter(([n]) => n.startsWith(want))
+      return hits.length === 1 ? hits[0][1] : undefined
+    }
     return cols.map((c) => {
       const k =
         lower.get(c.key.toLowerCase()) ??
         lower.get(c.label.toLowerCase()) ??
         fused.get(cellKeyNorm(c.key)) ??
-        fused.get(cellKeyNorm(c.label))
+        fused.get(cellKeyNorm(c.label)) ??
+        prefixHit(cellKeyNorm(c.label)) ??
+        prefixHit(cellKeyNorm(c.key))
       return k === undefined ? undefined : rec[k]
     })
   }

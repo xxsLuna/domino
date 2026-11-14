@@ -125,6 +125,37 @@ describe('bound values render as text a human can read', () => {
     expect(out).not.toContain('—')
   })
 
+  it('a column label that is a unique prefix finds its field; ambiguous ones stay honest', () => {
+    const out = html(
+      [
+        {
+          name: 'Table',
+          id: 't',
+          grid: grid(0),
+          props: {
+            columns: ['Name', 'Created', 'Updated', 'Note'],
+            rows: { $data: 'rows' }
+          }
+        }
+      ],
+      {},
+      {
+        rows: [
+          {
+            name: 'Ana',
+            createdAt: '2026-11-13',
+            updatedAt: '2026-11-14',
+            noteId: 'n1',
+            noteCount: 3
+          }
+        ]
+      }
+    )
+    expect(out).toContain('2026-11-13') // Created → createdAt (the only match)
+    expect(out).toContain('2026-11-14') // Updated → updatedAt
+    expect(out).toContain('—') // Note could be noteId or noteCount: never guessed
+  })
+
   it('Breadcrumbs survive duplicate ids (HeroUI collections reject them)', () => {
     const out = html([
       {

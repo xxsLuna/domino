@@ -272,10 +272,16 @@ whose submit triggers it. Steps:
 | `set <stateKey> = form.<field>` | copy a submitted field into page state |
 | `refresh <dataKey>` | re-fetch a `[data]` source (bound props update in place) |
 | `goto <page-id>` | switch to that page; a page not built yet is generated under exactly that id |
-| `call <METHOD> /path [with form]` | one request under `[api] allow` (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`); `with form` sends the submitted form as the body. The path may use `{form.field}`, `{row.field}` (the selected Table/List row) and `{stateKey}`, each URI-encoded |
+| `call <METHOD> /path [with form] [body k=v,…]` | one request under `[api] allow` (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`); `with form` sends the submitted form as the body, `body status=approved` adds fixed fields (a value may itself be a placeholder; form fields win over same-named fixed ones). The path may use `{form.field}`, `{row.field}` (the selected Table/List row) and `{stateKey}`, each URI-encoded |
 
 `new-lead-form = call POST /leads with form ; refresh leads ; goto leads` creates a lead, reloads
-the list and returns to it without a single model turn.
+the list and returns to it without a single model turn. Selecting a Table row or List item parks
+its id in page state as `selected`, which makes a detail-page rule just as deterministic:
+
+```
+del-note = call DELETE /notes/{selected} ; refresh notes ; goto main
+approve  = call PATCH /requests/{selected} body status=approved ; refresh requests ; goto main
+```
 
 The `[script]` condition DSL supports identifiers (`logged_in`, `error`, `event`), `not`,
 comparisons (`==`, `!=`, `<`, `>`), `and` / `or`, parentheses, and dotted paths
