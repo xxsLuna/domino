@@ -504,6 +504,22 @@ describe('[pages] plan', () => {
     expect(withPages.domino?.extras).toEqual({})
   })
 
+  it('reads a rowAction -> target from the purpose and validates the target page', () => {
+    const ok = parseDomino(
+      '[meta]\nname = X\n[pages]\nmain = Notes | Table of notes with rowAction -> note | nav\nnote = Note | one note, fields bound to {selected}\n'
+    )
+    expect(ok.errors).toEqual([])
+    expect(ok.domino?.pages[0].rowTarget).toBe('note')
+    expect(ok.domino?.pages[1].rowTarget).toBeUndefined()
+    const arrow = parseDomino(
+      '[meta]\nname = X\n[pages]\nmain = Notes | List of notes with rowAction → note | nav\nnote = Note\n'
+    )
+    expect(arrow.errors).toEqual([])
+    expect(arrow.domino?.pages[0].rowTarget).toBe('note')
+    const bad = parseDomino('[meta]\nname = X\n[pages]\nmain = Notes | rowAction -> nowhere | nav\n')
+    expect(bad.errors.some((e) => e.message.includes('rowAction -> nowhere'))).toBe(true)
+  })
+
   it('rejects bad ids, duplicates and unknown flags with line numbers', () => {
     const res = parseDomino(
       '[meta]\nname = X\n[pages]\nmain = Main | home | nav\nlead.detail = Lead\nMAIN = Again\nx = X | p | pinned\n'

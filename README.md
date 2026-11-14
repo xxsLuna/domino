@@ -256,6 +256,13 @@ and `[meta] home`, `[script]` routes and `[actions]` gotos are checked against t
 mismatch is reported as a warning with its line number). `login` is runtime-owned and needs no
 entry. Files without `[pages]` still work; the model then names pages itself.
 
+A purpose may also declare the destination of a row tap: `… with rowAction -> note …`.
+The runtime then opens `note` the instant a Table row or List item is tapped (the record's id
+lands in `state.selected` first) — no model turn, and every row of the list answers. The detail
+page must therefore read from bindings — a `[data]` source keyed on `{selected}`
+(`note = GET /notes/{selected}`) or fields the select already carries — not text frozen from
+one record.
+
 **`[data]`** — `key = GET /path` or `key = FEED <url>`, optionally `every Ns` (5-600). Only
 `GET` and `FEED` are accepted: sources are re-fetched on every open, before turns and on polls,
 so a `POST`/`PUT`/`PATCH`/`DELETE` source is refused with a warning — writes belong in an

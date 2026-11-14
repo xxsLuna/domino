@@ -234,6 +234,7 @@ function pagePlanSection(domino: DominoFile): string {
 # Page plan ([pages] — the app's screens, declared by the author)
 ${lines.join('\n')}
 - Use exactly these ids for "page", pages[].id and nav item ids — never invent another id or name variant for a planned page. Put the "(nav)" pages in "nav", in this order. A planned page that doesn't exist yet is designed the first time it is shown; build it for the purpose given.
+- A purpose containing "rowAction -> <page>" means the runtime opens that page the moment a row is tapped (instantly, with the record's id in state.selected). Build such a detail page so its content comes from bindings — a [data] source keyed on {selected} (e.g. note = GET /notes/{selected}) or fields the row's data already carries — never text frozen from one record: the same built copy answers every row.
 `
 }
 

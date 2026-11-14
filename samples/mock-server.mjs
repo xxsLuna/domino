@@ -27,6 +27,14 @@ const LEADS = [
   { id: 'lead-8', name: 'Diego Alvarez', title: 'Director', company: 'Woodgrove', stage: 'Lost', owner: 'Jae Park', value: '$9,100', email: 'diego@woodgrove.test', score: 22 }
 ]
 
+// RowApp ([pages] rowAction -> memo): memos carry ids so the List renders
+// real tappable rows, and GET /memos/:id answers the {selected} detail source.
+const MEMOS = [
+  { id: '901', title: 'Weekly sync notes', body: 'Shipped the row-open fast path.' },
+  { id: '902', title: 'Retro: shipping week', body: 'Detail pages read the selection.' },
+  { id: '903', title: 'Backlog grooming', body: 'Pick next quarter bets.' }
+]
+
 const cors = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
@@ -392,6 +400,30 @@ const comingSoonSpec = (id) => {
   ])
 }
 
+/* RowApp: [pages] declares `rowAction -> memo`, so a row tap opens the memo
+ * page ITSELF once built (fast path — no model turn), and while it is still
+ * unbuilt the runtime asks for that exact page id (declared-target turn).
+ * Either way the detail binds its fields to the {selected} source, so each
+ * record shows its own title and body — never a frozen first record. */
+const ROW_NAV = [
+  { id: 'memos', label: 'Memos', icon: 'file' },
+  { id: 'memo', label: 'Memo', icon: 'document' }
+]
+const memoListSpec = () => ({
+  ...page('memos', 'Memos', [
+    { name: 'PageHeader', id: 'memos-header', props: { title: 'Memos', description: 'Bound list, instant rows' }, grid: { x: 0, y: 0, w: 12, h: 1 } },
+    { name: 'List', id: 'memo-list', props: { items: { $data: 'memos.memos' } }, grid: { x: 0, y: 1, w: 12, h: 6 } }
+  ]),
+  nav: ROW_NAV
+})
+const memoSpec = () => ({
+  ...page('memo', 'Memo', [
+    { name: 'PageHeader', id: 'memo-header', props: { title: { $data: 'memo.title' } }, grid: { x: 0, y: 0, w: 12, h: 1 } },
+    { name: 'Paragraph', id: 'memo-body', props: { text: { $data: 'memo.body' }, size: 'md' }, grid: { x: 0, y: 1, w: 12, h: 4 } }
+  ]),
+  nav: ROW_NAV
+})
+
 /* ------------------------------ mock LLM -------------------------------- */
 
 // Decide from the two latest user turns — the runtime pushes the raw event
@@ -431,6 +463,8 @@ function pickSpec(messages) {
     if (target === 'main') return dashboardSpec()
     if (target === 'leads') return leadsSpec()
     if (target === 'settings') return settingsSpec()
+    if (target === 'memos') return memoListSpec()
+    if (target === 'memo') return memoSpec()
     return comingSoonSpec(target)
   }
   // Live edit: re-render the named page (a real model would apply the change
@@ -476,6 +510,9 @@ function pickSpec(messages) {
       if (target === 'settings') return settingsSpec()
       return comingSoonSpec(target)
     }
+    // RowApp's declared rowAction target: the detail's own fields come from
+    // the {selected} source, so one generic memoSpec answers every row.
+    if (event === 'select' && id === 'memo-list') return memoSpec()
     if (event === 'select') {
       const name = data.row?.Name ?? data.title
       if (name && LEADS.some((l) => l.name === name)) return leadDetailSpec(name)
@@ -676,6 +713,43 @@ const server = createServer(async (req, res) => {
       ].join('\n')
     )
     return
+  }
+
+  // RowApp: the [pages] `rowAction -> memo` fixture for the row-open spec.
+  if (url.pathname === '/rowapp.domino' && req.method === 'GET') {
+    const origin = `http://127.0.0.1:${PORT}`
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...cors })
+    res.end(
+      [
+        '; RowApp: tapping a row opens the declared detail page (rowAction -> memo).',
+        '[meta]',
+        'name = RowApp',
+        'home = memos',
+        '[api]',
+        `base_url = ${origin}`,
+        'allow = /memos, /memos/*',
+        '[ui]',
+        'theme = light',
+        '[pages]',
+        'memos = Memos | List of memos bound to the memos source, rowAction -> memo opens one | nav',
+        'memo = Memo | PageHeader with the bound memo title and the memo body | nav',
+        '[data]',
+        'memos = GET /memos',
+        'memo = GET /memos/{selected}',
+        '',
+        '[guide]',
+        'Tapping a List row opens the memo page; bind its title/body to {"$data":"memo.title"} / {"$data":"memo.body"} — the runtime parks the record id in {selected} itself.'
+      ].join('\n')
+    )
+    return
+  }
+
+  if (url.pathname === '/memos' && req.method === 'GET') return json(res, 200, { memos: MEMOS })
+
+  const memoMatch = url.pathname.match(/^\/memos\/([\w-]+)$/)
+  if (memoMatch && req.method === 'GET') {
+    const memo = MEMOS.find((m) => m.id === memoMatch[1])
+    return memo ? json(res, 200, memo) : json(res, 404, { error: 'memo not found' })
   }
 
   if (url.pathname === '/login' && req.method === 'POST') {

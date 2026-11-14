@@ -119,6 +119,14 @@ export interface PageDecl {
   purpose?: string
   /** Listed in the primary navigation. */
   nav: boolean
+  /**
+   * The page a row/item tap on this page opens, declared inside the purpose
+   * as `rowAction -> <page-id>`. The runtime then opens it itself the moment
+   * a row is selected (the record id lands in state.selected first) — an
+   * instant, turn-free open, so the detail's fields must come from bindings
+   * (a `GET /x/{selected}` [data] source), not frozen text.
+   */
+  rowTarget?: string
 }
 
 /**

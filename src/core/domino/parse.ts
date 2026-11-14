@@ -274,6 +274,7 @@ export function parseDomino(source: string): ParseResult {
   const pages: PageDecl[] = []
   {
     const seen = new Set<string>()
+    const lineOfPage = new Map<string, number>()
     for (const e of sections.get('pages') ?? []) {
       if (!PAGE_ID.test(e.key)) {
         errors.push({
@@ -310,12 +311,28 @@ export function parseDomino(source: string): ParseResult {
           })
         }
       }
+      // `… rowAction -> note …` inside the purpose: tapping a row opens that
+      // page itself, without waiting for a model turn.
+      const rowTarget = purpose
+        ? /\browAction\s*(?:->|→)\s*([A-Za-z0-9_-]+)/i.exec(purpose)?.[1]
+        : undefined
+      lineOfPage.set(e.key.toLowerCase(), e.line)
       pages.push({
         id: e.key,
         name: unquote(parts[0]) || e.key,
         ...(purpose ? { purpose } : {}),
+        ...(rowTarget ? { rowTarget } : {}),
         nav
       })
+    }
+    const pageIds = new Set(pages.map((p) => p.id.toLowerCase()))
+    for (const p of pages) {
+      if (p.rowTarget && !pageIds.has(p.rowTarget.toLowerCase())) {
+        errors.push({
+          line: lineOfPage.get(p.id.toLowerCase()) ?? 1,
+          message: `[pages] ${p.id}: rowAction -> ${p.rowTarget} — no such page declared`
+        })
+      }
     }
   }
 

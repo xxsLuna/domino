@@ -3487,13 +3487,53 @@ export function Runtime({
       // scalar id is parked in state.selected, so a detail page's declared
       // rule (`del = call DELETE /notes/{selected} ; goto main`) resolves
       // without a model turn — the same way a form carries its own values.
-      // The select itself still continues to the model: the first detail
-      // page must be drawn.
       if (e.event === 'select') {
         const id = selectedRecordId(e.data)
         if (id !== null) {
           selectedRef.current = id
           applyLocalState('selected', id)
+        }
+        // The page plan can promise the tap's destination (`rowAction -> note`
+        // in the purpose): once that page is built the runtime opens it on the
+        // spot — the detail reads its fields from bindings (a {selected}
+        // source or $data rows), so no turn and no frozen record. Without a
+        // declared or built target the select still reaches the model, which
+        // draws the detail the first time.
+        const cs = currentSpecRef.current
+        const rowDecl = cs ? domino.pages.find((p) => p.id === cs.page) : undefined
+        if (id !== null && rowDecl?.rowTarget && cs) {
+          const known = knownRef.current
+          const knownPages = (known ?? cs).pages
+          const resolved =
+            resolvePageId(navRef.current, knownPages, rowDecl.rowTarget) ??
+            (findPage(cs, rowDecl.rowTarget) ? rowDecl.rowTarget : null)
+          if (resolved && resolved !== cs.page) {
+            const rowNav = navRef.current.find((i) => i.id === resolved)
+            if (rowNav) setActiveNav(rowNav.id)
+            interruptTurn()
+            finalizeSpec(withKnownPages({ ...cs, page: resolved }, known), null, 'action', {
+              answers: {
+                from: cs.page,
+                action: e.nodeId,
+                label: actionLabel(cs, e.nodeId, e.nodeId),
+                event: 'select',
+                dataKey: id
+              }
+            })
+            return
+          }
+          // Declared but not built yet (or its build is still streaming): ask
+          // for THAT page, the way an [actions] goto falls through — the turn
+          // is told the exact page id, its skeleton shows while it builds, and
+          // a pregen already making it is adopted. The tap lands on its detail
+          // deterministically instead of leaving the model to re-derive the
+          // destination press after press.
+          if (!resolved) {
+            dispatchToAgent(e, pageId, rowDecl.rowTarget)
+            return
+          }
+          // A rowAction that names the page it is on: the select is a no-op.
+          return
         }
       }
 

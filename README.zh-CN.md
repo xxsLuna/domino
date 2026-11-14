@@ -243,6 +243,11 @@ GET /leads/{id} returns one lead for lead-detail. The lead-new page is a Form wi
 规划核对（不一致时给出带行号的警告）。`login` 由运行时负责，无需声明。没有 `[pages]`
 的文件依然可用，此时由模型自行命名页面。
 
+用途中还可以声明行点击的目的地：`… 带 rowAction -> note …`。运行时会在表格行或列表项被
+点击的瞬间打开 `note`（记录的 id 先写入 `state.selected`）——无需模型回合，且列表的每一行
+都有响应。因此详情页必须从绑定读取——以 `{selected}` 为键的 `[data]` 数据源
+（`note = GET /notes/{selected}`）或选择事件已携带的字段——而不是冻结自某一条记录的文本。
+
 **`[data]`** —— `key = GET /path` 或 `key = FEED <url>`，可加 `every Ns`（5-600）。只接受
 `GET` 与 `FEED`：数据源会在每次打开、每回合前以及轮询时重新获取，因此 `POST` / `PUT` /
 `PATCH` / `DELETE` 数据源会被拒绝并给出警告 —— 写操作请放进 `[actions]` 的 `call` 步骤。
