@@ -90,13 +90,42 @@ export function isBindingObject(v: unknown): boolean {
   return typeof (v as Record<string, unknown>)[keys[0]] === 'string'
 }
 
-/** Display text of a free-form prop: '' for nothing (or an unresolved binding), JSON for odd objects. */
-const text = (v: unknown): string =>
-  v === null || v === undefined || isBindingObject(v)
-    ? ''
-    : typeof v === 'object'
-      ? JSON.stringify(v)
-      : String(v)
+/** "2026-11-13T06:25:19.582Z" style stamps — shown as "2026-11-13 06:25". */
+const ISO_STAMP = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/
+const stampLabel = (s: string): string =>
+  `${s.slice(0, 10)}${s.length > 16 ? ' ' + s.slice(11, 16) : ''}`
+
+/**
+ * Display text of a free-form prop. '' for nothing (or an unresolved
+ * binding); NEVER raw JSON — a bound prop can resolve to a whole collection
+ * (models bind a list where they meant its count), so objects show nothing
+ * and lists show their count (or joined scalars). ISO timestamps render as
+ * "date time"; booleans as Yes/No.
+ */
+const text = (v: unknown): string => {
+  if (v === null || v === undefined || isBindingObject(v)) return ''
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No'
+  if (typeof v === 'number') return String(v)
+  if (typeof v === 'string') return ISO_STAMP.test(v) ? stampLabel(v) : v
+  if (Array.isArray(v)) {
+    const parts = v.map((it) =>
+      it === null || it === undefined || isBindingObject(it)
+        ? ''
+        : typeof it === 'object'
+          ? null
+          : typeof it === 'boolean'
+            ? it
+              ? 'Yes'
+              : 'No'
+            : String(it)
+    )
+    return parts.some((p) => p === null) ? String(v.length) : parts.filter(Boolean).join(', ')
+  }
+  const rec = v as Record<string, unknown>
+  for (const k of ['text', 'label', 'title', 'name', 'value'])
+    if (typeof rec[k] === 'string' || typeof rec[k] === 'number') return text(rec[k])
+  return ''
+}
 const truthy = (v: unknown): boolean => v === true || v === 'true' || v === 1
 
 type Tone = 'default' | 'accent' | 'success' | 'warning' | 'danger'
@@ -1412,14 +1441,27 @@ export function toColumns(columns: unknown, rows: unknown[]): Column[] {
   return Array.from({ length: width }, (_, i) => ({ key: String(i), label: '' }))
 }
 
+/** Column-vs-field spelling: "Plus ones", "plus-ones", "PlusOnes" all mean plusOnes. */
+const cellKeyNorm = (s: string): string => s.toLowerCase().replace(/[\s_-]+/g, '')
+
 /** Row cells in column order; object rows are matched by key or label (case-insensitive). */
 function rowCells(row: unknown, cols: Column[]): unknown[] {
   if (Array.isArray(row)) return cols.map((_, i) => row[i])
   if (row && typeof row === 'object') {
     const rec = row as Record<string, unknown>
     const lower = new Map(Object.keys(rec).map((k) => [k.toLowerCase(), k]))
+    // Spelling-variant pass so a human-styled column label still finds its field.
+    const fused = new Map<string, string>()
+    for (const k of Object.keys(rec)) {
+      const n = cellKeyNorm(k)
+      if (!fused.has(n)) fused.set(n, k)
+    }
     return cols.map((c) => {
-      const k = lower.get(c.key.toLowerCase()) ?? lower.get(c.label.toLowerCase())
+      const k =
+        lower.get(c.key.toLowerCase()) ??
+        lower.get(c.label.toLowerCase()) ??
+        fused.get(cellKeyNorm(c.key)) ??
+        fused.get(cellKeyNorm(c.label))
       return k === undefined ? undefined : rec[k]
     })
   }
@@ -2063,10 +2105,16 @@ export function Skeleton({ lines = 3 }: { lines?: number }) {
 
 export function Breadcrumbs({ items, nodeId, nodeName }: NodeProps & { items?: unknown }) {
   const runtime = useRuntime()
+  const seen = new Set<string>()
   const crumbs = Array.isArray(items)
     ? items.map((it, i) => {
         const r = (it && typeof it === 'object' ? it : { label: it }) as Record<string, unknown>
-        return { id: text(r.id ?? r.page ?? r.label ?? i), label: text(r.label ?? r.title ?? r.id) }
+        let id = text(r.id ?? r.page ?? r.label ?? i)
+        // HeroUI's collection throws on duplicate keys — a model repeating a
+        // crumb id must not take the whole component down.
+        if (seen.has(id)) id = `${id}#${i}`
+        seen.add(id)
+        return { id, label: text(r.label ?? r.title ?? r.id) }
       })
     : []
   return (

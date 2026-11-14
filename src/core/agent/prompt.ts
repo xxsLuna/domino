@@ -1,4 +1,5 @@
 import type { DominoFile } from '../domino/types'
+import type { BindingGap } from '../spec'
 import { iconNames } from '../ui/icons'
 import { COMPONENT_DEFS } from '../ui/registry'
 import type { ToolCall } from '../llm/types'
@@ -112,6 +113,9 @@ ${aboutApp(domino)}
 - "grid" belongs on top-level layout nodes only; children are laid out by their parent. Never wrap a whole page in one Stack/Card/Columns — place its blocks on the grid directly.
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
 - Show backend data by BINDING it, not by copying it: any prop that displays it (Table "rows", List "items", StatCard "value", KeyValue…) takes {"$data": "<bind>.<json path>"} (e.g. "rows": {"$data": "api:GET /leads.rows"}). Bindings re-resolve against the latest response on every render and survive restarts; copied values cost tokens and go stale. Copy at most a row or two when a literal example helps (an empty-state illustration), never whole lists.
+- The real bodies you were SHOWN beat any documentation: when the guide (or a page plan) names a field that the Live data / Known API responses do not carry, the guide is wrong — bind the fields the real data has, and choose other columns entirely rather than keeping one whose field does not exist (a "—" column is a broken promise to the user).
+- Bound paths also support list selection: index "items[0]" / "items[-1]" and filters "items[?status=='new']" (==, !=, >, >=, <, <=, =~ contains, or a bare "[?done]" truthy test). To show a subset (a tab panel, a "today" list), bind the FILTERED path — never hand-copy the matching rows into the screen.
+- If a render_ui result carries "bindingWarnings", some of your paths resolve to nothing in data the runtime already holds — those props will show "—". Re-render the same page binding only fields the listed data actually has.
 - Keep a screen compact: at most ~15 layout nodes, and at most ~20 rows in any Table or List (longer payloads are trimmed from your context anyway — show the head, and let pagination or a $data binding carry the rest).
 - render_ui's tool result may carry "notes" — repairs the runtime made to your spec (an unknown component, a page id that wasn't in pages, dropped nodes). The screen was shown; avoid the same mistake in later renders.
 
@@ -319,8 +323,8 @@ function hasSubscriptions(domino: DominoFile): boolean {
 }
 
 /** Snapshot sampling: a few rows show the shape; the bound screen shows the rest. */
-const SNAPSHOT_ROWS = 5
-const SNAPSHOT_CHARS = 1_200
+const SNAPSHOT_ROWS = 3
+const SNAPSHOT_CHARS = 2_400
 
 /**
  * Current values of the DECLARED [data] sources only. Remembered call_api
@@ -357,7 +361,13 @@ function liveSnapshotSection(domino: DominoFile, snapshots?: Record<string, unkn
 ${lines.join('\n')}`
 }
 
-/** Compact one-line JSON for a snapshot: arrays sampled to their head, whole thing length-capped. */
+/**
+ * Compact one-line JSON for a snapshot: arrays sampled to their head and
+ * every string clipped to a length where only the SHAPE matters — binding
+ * needs all the keys of a row to be visible, not full values. Wide records
+ * (a row with tens of keys) are why the cap is generous and rows are few:
+ * one complete row teaches more than five clipped tails.
+ */
 function trimSnapshot(value: unknown): string {
   const clip = (v: unknown): unknown => {
     if (Array.isArray(v)) {
@@ -369,6 +379,7 @@ function trimSnapshot(value: unknown): string {
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = clip(val)
       return out
     }
+    if (typeof v === 'string' && v.length > 48) return `${v.slice(0, 45)}…`
     return v
   }
   const text = JSON.stringify(clip(value)) ?? 'null'
@@ -436,4 +447,27 @@ function authDynamicRule(domino: DominoFile, loggedIn: boolean): string {
 /** Compact transcript of a tool call for conversation history. */
 export function describeToolCall(tc: ToolCall): string {
   return `${tc.name}(${tc.args})`
+}
+
+/**
+ * The background turn that runs when data lands AFTER its screen was built:
+ * the shown screen binds fields the freshly held data does not have, and left
+ * alone it will keep showing "—" and empty panels. An in-turn nudge can point
+ * at the model's own bindingWarnings; a scratch history has none, so this
+ * prompt lists the gaps (path + the fields the data really holds) directly.
+ */
+export function bindingRepairPrompt(pageId: string, gaps: BindingGap[]): string {
+  const list = gaps
+    .map(
+      (g) =>
+        `- ${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
+    )
+    .join('\n')
+  return (
+    `BACKGROUND FIX (no user is waiting). The "${pageId}" page is on screen, but its data has now arrived and these bindings resolve to nothing:\n` +
+    `${list}\n` +
+    `Re-render the SAME page id "${pageId}" with the SAME elements, layout, ids and actions — change ONLY the {"$data"} bindings, ` +
+    `each to a field the data actually has (the Live data / Known API responses sections list them). ` +
+    `When a value a prop wanted exists nowhere in the data, drop that prop or element instead of guessing another name.`
+  )
 }

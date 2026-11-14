@@ -22,7 +22,7 @@ import {
   Tooltip
 } from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
-import { buildSystemPrompts } from '@core/agent/prompt'
+import { bindingRepairPrompt, buildSystemPrompts } from '@core/agent/prompt'
 import { executeApi, resolveEndpoint } from '@core/agent/api'
 import {
   bookFields,
@@ -166,6 +166,7 @@ import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
 import {
+  bindingGaps,
   findNode,
   findPage,
   isRefreshFeedsEvent,
@@ -176,6 +177,7 @@ import {
   withKnownPages,
   withTargetPage,
   type ActionEvent,
+  type BindingGap,
   type NavItem,
   type UiSpec
 } from '@core/spec'
@@ -325,6 +327,13 @@ export function Runtime({
   /** Targets already attempted this session — a build that never merges is not retried. */
   const pregenTriedRef = useRef(new Set<string>())
   const clickTriedRef = useRef(new Set<string>())
+  /**
+   * Data-arrival binding repairs: attempts per page (a page gets a bounded
+   * number) and the repair turns in flight (cancelled with the builds when
+   * the app's context changes).
+   */
+  const repairTriesRef = useRef(new Map<string, number>())
+  const repairAbortsRef = useRef(new Set<AbortController>())
   /** Bound `api:GET …` refreshes: running, and when the last one failed. */
   const apiInflightRef = useRef(new Set<string>())
   const apiFailedAtRef = useRef<Record<string, number>>({})
@@ -696,6 +705,10 @@ export function Runtime({
     pregenBuildsRef.current.cancelAll()
     pregenTriedRef.current.clear()
     clickTriedRef.current.clear()
+    // A changed context (sign-in, rebuild) also voids binding repairs: the
+    // data behind them was the old context's, and pages may bind anew now.
+    for (const c of repairAbortsRef.current) c.abort()
+    repairTriesRef.current.clear()
   }, [])
 
   const showSpec = useCallback(
@@ -1550,7 +1563,11 @@ export function Runtime({
           // A failed/absent render is the one round worth spending depth on —
           // escalated from the level actually in effect (unset gpt-5 = low).
           escalateReasoning: () =>
-            createAdapter({ ...config, reasoning: nextReasoningLevel(effectiveReasoning(config)) })
+            createAdapter({ ...config, reasoning: nextReasoningLevel(effectiveReasoning(config)) }),
+          // Catch {"$data"} bindings that miss fields the held snapshots have
+          // (they would land as "—" forever) and give the model one round to
+          // re-bind against the real shape.
+          dataSnapshots: () => dataSnapRef.current
         })) {
           if (turnSeq.current !== myTurn) break // superseded by a newer turn
           switch (update.type) {
@@ -1848,6 +1865,8 @@ export function Runtime({
           signal,
           cacheKey: llmCacheKey,
           readOnlyApi: true,
+          // Background screens must bind real fields too — nobody re-asks.
+          dataSnapshots: () => dataSnapRef.current,
           // A predicted press may answer "that page exists": switch, no build.
           ...(build.kind === 'click'
             ? {
@@ -1939,6 +1958,139 @@ export function Runtime({
     setCurrentSpec((prev) => (prev ? mergeKnownPage(prev, merged.spec, merged.pageId) : prev))
     return true
   }, [])
+
+  /**
+   * One invisible read-only turn that re-binds the page currently on screen:
+   * its data arrived AFTER it was built and its bindings resolve to nothing
+   * (a turn's own fix-round only sees snapshots held at render time — a guide
+   * that overpromises the shape ships "—" columns nobody re-asks about). The
+   * repaired page REPLACES the broken one (mergeKnownPage: the new copy wins
+   * for its id; everything the user is looking at otherwise stays put).
+   */
+  const runBindingRepair = useCallback(
+    async (pageId: string, gaps: BindingGap[]): Promise<void> => {
+      if (needsApiKey(config)) return
+      const controller = new AbortController()
+      repairAbortsRef.current.add(controller)
+      const signal = controller.signal
+      let usageSeen = 0
+      try {
+        const knownSchemas = bookFields(schemaBookRef.current)
+        const prompts = buildSystemPrompts(domino, {
+          loggedIn: loggedInRef.current,
+          knownSchemas,
+          dataSnapshots: dataSnapRef.current,
+          pageMap: appMapLines(),
+          feeds: feedsRef.current
+        })
+        const scratch: ChatMessage[] = [
+          { role: 'user', content: bindingRepairPrompt(pageId, gaps) }
+        ]
+        const api = apiRuntime()
+        for await (const update of runAgentTurn({
+          adapter: createAdapter(config),
+          system: prompts.stable,
+          systemDynamic: prompts.dynamic,
+          history: scratch,
+          api,
+          knownSchemas,
+          signal,
+          cacheKey: llmCacheKey,
+          readOnlyApi: true,
+          // Real-field bindings are this turn's whole job.
+          dataSnapshots: () => dataSnapRef.current
+        })) {
+          if (signal.aborted) return
+          switch (update.type) {
+            case 'spec': {
+              if (!update.final) break
+              // Exact id only: a repair that re-imagined the page id fixed a
+              // page nobody is looking at — the broken one stays.
+              const base = knownRef.current
+              const repaired = update.spec.pages.find((p) => p.id === pageId)
+              if (!base || !repaired) return
+              // Never trade a better screen for a worse one: a repair that
+              // still (or newly) leaves binding gaps — a blind re-render that
+              // broke what worked — is dropped, and the user keeps the page
+              // they have. The gap count is measured the same way both times.
+              const still = bindingGaps(
+                { ...update.spec, page: pageId, pages: [repaired], nav: [] },
+                dataSnapRef.current,
+                gaps.length || 1
+              )
+              if (still.length >= gaps.length) return
+              knownRef.current = mergeKnownPage(base, update.spec, pageId)
+              setCurrentSpec((prev) =>
+                prev ? mergeKnownPage(prev, update.spec, pageId) : prev
+              )
+              return
+            }
+            case 'api_result':
+              if (update.blocked) {
+                controller.abort()
+                return
+              }
+              if (reportApiResult(update.result, Boolean(api.token), false)) return
+              if (update.schema) {
+                schemaBookRef.current = rememberSchema(
+                  schemaBookRef.current,
+                  update.endpoint,
+                  update.schema
+                )
+                scheduleSchemaSave()
+              }
+              rememberApiSnapshot(update.endpoint, update.result)
+              break
+            case 'usage': {
+              const step = usageStep(usageSeen, update.usage)
+              usageSeen = step.total
+              if (step.add > 0) setUsageTotal((prev) => prev + step.add)
+              break
+            }
+            // A repair that navigates or errored fixed nothing on screen.
+            case 'navigated':
+            case 'error':
+              return
+          }
+        }
+      } catch {
+        // A failed repair leaves the screen as it was; the attempt is spent.
+      } finally {
+        repairAbortsRef.current.delete(controller)
+      }
+    },
+    [
+      apiRuntime,
+      appMapLines,
+      config,
+      domino,
+      llmCacheKey,
+      rememberApiSnapshot,
+      reportApiResult,
+      scheduleSchemaSave
+    ]
+  )
+
+  /**
+   * Data that lands while a screen is showing can unmask bindings that
+   * resolve to nothing. Whenever snapshots or the shown screen change, check
+   * the SHOWN page (gaps on unopened pages belong to their own visit) and
+   * spend a bounded background turn re-binding it — otherwise the dashes and
+   * empty panels sit there until the user complains about them.
+   */
+  useEffect(() => {
+    if (streaming || needsApiKey(config)) return
+    const spec = currentSpec
+    if (!spec) return
+    const shown = findPage(spec, spec.page)
+    if (!shown) return
+    const gaps = bindingGaps({ ...spec, pages: [shown], nav: [] }, dataSnapRef.current, 3)
+    if (!gaps.length) return
+    const tries = repairTriesRef.current.get(spec.page) ?? 0
+    if (tries >= 3) return
+    repairTriesRef.current.set(spec.page, tries + 1)
+    void runBindingRepair(spec.page, gaps)
+  }, [streaming, currentSpec, dataSnap, config, runBindingRepair])
 
   /**
    * A finished predicted press nobody adopted: its destination joins the

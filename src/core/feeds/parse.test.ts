@@ -4,9 +4,29 @@ import { parseFeed } from './parse'
 
 // parseFeed uses the platform DOMParser (Chromium in every real shell); node
 // has none, so the tests inject @xmldom/xmldom — CDATA, entities and
-// localName included, unlike happy-dom's XML support.
+// localName included, unlike happy-dom's XML support. xmldom otherwise RECOVERS
+// from malformed XML and still hands back the real root, where a browser yields
+// a `parsererror` root; parseFeed leans on that (it rejects the error root).
+// Report fatal parse errors by throwing — for parseFeed's contract that is the
+// same outcome as the browser's, so malformed documents are tested honestly.
 beforeAll(() => {
-  ;(globalThis as { DOMParser?: unknown }).DOMParser = DOMParser
+  const parse = (source: string, type: string): Document => {
+    const problems: string[] = []
+    const doc = new DOMParser({
+      errorHandler: {
+        warning: (): void => {},
+        error: (m: unknown): void => void problems.push(String(m)),
+        fatalError: (m: unknown): void => void problems.push(String(m))
+      }
+    }).parseFromString(source, type) as Document
+    if (problems.length) throw new Error(problems[0])
+    return doc
+  }
+  ;(globalThis as { DOMParser?: unknown }).DOMParser = class {
+    parseFromString(source: string, type: string): Document {
+      return parse(String(source), type)
+    }
+  }
 })
 
 const RSS2 = `<?xml version="1.0" encoding="UTF-8"?>

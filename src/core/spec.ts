@@ -491,33 +491,203 @@ const dataBinding = (v: unknown): string | null =>
     ? (v['$data'] as string)
     : null
 
-/** Walk a `key.a.b` path into the source map (numeric segments index arrays). */
+/**
+ * Split a data path into steps at dots that sit outside brackets — a quoted
+ * predicate value may hold dots (`[?email=='a.b@x.dev']`).
+ */
+function splitDataPath(rest: string): string[] {
+  const steps: string[] = []
+  let cur = ''
+  let depth = 0
+  let quote = ''
+  for (const ch of rest) {
+    if (quote) {
+      cur += ch
+      if (ch === quote) quote = ''
+    } else if (ch === '"' || ch === "'") {
+      quote = ch
+      cur += ch
+    } else if (ch === '[') {
+      depth++
+      cur += ch
+    } else if (ch === ']') {
+      depth--
+      cur += ch
+    } else if (ch === '.' && depth === 0) {
+      steps.push(cur)
+      cur = ''
+    } else cur += ch
+  }
+  steps.push(cur)
+  return steps
+}
+
+/** `tasks[0][?status=='new']` → name "tasks", brackets ["0", "?status=='new'"]. */
+function parseStep(step: string): { name: string; brackets: string[] | null } {
+  const i = step.indexOf('[')
+  if (i === -1) return { name: step, brackets: [] }
+  const name = step.slice(0, i)
+  const brackets: string[] = []
+  let inner = ''
+  let depth = 0
+  let quote = ''
+  for (const ch of step.slice(i)) {
+    if (quote) {
+      inner += ch
+      if (ch === quote) quote = ''
+    } else if (ch === '"' || ch === "'") {
+      quote = ch
+      if (depth > 0) inner += ch
+    } else if (ch === '[') {
+      depth++
+      if (depth > 1) inner += ch
+    } else if (ch === ']') {
+      depth--
+      if (depth === 0) {
+        brackets.push(inner)
+        inner = ''
+      } else inner += ch
+    } else if (depth > 0) inner += ch
+  }
+  // An unterminated bracket is a malformed path, not a truncated one.
+  if (depth !== 0 || quote) return { name, brackets: null }
+  return { name, brackets }
+}
+
+const PRED_RE = /^([\w$][\w$.]*|'[^']*'|"[^"]*")\s*(==|!=|>=|<=|=~|>|<)?\s*([\s\S]*)$/
+
+/** `[?x=='y']` right-hand side: quoted text, true/false/null, number, bare word. */
+function filterValue(raw: string): unknown {
+  const t = raw.trim()
+  const q = t[0]
+  if ((q === "'" || q === '"') && t.length > 1 && t.endsWith(q)) return t.slice(1, -1)
+  if (t === 'true') return true
+  if (t === 'false') return false
+  if (t === 'null') return null
+  const n = Number(t)
+  return t !== '' && Number.isFinite(n) ? n : t
+}
+
+function eqLoose(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || a === undefined || b === null || b === undefined) return false
+  if (typeof a === 'number' || typeof b === 'number') return Number(a) === Number(b)
+  if (typeof a === 'boolean' || typeof b === 'boolean')
+    return String(a).toLowerCase() === String(b).toLowerCase()
+  return String(a) === String(b)
+}
+
+/** One `[?field op value]` predicate against a list item (no op → truthy). */
+function matchesPredicate(item: unknown, expr: string): boolean {
+  const m = PRED_RE.exec(expr.trim())
+  if (!m) return false
+  const field = m[1].replace(/^(['"])([\s\S]*)\1$/, '$2')
+  let val: unknown = item
+  for (const seg of field.split('.')) {
+    if (val === null || val === undefined) break
+    if (isRecord(val)) val = val[seg]
+    else if (Array.isArray(val)) {
+      const i = Number(seg)
+      val = Number.isInteger(i) ? val[i] : undefined
+    } else val = undefined
+  }
+  const op = m[2]
+  if (!op) return Boolean(val)
+  const lit = filterValue(m[3])
+  switch (op) {
+    case '==':
+      return eqLoose(val, lit)
+    case '!=':
+      return !eqLoose(val, lit)
+    case '=~':
+      return (
+        val !== null &&
+        val !== undefined &&
+        String(val)
+          .toLowerCase()
+          .includes(String(lit).toLowerCase())
+      )
+    default: {
+      // ISO date-strings compare lexicographically; anything else numerically.
+      if (
+        typeof val === 'string' &&
+        typeof lit === 'string' &&
+        /^\d{4}-\d{2}/.test(val) &&
+        /^\d{4}-\d{2}/.test(lit)
+      ) {
+        return op === '>' ? val > lit : op === '>=' ? val >= lit : op === '<' ? val < lit : val <= lit
+      }
+      const a = typeof val === 'number' ? val : Number(val)
+      const b = typeof lit === 'number' ? lit : Number(lit)
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return false
+      return op === '>' ? a > b : op === '>=' ? a >= b : op === '<' ? a < b : a <= b
+    }
+  }
+}
+
+/** Apply one bracket suffix: `[N]`/`[-N]` index, `[?... ]` filter on arrays. */
+function applyBracket(cur: unknown, inner: string): unknown {
+  const t = inner.trim()
+  if (t.startsWith('?')) {
+    if (!Array.isArray(cur)) return undefined
+    return cur.filter((it) => matchesPredicate(it, t.slice(1)))
+  }
+  if (!Array.isArray(cur)) return undefined
+  const idx = Number(t)
+  if (!Number.isInteger(idx)) return undefined
+  return cur[idx < 0 ? cur.length + idx : idx]
+}
+
+/** One dot-step: named field (arrays index by number, else project fields). */
+function applyStep(cur: unknown, step: string): unknown {
+  const { name, brackets } = parseStep(step)
+  if (brackets === null) return undefined
+  if (name) {
+    if (cur === null || cur === undefined) return undefined
+    if (Array.isArray(cur)) {
+      const idx = Number(name)
+      if (name.trim() !== '' && Number.isInteger(idx)) {
+        cur = cur[idx < 0 ? cur.length + idx : idx]
+      } else {
+        // JMESPath-style projection: field access on a list maps over items.
+        const vals = cur.map((it) => (isRecord(it) ? it[name] : undefined))
+        cur = vals.some((v) => v !== undefined) ? vals : undefined
+      }
+    } else if (isRecord(cur)) cur = cur[name]
+    else return undefined
+  }
+  for (const b of brackets) {
+    if (cur === null || cur === undefined) return undefined
+    cur = applyBracket(cur, b)
+  }
+  return cur
+}
+
+/**
+ * Walk a `key.a.b` path into the source map. Segments may carry bracket
+ * suffixes — `[0]`, `[-1]`, and JMESPath-ish filters (`[?status=='new']`,
+ * `!=`, `>`, `<=`, `=~`, bare field = truthy) — the syntax models naturally
+ * emit when asked to show a subset of a bound collection.
+ */
 function lookupDataPath(sources: Record<string, unknown>, path: string): unknown {
-  // The key is the longest dot-boundary prefix that names a source — keys may
-  // themselves contain dots ("api:GET /feed.xml"). A key the map lacks falls
-  // back to the first segment and misses the map, resolving to undefined.
-  let key = path.split('.')[0]
+  // The key is the longest prefix that names a source — keys may themselves
+  // contain dots ("api:GET /feed.xml"), and brackets may follow the first
+  // segment ("tasks[?done]") without the key holding them. A key the map
+  // lacks falls back to the leading segment and misses the map → undefined.
+  const base = /^[^[.]*/.exec(path)?.[0] ?? ''
+  let key = base
   for (const candidate of Object.keys(sources)) {
     if (
       candidate.length > key.length &&
-      (path === candidate || path.startsWith(`${candidate}.`))
+      (path === candidate || path.startsWith(`${candidate}.`) || path.startsWith(`${candidate}[`))
     ) {
       key = candidate
     }
   }
-  const rest = path.length > key.length + 1 ? path.slice(key.length + 1).split('.') : []
+  if (path.length <= key.length) return sources[key]
+  const rest = path[key.length] === '[' ? path.slice(key.length) : path.slice(key.length + 1)
   let cur: unknown = sources[key]
-  for (const seg of rest) {
-    if (cur === null || cur === undefined) return undefined
-    if (Array.isArray(cur)) {
-      const idx = Number(seg)
-      cur = Number.isInteger(idx) ? cur[idx] : undefined
-    } else if (isRecord(cur)) {
-      cur = cur[seg]
-    } else {
-      return undefined
-    }
-  }
+  for (const step of splitDataPath(rest)) cur = applyStep(cur, step)
   return cur
 }
 
@@ -559,6 +729,187 @@ export function resolveDataBindings(node: CardNode, sources: Record<string, unkn
   return replaced ? { ...node, props, children: children ?? node.children } : node
 }
 
+/** A `{"$data"}` path that misses its (already-held) source's actual shape. */
+export interface BindingGap {
+  path: string
+  /** Source key the path starts with — the snapshot the runtime already holds. */
+  key: string
+  /** Field names visible one level under where the path stopped matching. */
+  fields: string[]
+}
+
+/** Field names of a value: object keys, or the first row's keys for arrays. */
+function shapeFields(v: unknown): string[] {
+  if (Array.isArray(v)) return v.length && isRecord(v[0]) ? Object.keys(v[0]) : []
+  if (isRecord(v)) return Object.keys(v)
+  return []
+}
+
+/**
+ * `{"$data"}` paths on a freshly rendered spec that resolve to nothing even
+ * though the runtime HOLDS their source — the model guessed a field name the
+ * API does not have. Paths whose source key is not held yet are skipped (the
+ * runtime is still fetching them, so they are not gaps). Reported with the
+ * real field names so a corrective round can re-bind instead of shipping a
+ * screen full of "—".
+ */
+export function bindingGaps(spec: UiSpec, sources: Record<string, unknown>, limit = 4): BindingGap[] {
+  const gaps: BindingGap[] = []
+  const held = Object.keys(sources)
+  const seen = new Set<string>()
+  const check = (v: unknown, depth: number): void => {
+    if (gaps.length >= limit || depth > 24) return
+    const path = dataBinding(v)
+    if (path !== null) {
+      if (seen.has(path)) return
+      seen.add(path)
+      // Only sources the runtime already holds can be a genuine gap.
+      let key = /^[^[.]*/.exec(path)?.[0] ?? ''
+      for (const candidate of held) {
+        if (
+          candidate.length > key.length &&
+          (path === candidate || path.startsWith(`${candidate}.`) || path.startsWith(`${candidate}[`))
+        ) {
+          key = candidate
+        }
+      }
+      if (!held.includes(key)) return
+      if (lookupDataPath(sources, path) !== undefined) return
+      // Walk the plain dotted prefix as deep as the data allows and report
+      // the fields found there — what the model should have bound.
+      let cur: unknown = sources[key]
+      const rest = path.length > key.length ? path.slice(key.length + 1) : ''
+      const base = /^[^[.]*/.exec(rest)?.[0] ?? ''
+      let fields = shapeFields(cur)
+      if (base) {
+        for (const seg of base.split('.')) {
+          const next = isRecord(cur) ? cur[seg] : Array.isArray(cur) ? cur[Number(seg)] : undefined
+          if (next === undefined) break
+          cur = next
+          fields = shapeFields(cur)
+        }
+      }
+      // A list source is shaped by its ROWS: when the visible fields are just
+      // container keys, name the row fields too — "rows[].name,city" tells
+      // the model what an item actually carries, not just where the list is.
+      if (isRecord(cur)) {
+        for (const [k, v] of Object.entries(cur)) {
+          if (fields.length >= 20) break
+          if (Array.isArray(v) && v.length > 0 && isRecord(v[0]))
+            fields.push(`${k}[].${Object.keys(v[0]).slice(0, 10).join(',')}`)
+        }
+      }
+      gaps.push({ path, key, fields: fields.slice(0, 24) })
+      return
+    }
+    if (Array.isArray(v)) v.forEach((x) => check(x, depth + 1))
+    else if (isRecord(v)) Object.values(v).forEach((x) => check(x, depth + 1))
+  }
+  for (const page of spec.pages) for (const node of iterateNodes(page.layout)) check(node.props, 0)
+  for (const item of spec.nav ?? []) check(item.badge, 0)
+  // Two silent-failure classes that resolve "fine" but render empty forever.
+  // They keep their OWN dedup sets: `seen` already holds every path the main
+  // walk touched, including the clean-resolving `[]` filters these passes
+  // exist to catch.
+  checkTableColumns(spec, sources, gaps, limit)
+  checkEmptyFilters(spec, sources, gaps, limit)
+  return gaps.slice(0, limit)
+}
+
+/** Same spelling fusion the table renderer uses for column↔field matching. */
+const gapKeyNorm = (s: unknown): string => String(s).toLowerCase().replace(/[\s_-]+/g, '')
+
+/** Table columns no row carries — every cell of that column would be "—". */
+function checkTableColumns(
+  spec: UiSpec,
+  sources: Record<string, unknown>,
+  gaps: BindingGap[],
+  limit: number
+): void {
+  const seen = new Set<string>()
+  for (const page of spec.pages) {
+    for (const node of iterateNodes(page.layout)) {
+      if (gaps.length >= limit) return
+      if (node.name !== 'Table' || !isRecord(node.props)) continue
+      const rowsPath = dataBinding(node.props.rows)
+      const rows = rowsPath !== null ? lookupDataPath(sources, rowsPath) : node.props.rows
+      if (!Array.isArray(rows) || rows.length === 0) continue
+      const first = rows.find((r) => isRecord(r))
+      if (!isRecord(first)) continue
+      const held = Object.keys(sources).find(
+        (k) => rowsPath !== null && (rowsPath === k || rowsPath.startsWith(`${k}.`) || rowsPath.startsWith(`${k}[`))
+      )
+      if (!held) continue // rows come from elsewhere (inline / unfetched) — not a gap we can name
+      const fieldKeys = new Set(Object.keys(first).map(gapKeyNorm))
+      const cols = Array.isArray(node.props.columns) ? node.props.columns : []
+      for (const c of cols) {
+        if (gaps.length >= limit) return
+        const label = isRecord(c) ? String(c.label ?? c.key ?? '') : String(c)
+        const key = isRecord(c) ? String(c.key ?? c.label ?? '') : String(c)
+        if (!label && !key) continue
+        if (fieldKeys.has(gapKeyNorm(key)) || fieldKeys.has(gapKeyNorm(label))) continue
+        const desc = `Table "${node.id ?? node.name}" column "${label || key}"`
+        if (seen.has(desc)) continue
+        seen.add(desc)
+        gaps.push({ path: desc, key: held, fields: Object.keys(first).slice(0, 24) })
+      }
+    }
+  }
+}
+
+/**
+ * Filters like `items[?completed]` whose field NO item has resolve to `[]` —
+ * legal, defined, and an empty panel forever. Only reports when the tested
+ * field is absent everywhere (a guessed name), never when it exists and the
+ * values simply do not match (a legitimately empty list).
+ */
+function checkEmptyFilters(
+  spec: UiSpec,
+  sources: Record<string, unknown>,
+  gaps: BindingGap[],
+  limit: number
+): void {
+  if (gaps.length >= limit) return
+  const seen = new Set<string>()
+  const walk = (v: unknown, depth: number): void => {
+    if (gaps.length >= limit || depth > 24) return
+    const path = dataBinding(v)
+    if (path !== null) {
+      const open = path.indexOf('[')
+      if (open > 0 && path.includes('[') && path.includes(']') && !seen.has(path)) {
+        const base = path.slice(0, open)
+        let key = /^[^[.]*/.exec(base)?.[0] ?? ''
+        for (const candidate of Object.keys(sources)) {
+          if (candidate.length > key.length && (base === candidate || base.startsWith(`${candidate}.`)))
+            key = candidate
+        }
+        const baseVal = lookupDataPath(sources, base)
+        if (Array.isArray(baseVal) && baseVal.length > 0) {
+          const firstItem = baseVal.find((r) => isRecord(r))
+          if (isRecord(firstItem) && lookupDataPath(sources, path) !== undefined) {
+            const fieldKeys = new Set<string>()
+            for (const it of baseVal) if (isRecord(it)) for (const k of Object.keys(it)) fieldKeys.add(gapKeyNorm(k))
+            for (const m of path.matchAll(/\[\?\s*([A-Za-z_$][\w$.]*)/g)) {
+              if (gaps.length >= limit) return
+              const field = m[1].split('.').pop() ?? m[1]
+              if (fieldKeys.has(gapKeyNorm(field))) continue
+              if (seen.has(path)) continue
+              seen.add(path)
+              gaps.push({ path, key, fields: [...fieldKeys].slice(0, 24) })
+              break
+            }
+          }
+        }
+      }
+      return
+    }
+    if (Array.isArray(v)) v.forEach((x) => walk(x, depth + 1))
+    else if (isRecord(v)) Object.values(v).forEach((x) => walk(x, depth + 1))
+  }
+  for (const page of spec.pages) for (const node of iterateNodes(page.layout)) walk(node.props, 0)
+  for (const item of spec.nav ?? []) walk(item.badge, 0)
+}
+
 /** Source keys a spec's props reference via `{"$data": "key.path"}` bindings. */
 export function referencedDataKeys(spec: UiSpec): Set<string> {
   const keys = new Set<string>()
@@ -567,7 +918,7 @@ export function referencedDataKeys(spec: UiSpec): Set<string> {
       const walk = (v: unknown): void => {
         const path = dataBinding(v)
         if (path !== null) {
-          keys.add(path.split('.')[0])
+          keys.add(path.split('.')[0].split('[')[0])
           return
         }
         if (Array.isArray(v)) v.forEach(walk)
@@ -579,7 +930,7 @@ export function referencedDataKeys(spec: UiSpec): Set<string> {
   // Bound nav badges read [data] too: polling keeps them fresh as well.
   for (const item of spec.nav ?? []) {
     const path = dataBinding(item.badge)
-    if (path !== null) keys.add(path.split('.')[0])
+    if (path !== null) keys.add(path.split('.')[0].split('[')[0])
   }
   return keys
 }

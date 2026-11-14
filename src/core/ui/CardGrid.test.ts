@@ -67,6 +67,77 @@ describe('CardGrid binding resolution', () => {
   })
 })
 
+describe('bound values render as text a human can read', () => {
+  const card = (value: unknown): CardNode => ({
+    name: 'StatCard',
+    id: 's',
+    grid: grid(0),
+    props: { label: 'Log entries', value: { $data: 'v.x' } }
+  })
+
+  it('a list bound where a count was meant shows its size, never raw JSON', () => {
+    const out = html([card(1)], {}, { v: { x: [{ id: 1 }, { id: 2 }, { id: 3 }] } })
+    expect(out).toContain('>3<')
+    expect(out).not.toContain('[{')
+    expect(out).not.toContain('{"id"')
+  })
+
+  it('a scalar list joins readably; a bare object shows nothing', () => {
+    const tags = html([card(1)], {}, { v: { x: ['new', 'urgent'] } })
+    expect(tags).toContain('new, urgent')
+    const obj = html([card(1)], {}, { v: { x: { deep: { nested: 1 } } } })
+    expect(obj).not.toContain('deep')
+    expect(obj).not.toContain('{')
+  })
+
+  it('ISO timestamps become "date time", booleans Yes/No', () => {
+    const when = html(
+      [{ name: 'Paragraph', id: 'p', grid: grid(0), props: { text: { $data: 'v.x' } } }],
+      {},
+      { v: { x: '2026-11-13T06:25:19.582Z' } }
+    )
+    expect(when).toContain('2026-11-13 06:25')
+    expect(when).not.toContain('06:25:19')
+    const on = html(
+      [{ name: 'Paragraph', id: 'p', grid: grid(0), props: { text: { $data: 'v.x' } } }],
+      {},
+      { v: { x: true } }
+    )
+    expect(on).toContain('Yes')
+  })
+
+  it('a human-styled column label still finds its field (Plus ones ≡ plusOnes)', () => {
+    const out = html(
+      [
+        {
+          name: 'Table',
+          id: 't',
+          grid: grid(0),
+          props: { columns: ['Name', 'Plus ones'], rows: { $data: 'rows' } }
+        }
+      ],
+      {},
+      { rows: [{ name: 'Ana', plusOnes: 2 }] }
+    )
+    expect(out).toContain('Ana')
+    expect(out).toContain('>2<')
+    expect(out).not.toContain('—')
+  })
+
+  it('Breadcrumbs survive duplicate ids (HeroUI collections reject them)', () => {
+    const out = html([
+      {
+        name: 'Breadcrumbs',
+        id: 'b',
+        grid: grid(0),
+        props: { items: [{ id: 'main', label: 'Home' }, { id: 'main', label: 'Home' }] }
+      }
+    ])
+    expect(out).toContain('Home')
+    expect(out).not.toContain('could not be displayed')
+  })
+})
+
 describe('PageSkeleton', () => {
   it('shows the destination title and placeholders, busy and inert', () => {
     const out = renderToStaticMarkup(
