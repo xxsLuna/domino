@@ -15,9 +15,11 @@ import type { ChatMessage, ChatRequest, LLMAdapter, LLMConfig, StreamDelta } fro
  * Also serves Ollama (http://host:11434/v1) and any OpenAI-compatible
  * endpoint (OpenRouter, Groq, LM Studio, vLLM, ...) via baseUrl override.
  *
- * System messages keep their order — the stable prompt first, volatile
- * context after it — so the provider's automatic prefix cache matches the
- * whole stable part from one turn to the next.
+ * The engine sends the stable prompt and the volatile context as two system
+ * messages so the stable prefix stays cache-friendly. Many OpenAI-compatible
+ * servers (vLLM and its proxies) reject anything but exactly one leading
+ * system message, so on the wire they are merged in order — the combined
+ * text still starts with the stable part, so prefix caches keep matching.
  */
 
 interface OpenAIToolCallDelta {
@@ -46,8 +48,17 @@ interface OpenAIChunk {
 }
 
 function toOpenAIMessages(messages: ChatMessage[]): unknown[] {
+  // Exactly one leading system message: servers like vLLM reject a second
+  // system anywhere in the list. Merge in order — stable prompt stays first.
+  const systemText = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => m.content)
+    .filter(Boolean)
+    .join('\n\n')
   const out: unknown[] = []
+  if (systemText) out.push({ role: 'system', content: systemText })
   for (const m of messages) {
+    if (m.role === 'system') continue
     if (m.role === 'assistant' && m.toolCalls?.length) {
       out.push({
         role: 'assistant',

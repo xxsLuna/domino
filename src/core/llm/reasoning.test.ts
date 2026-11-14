@@ -61,6 +61,13 @@ describe('modelTakesReasoning', () => {
       expect(modelTakesReasoning(m), m).toBe(false)
     }
   })
+
+  it('takes it for Qwen3-generation hybrids (vLLM maps reasoning_effort there)', () => {
+    for (const m of ['qwen3.8-flash-next', 'qwen3-32b', 'Qwen-4-turbo']) {
+      expect(modelTakesReasoning(m), m).toBe(true)
+    }
+    expect(modelTakesReasoning('qwen2.5-coder'), 'qwen2.5').toBe(false)
+  })
 })
 
 describe('nextReasoningLevel', () => {
@@ -123,6 +130,15 @@ describe('effectiveReasoning', () => {
       effectiveReasoning({ provider: 'anthropic', model: 'claude-sonnet-4-5' })
     ).toBeUndefined()
   })
+
+  it('runs unset Qwen3 configs thoughtless — their servers default to deep thinking', () => {
+    expect(effectiveReasoning({ provider: 'chat_completions', model: 'qwen3.8-flash-next' })).toBe(
+      'none'
+    )
+    expect(
+      effectiveReasoning({ provider: 'chat_completions', model: 'qwen3.8-flash-next', reasoning: 'high' })
+    ).toBe('high')
+  })
 })
 
 describe('claude model capabilities', () => {
@@ -175,6 +191,12 @@ describe('openaiReasoningEffort', () => {
     expect(openaiReasoningEffort('none', 'gpt-5')).toBe('minimal')
     expect(openaiReasoningEffort('none', 'gpt-5.1')).toBe('none')
     expect(openaiReasoningEffort('medium', 'o3')).toBe('medium')
+  })
+
+  it('maps Qwen3 levels to its server vocabulary (none…xhigh, no "high")', () => {
+    expect(openaiReasoningEffort('none', 'qwen3.8-flash-next')).toBe('none')
+    expect(openaiReasoningEffort('low', 'qwen3.8-flash-next')).toBe('low')
+    expect(openaiReasoningEffort('high', 'qwen3.8-flash-next')).toBe('xhigh')
   })
 })
 
