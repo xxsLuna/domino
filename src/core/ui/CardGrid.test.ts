@@ -136,6 +136,22 @@ describe('bound values render as text a human can read', () => {
     expect(out).toContain('Home')
     expect(out).not.toContain('could not be displayed')
   })
+
+  it('an empty bound List says "No items" instead of blank space', () => {
+    const out = html(
+      [{ name: 'List', id: 'l', grid: grid(0), props: { items: { $data: 'x.items' } } }],
+      {},
+      { x: { items: [] } }
+    )
+    expect(out).toContain('No items')
+    const filled = html(
+      [{ name: 'List', id: 'l', grid: grid(0), props: { items: { $data: 'x.items' } } }],
+      {},
+      { x: { items: ['one'] } }
+    )
+    expect(filled).toContain('one')
+    expect(filled).not.toContain('No items')
+  })
 })
 
 describe('PageSkeleton', () => {

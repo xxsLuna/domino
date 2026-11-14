@@ -1765,6 +1765,11 @@ export function List({
   const list = toListItems(Array.isArray(items) ? items.slice(0, MAX_LIST_ROWS) : items)
   const rich = list.some((i) => i.description || i.icon || i.avatar || i.badge || i.meta || i.id)
 
+  // Same contract as Table: an empty (or not-yet-resolved) list says so —
+  // a bound list that silently renders nothing reads as a broken app.
+  if (list.length === 0 && (items === undefined || Array.isArray(items)))
+    return <p className="py-6 text-center text-sm text-muted">No items</p>
+
   if (!rich) {
     const Tag = truthy(ordered) ? 'ol' : 'ul'
     return (
