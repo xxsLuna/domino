@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { parseDomino } from '../domino/parse'
 import type { DominoFile } from '../domino/types'
-import { buildSystemPrompt, buildSystemPrompts } from './prompt'
+import type { BindingGap } from '../spec'
+import { bindingRepairPrompt, buildSystemPrompt, buildSystemPrompts } from './prompt'
 
 const promptFor = (source: string): string =>
   buildSystemPrompt(parseDomino(source).domino!, { loggedIn: false })
@@ -239,7 +240,18 @@ describe('buildSystemPrompt (binding instead of fetching)', () => {
   it('samples big snapshots to a few rows', () => {
     const rows = Array.from({ length: 50 }, (_, i) => ({ i }))
     const prompt = buildSystemPrompt(domino, { loggedIn: false, dataSnapshots: { stats: { rows } } })
-    expect(prompt).toContain('…+45 more')
+    // cap-agnostic: a few full rows, then a marker counting the rest
+    expect(prompt).toMatch(/"i":\s*2.*…\+4\d more/)
+    expect(prompt).not.toContain('"i":12')
+  })
+
+  it('keeps every key of a wide row by clipping long values', () => {
+    const wide = { rows: [{ id: 'a', description: 'x'.repeat(200), image: 'https://img.test/' + 'y'.repeat(60), done: true }] }
+    const prompt = buildSystemPrompt(domino, { loggedIn: false, dataSnapshots: { stats: wide } })
+    expect(prompt).toMatch(/"description":"x{40,}…/)
+    expect(prompt).toContain('"done":true')
+    expect(prompt).not.toContain('x'.repeat(200))
+    expect(prompt).toContain('"image":"https://img.test/')
   })
 })
 
@@ -287,5 +299,26 @@ describe('buildSystemPrompt (page plan)', () => {
 
   it('omits the plan section without [pages]', () => {
     expect(promptFor('[meta]\nname = X\n')).not.toContain('# Page plan')
+  })
+})
+
+describe('bindingRepairPrompt', () => {
+  const gaps: BindingGap[] = [
+    { path: 'Table "t" column "Client"', key: 'api:GET /invoices', fields: ['name', 'total', 'dueDate'] },
+    { path: 'leads.rows[?completed]', key: 'leads', fields: [] }
+  ]
+
+  it('names the page, lists every gap path with the fields the data really holds', () => {
+    const p = bindingRepairPrompt('main', gaps)
+    expect(p).toContain('The "main" page is on screen')
+    expect(p).toContain('- Table "t" column "Client" resolves to nothing — "api:GET /invoices" holds: name, total, dueDate')
+    expect(p).toContain('- leads.rows[?completed] resolves to nothing — "leads" holds: (no fields)')
+  })
+
+  it('demands the same page id, same layout, only binding changes', () => {
+    const p = bindingRepairPrompt('board', gaps)
+    expect(p).toContain('Re-render the SAME page id "board"')
+    expect(p).toContain('change ONLY the {"$data"} bindings')
+    expect(p).toContain('drop that prop or element instead of guessing another name')
   })
 })

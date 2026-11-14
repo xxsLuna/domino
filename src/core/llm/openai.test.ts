@@ -181,7 +181,7 @@ describe('chat-completions stream end, usage and caching', () => {
     expect('prompt_cache_key' in other.bodies[0]).toBe(false)
   })
 
-  it('keeps system messages in order, stable first', async () => {
+  it('merges multiple system messages into one leading system (vLLM rejects more)', async () => {
     const { bodies } = stub()
     for await (const _ of createOpenAIAdapter(CFG).chat({
       messages: [
@@ -191,10 +191,17 @@ describe('chat-completions stream end, usage and caching', () => {
       ]
     }))
       void _
+    // One system only, stable part first so prefix caching keeps matching.
     expect(bodies[0].messages.slice(0, 2)).toEqual([
-      { role: 'system', content: 'STABLE' },
-      { role: 'system', content: 'VOLATILE' }
+      { role: 'system', content: 'STABLE\n\nVOLATILE' },
+      { role: 'user', content: 'x' }
     ])
+  })
+
+  it('sends no system message when none was given', async () => {
+    const { bodies } = stub()
+    await collect()
+    expect(bodies[0].messages.every((m: { role: string }) => m.role !== 'system')).toBe(true)
   })
 
   it('retries a mid-stream overload reported before any output', async () => {

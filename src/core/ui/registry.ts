@@ -83,8 +83,8 @@ export const COMPONENT_DEFS: ComponentDef[] = [
   def('SearchField', 'form', 'Search box; Enter dispatches "search" {name, query}. Props: name, placeholder, value, label.', SearchField),
   def('Button', 'form', 'Action button; dispatches "click". Inside a Form the primary Button submits it; a Button outside a Form never submits one — its click carries {fields} with the values of filled-in fields in the same card. Props: text, variant (primary|secondary|tertiary|outline|ghost|danger; default primary), icon, size (sm|md|lg), fullWidth, confirm (question shown in a dialog before acting), disabled, to (page id a plain "open that page" button leads to — switches instantly once the page is built).', Button),
   // data
-  def('Table', 'data', 'Data table (stacks into cards on phones). Props: title, columns (string[]), rows (array of arrays or objects keyed by column), rowAction (rows dispatch "select" {index, row (visible cells by column label), record (all fields of the source row, incl. ones not shown such as id), id}), emptyText. A cell may be {text, variant} to render a status chip.', Table),
-  def('List', 'data', 'App-style list rows. Props: items (string[] or {id,title,description,icon,avatar,meta,badge,badgeVariant}[]), ordered. Items with an id dispatch "select" {id, title, record (the whole source item)}.', List),
+  def('Table', 'data', 'Data table (stacks into cards on phones). Props: title, columns (string[]), rows (array of arrays or objects keyed by column), rowAction (rows dispatch "select" {index, row (visible cells by column label), record (all fields of the source row, incl. ones not shown such as id), id}; the runtime also parks the row\'s id in page state as "selected" so declared [actions] rules can use {selected}), emptyText, pageSize (set to N (e.g. 10) to page the already-loaded rows with a local pager — page turns are instant, no model turn). A cell may be {text, variant} to render a status chip.', Table),
+  def('List', 'data', 'App-style list rows. Props: items (string[] or {id,title,description,icon,avatar,meta,badge,badgeVariant}[]), ordered, pageSize (set to N to page loaded items with an instant local pager). Items with an id dispatch "select" {id, title, record (the whole source item)}; the runtime also parks the id in page state as "selected" so declared [actions] rules can use {selected}.', List),
   def('StatCard', 'data', 'KPI tile. Props: label, value, delta (e.g. "+12%"), deltaGood (false = red), icon, description.', StatCard),
   def('KeyValue', 'data', 'Label/value pairs for detail pages. Props: items ({label,value}[] or an object), columns (1|2).', KeyValue),
   def('Avatar', 'data', 'Person/entity avatar with optional name line. Props: name, src, description, size (sm|md|lg).', Avatar),
@@ -96,7 +96,7 @@ export const COMPONENT_DEFS: ComponentDef[] = [
   def('Skeleton', 'feedback', 'Loading placeholder lines. Props: lines.', Skeleton),
   // navigation
   def('Breadcrumbs', 'navigation', 'Location trail on detail/form pages. Props: items ({id,label}[]; earlier items dispatch "navigate" with page = id).', Breadcrumbs),
-  def('Pagination', 'navigation', 'Page switcher under long tables. Props: page, total. Dispatches "page" {page}.', Pagination),
+  def('Pagination', 'navigation', 'Server-side page switcher under a table when the API itself reports more pages (its page/total). Props: page, total. Dispatches "page" {page} so the app can fetch that page. To page rows you already have, set pageSize on the Table/List instead (instant, no dispatch).', Pagination),
   // media
   def('Image', 'media', 'Image with graceful fallback. Props: src, alt, width, aspect (e.g. "16/9"), rounded.', Image)
 ]

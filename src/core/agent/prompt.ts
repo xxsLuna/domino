@@ -1,4 +1,5 @@
 import type { DominoFile } from '../domino/types'
+import type { BindingGap } from '../spec'
 import { iconNames } from '../ui/icons'
 import { COMPONENT_DEFS } from '../ui/registry'
 import type { ToolCall } from '../llm/types'
@@ -112,6 +113,9 @@ ${aboutApp(domino)}
 - "grid" belongs on top-level layout nodes only; children are laid out by their parent. Never wrap a whole page in one Stack/Card/Columns — place its blocks on the grid directly.
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
 - Show backend data by BINDING it, not by copying it: any prop that displays it (Table "rows", List "items", StatCard "value", KeyValue…) takes {"$data": "<bind>.<json path>"} (e.g. "rows": {"$data": "api:GET /leads.rows"}). Bindings re-resolve against the latest response on every render and survive restarts; copied values cost tokens and go stale. Copy at most a row or two when a literal example helps (an empty-state illustration), never whole lists.
+- The real bodies you were SHOWN beat any documentation: when the guide (or a page plan) names a field that the Live data / Known API responses do not carry, the guide is wrong — bind the fields the real data has, and choose other columns entirely rather than keeping one whose field does not exist (a "—" column is a broken promise to the user).
+- Bound paths also support list selection: index "items[0]" / "items[-1]" and filters "items[?status=='new']" (==, !=, >, >=, <, <=, =~ contains, or a bare "[?done]" truthy test). To show a subset (a tab panel, a "today" list), bind the FILTERED path — never hand-copy the matching rows into the screen.
+- If a render_ui result carries "bindingWarnings", some of your paths resolve to nothing in data the runtime already holds — those props will show "—". Re-render the same page binding only fields the listed data actually has.
 - Keep a screen compact: at most ~15 layout nodes, and at most ~20 rows in any Table or List (longer payloads are trimmed from your context anyway — show the head, and let pagination or a $data binding carry the rest).
 - render_ui's tool result may carry "notes" — repairs the runtime made to your spec (an unknown component, a page id that wasn't in pages, dropped nodes). The screen was shown; avoid the same mistake in later renders.
 
@@ -149,8 +153,9 @@ Icons (for "icon" props and nav): ${iconNames.join(', ')}. An emoji also works.
 # Screen patterns (pick the one that fits, keep it consistent across pages)
 - EVERY page except login/onboarding and create/edit forms starts with a PageHeader (y:0, w:12; after Breadcrumbs on detail pages): title = what the page is, a one-line description, and its actions as Button children — secondary ones first, then the page's ONE primary action last (destructive actions use variant "danger" with a "confirm" message).
 - One primary Button per page: the PageHeader's main action, or a Form's submit. Buttons inside side Cards, Tabs and lists are "secondary" (or "ghost").
-- DASHBOARD: PageHeader → a row of 3–4 StatCards (w:4 or w:3, h:2, each with icon) → main content (Table or List inside a Card, x:0 w:8) beside 1–2 side Cards (x:8 w:4: shortcuts, follow-ups, Progress).
-- LIST / INDEX: PageHeader (+ primary "New …" button) → filter row (SearchField w:8 + Select w:4) → Table w:12 with "rowAction": true → Pagination only when the API response reports more pages (its page/total, never a guess). Show an EmptyState instead of an empty Table.
+- DASHBOARD: PageHeader → a row of 3–4 StatCards (w:4 or w:3, h:2, each with icon) → main content (Table or List inside a Card, x:0 w:8) beside 1–2 side Cards (x:8 w:4: shortcuts, follow-ups, Progress). The stat row is NEVER the whole dashboard: a dashboard always carries the resource's Table or List as its main content — a home where the app's records appear nowhere is broken output.
+- LIST / INDEX: PageHeader (+ primary "New …" button) → filter row (SearchField w:8 + Select w:4) → Table w:12 with "rowAction": true. When one screen can't hold every loaded row, set "pageSize" (e.g. 10) on the Table/List for an instant local pager — never paginate a list you already have; use a Pagination component ONLY when the API response itself reports more pages (its page/total, never a guess). An item COUNT is not a page total: a response with 7 items and no page fields gets NO Pagination — a pager whose pages cannot change what shows is broken output; render all 7 (or pageSize them). Show an EmptyState instead of an empty Table.
+- Cards never repeat data: every Card/Columns/Image you write is ONE fixed record frozen at the rows of a snapshot. A collection of more than 3 records must render through Table or List (List rows take avatar images, badges and meta — a photo gallery IS a List) so every record actually appears and pageSize can page it. And the rows/items of that Table/List must be a {"$data"} binding whenever the collection is a [data] source: a hand-written rows array is the same frozen-card bug wearing a table costume — it shows 1 record where the app has 7, and its rows carry no real id, so the user's taps open a detail whose {selected} sources have nothing to resolve: blank.
 - DETAIL: Breadcrumbs (y:0) → PageHeader with status "badge" and actions → Card (w:8) holding Tabs (Overview = KeyValue, Activity = List, …) → side Cards (w:4: owner Avatar, next step).
 - CREATE / EDIT FORM: Breadcrumbs → one Form (x:2 w:8, or x:3 w:6 for short forms) whose "title" and "description" are the page heading (no PageHeader), "columns": 2 when it has 6+ fields; end with a secondary "Cancel" Button whose id is "cancel" and a primary submit Button as the last child. EVERY Form containing inputs MUST end with that primary submit Button (or set "submitText" when it has no Button children) — a form with no visible submit action is invalid output.
 - SETTINGS: PageHeader (no Save button there) → one Form per section (x:0 w:8), each with its own submit Button; every editable control — Input, Switch (on/off), Select (one-of-many), RadioGroup (2–4 visible choices) — goes inside a Form → side Cards (x:8 w:4) for plan, account (sign-out) and danger zone.
@@ -229,6 +234,7 @@ function pagePlanSection(domino: DominoFile): string {
 # Page plan ([pages] — the app's screens, declared by the author)
 ${lines.join('\n')}
 - Use exactly these ids for "page", pages[].id and nav item ids — never invent another id or name variant for a planned page. Put the "(nav)" pages in "nav", in this order. A planned page that doesn't exist yet is designed the first time it is shown; build it for the purpose given.
+- A purpose containing "rowAction -> <page>" means the runtime opens that page the moment a row is tapped (instantly, with the record's id in state.selected). Build such a detail page so its content comes from bindings — a [data] source keyed on {selected} (e.g. note = GET /notes/{selected}) or fields the row's data already carries — never text frozen from one record: the same built copy answers every row.
 `
 }
 
@@ -282,8 +288,18 @@ function describeStep(step: DominoFile['actions'][number]['steps'][number]): str
       return `set ${String(s.stateKey)} from form field ${String(s.formField)}`
     case 'refresh':
       return `refresh ${String(s.source)}`
-    case 'call':
-      return `call ${String(s.method ?? 'GET')} ${String(s.path)}${s.body === 'form' ? ' with the form values' : ''}`
+    case 'call': {
+      const fields = s.fields as Record<string, string> | undefined
+      return `call ${String(s.method ?? 'GET')} ${String(s.path)}${
+        s.body === 'form' ? ' with the form values' : ''
+      }${
+        fields
+          ? ` plus fixed ${Object.entries(fields)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(', ')}`
+          : ''
+      }`
+    }
     default:
       return s.kind
   }
@@ -301,6 +317,8 @@ function actionsSection(domino: DominoFile): string {
 # Runtime-owned controls ([actions])
 ${lines.join('\n')}
 - Give the control that performs each action exactly this id (the Button id, or the Form id for a submit) on every page where the guide or flow calls for it; for a goto action, place it where the user would expect to open that page. Pressing it is handled by the runtime; only a goto to a page not built yet reaches you, once — build that page under exactly the declared id.
+- A "{selected}" in a declared path is the id of the record the user last opened through a Table row or List item — the runtime fills it at select time, so a detail page's delete/edit/approve rule works with no help from you. Do not pass ids around yourself and do not re-ask which record is open; just give the detail page's controls their declared ids and show that record's fields.
+- A page that shows or edits the OPEN record (a detail, an edit form behind an Edit button) must get the record's values from a {selected}-keyed [data] source, never from text baked in: declare the source ("note = GET /notes/{selected}") and bind the fields to it — an edit form's Input value props are bindings too ({"$data": "note.title"}). The runtime resolves them per record at open, so one built page serves every record prefilled; frozen values show blank or the wrong record the moment that page answers for another.
 `
 }
 
@@ -319,8 +337,8 @@ function hasSubscriptions(domino: DominoFile): boolean {
 }
 
 /** Snapshot sampling: a few rows show the shape; the bound screen shows the rest. */
-const SNAPSHOT_ROWS = 5
-const SNAPSHOT_CHARS = 1_200
+const SNAPSHOT_ROWS = 3
+const SNAPSHOT_CHARS = 2_400
 
 /**
  * Current values of the DECLARED [data] sources only. Remembered call_api
@@ -357,7 +375,13 @@ function liveSnapshotSection(domino: DominoFile, snapshots?: Record<string, unkn
 ${lines.join('\n')}`
 }
 
-/** Compact one-line JSON for a snapshot: arrays sampled to their head, whole thing length-capped. */
+/**
+ * Compact one-line JSON for a snapshot: arrays sampled to their head and
+ * every string clipped to a length where only the SHAPE matters — binding
+ * needs all the keys of a row to be visible, not full values. Wide records
+ * (a row with tens of keys) are why the cap is generous and rows are few:
+ * one complete row teaches more than five clipped tails.
+ */
 function trimSnapshot(value: unknown): string {
   const clip = (v: unknown): unknown => {
     if (Array.isArray(v)) {
@@ -369,6 +393,7 @@ function trimSnapshot(value: unknown): string {
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = clip(val)
       return out
     }
+    if (typeof v === 'string' && v.length > 48) return `${v.slice(0, 45)}…`
     return v
   }
   const text = JSON.stringify(clip(value)) ?? 'null'
@@ -436,4 +461,27 @@ function authDynamicRule(domino: DominoFile, loggedIn: boolean): string {
 /** Compact transcript of a tool call for conversation history. */
 export function describeToolCall(tc: ToolCall): string {
   return `${tc.name}(${tc.args})`
+}
+
+/**
+ * The background turn that runs when data lands AFTER its screen was built:
+ * the shown screen binds fields the freshly held data does not have, and left
+ * alone it will keep showing "—" and empty panels. An in-turn nudge can point
+ * at the model's own bindingWarnings; a scratch history has none, so this
+ * prompt lists the gaps (path + the fields the data really holds) directly.
+ */
+export function bindingRepairPrompt(pageId: string, gaps: BindingGap[]): string {
+  const list = gaps
+    .map(
+      (g) =>
+        `- ${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
+    )
+    .join('\n')
+  return (
+    `BACKGROUND FIX (no user is waiting). The "${pageId}" page is on screen, but its data has now arrived and these bindings resolve to nothing:\n` +
+    `${list}\n` +
+    `Re-render the SAME page id "${pageId}" with the SAME elements, layout, ids and actions — change ONLY the {"$data"} bindings, ` +
+    `each to a field the data actually has (the Live data / Known API responses sections list them). ` +
+    `When a value a prop wanted exists nowhere in the data, drop that prop or element instead of guessing another name.`
+  )
 }

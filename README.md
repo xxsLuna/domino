@@ -256,6 +256,13 @@ and `[meta] home`, `[script]` routes and `[actions]` gotos are checked against t
 mismatch is reported as a warning with its line number). `login` is runtime-owned and needs no
 entry. Files without `[pages]` still work; the model then names pages itself.
 
+A purpose may also declare the destination of a row tap: `… with rowAction -> note …`.
+The runtime then opens `note` the instant a Table row or List item is tapped (the record's id
+lands in `state.selected` first) — no model turn, and every row of the list answers. The detail
+page must therefore read from bindings — a `[data]` source keyed on `{selected}`
+(`note = GET /notes/{selected}`) or fields the select already carries — not text frozen from
+one record.
+
 **`[data]`** — `key = GET /path` or `key = FEED <url>`, optionally `every Ns` (5-600). Only
 `GET` and `FEED` are accepted: sources are re-fetched on every open, before turns and on polls,
 so a `POST`/`PUT`/`PATCH`/`DELETE` source is refused with a warning — writes belong in an
@@ -272,10 +279,16 @@ whose submit triggers it. Steps:
 | `set <stateKey> = form.<field>` | copy a submitted field into page state |
 | `refresh <dataKey>` | re-fetch a `[data]` source (bound props update in place) |
 | `goto <page-id>` | switch to that page; a page not built yet is generated under exactly that id |
-| `call <METHOD> /path [with form]` | one request under `[api] allow` (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`); `with form` sends the submitted form as the body. The path may use `{form.field}`, `{row.field}` (the selected Table/List row) and `{stateKey}`, each URI-encoded |
+| `call <METHOD> /path [with form] [body k=v,…]` | one request under `[api] allow` (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`); `with form` sends the submitted form as the body, `body status=approved` adds fixed fields (a value may itself be a placeholder; form fields win over same-named fixed ones). The path may use `{form.field}`, `{row.field}` (the selected Table/List row) and `{stateKey}`, each URI-encoded |
 
 `new-lead-form = call POST /leads with form ; refresh leads ; goto leads` creates a lead, reloads
-the list and returns to it without a single model turn.
+the list and returns to it without a single model turn. Selecting a Table row or List item parks
+its id in page state as `selected`, which makes a detail-page rule just as deterministic:
+
+```
+del-note = call DELETE /notes/{selected} ; refresh notes ; goto main
+approve  = call PATCH /requests/{selected} body status=approved ; refresh requests ; goto main
+```
 
 The `[script]` condition DSL supports identifiers (`logged_in`, `error`, `event`), `not`,
 comparisons (`==`, `!=`, `<`, `>`), `and` / `or`, parentheses, and dotted paths

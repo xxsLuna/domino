@@ -301,6 +301,95 @@ describe('call_api continuation', () => {
   })
 })
 
+describe('binding feedback', () => {
+  const BAD = {
+    version: 1,
+    page: 'p',
+    pages: [
+      {
+        id: 'p',
+        name: 'P',
+        layout: [{ name: 'Table', props: { columns: ['Name'], rows: { $data: 'leads.items' } } }]
+      }
+    ]
+  }
+  const snaps = () => ({ leads: { rows: [{ name: 'Ana' }], total: 7 } })
+
+  it('a render bound to a field the held data lacks warns and earns one re-bind round', async () => {
+    const seen: ChatRequest[] = []
+    const updates = await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [render(BAD)] }, { calls: [render()] }], seen),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        dataSnapshots: snaps
+      })
+    )
+    expect(seen).toHaveLength(2)
+    const [first] = toolResults(seen[1])
+    expect(first.bindingWarnings).toEqual([
+      'leads.items resolves to nothing — "leads" holds: rows, total, rows[].name'
+    ])
+    // The fix round is announced, not left to the model to infer.
+    const nudge = seen[1].messages.filter((m) => m.role === 'user').at(-1)
+    expect(nudge?.content).toMatch(/bindingWarnings/)
+    expect(finals(updates)).toHaveLength(2)
+  })
+
+  it('a clean render with held, matching snapshots ends the turn at once', async () => {
+    const seen: ChatRequest[] = []
+    const good = {
+      version: 1,
+      page: 'p',
+      pages: [
+        {
+          id: 'p',
+          name: 'P',
+          layout: [{ name: 'Table', props: { columns: ['Name'], rows: { $data: 'leads.rows' } } }]
+        }
+      ]
+    }
+    await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [render(good)] }], seen),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        dataSnapshots: snaps
+      })
+    )
+    expect(seen).toHaveLength(1)
+  })
+
+  it('without dataSnapshots the engine adds no rounds (pregen/tests unchanged)', async () => {
+    const seen: ChatRequest[] = []
+    await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [render(BAD)] }], seen),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API
+      })
+    )
+    expect(seen).toHaveLength(1)
+  })
+
+  it('one fix round is the budget: a second bad render does not loop', async () => {
+    const seen: ChatRequest[] = []
+    await collect(
+      runAgentTurn({
+        adapter: scripted([{ calls: [render(BAD)] }, { calls: [render(BAD)] }], seen),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        api: API,
+        dataSnapshots: snaps
+      })
+    )
+    expect(seen).toHaveLength(2)
+  })
+})
+
 describe('write ordering', () => {
   it('settles a write before yielding the render that came first in the response', async () => {
     setHttpFetch(async () => new Response('{"ok":true}', { status: 201 }))

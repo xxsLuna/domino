@@ -1,8 +1,10 @@
 import type { ChatMessage, ChatRequest, LLMAdapter, ToolCall } from '../llm/types'
 import {
+  bindingGaps,
   describeUiSpecProblem,
   iterateNodes,
   tryValidateUiSpec as validate,
+  type BindingGap,
   type UiSpec
 } from '../spec'
 import { getComponent, withRegistryNames } from '../ui/registry'
@@ -178,6 +180,14 @@ export interface AgentTurnOptions {
    * executing (a pre-generated screen must never write to the backend).
    */
   readOnlyApi?: boolean
+  /**
+   * The runtime's live [data]/api snapshots, read after each accepted render.
+   * A screen whose `{"$data"}` paths miss fields the held snapshots DO have
+   * gets a warning in its tool result plus one corrective round — the screen
+   * would otherwise land with "—" cells the user has to look at forever.
+   * Omitted (tests, pregen): no binding check.
+   */
+  dataSnapshots?: () => Record<string, unknown>
 }
 
 /** What one render_ui call amounted to, decided before any tool runs. */
@@ -228,6 +238,9 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
   let retriesLeft = 1
   // A navigate to an unknown page gets its own single correction.
   let navRetriesLeft = 1
+  // A screen whose bindings miss fields the held snapshots have spends one
+  // round told about it (the warning also rides on renders that stay put).
+  let fixRoundsLeft = 1
   // A turn should end on a screen (or a page switch); otherwise say so.
   let rendered = false
   let reported = false
@@ -473,6 +486,8 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
       startReads(0)
 
       let sawRender = false
+      // $data paths the accepted renders bound but the held snapshots lack.
+      let renderGaps: BindingGap[] = []
       let failedRender = false
       let navigatedOk = false
       let failedNav = false
@@ -596,11 +611,26 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
           }
           // Record the tool result before yielding: if the caller walks away
           // at the yield (superseded turn), history must still carry it.
+          // Held-snapshot binding gaps ride on the result: the model sees
+          // exactly which paths would render "—" and what the data holds.
+          const gaps =
+            spec && opts.dataSnapshots ? bindingGaps(spec, opts.dataSnapshots()) : []
+          if (gaps.length) renderGaps = gaps
           added.push({
             role: 'tool',
             toolCallId: tc.id,
             toolName: tc.name,
-            content: JSON.stringify(renderResult(tc.args, outcome))
+            content: JSON.stringify({
+              ...renderResult(tc.args, outcome),
+              ...(gaps.length
+                ? {
+                    bindingWarnings: gaps.map(
+                      (g) =>
+                        `${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
+                    )
+                  }
+                : {})
+            })
           })
           if (spec) yield { type: 'spec', spec, final: true }
           // A cut-off screen still shows as a preview while the retry runs.
@@ -666,14 +696,17 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
       if (isAborted()) break
 
       // Continue only when another pass can change the outcome: a corrective
-      // round for a broken render or an unknown page, or API results that
-      // still need a screen (none rendered, or a call failed / changed shape).
+      // round for a broken render or an unknown page, API results that
+      // still need a screen (none rendered, or a call failed / changed shape),
+      // or a screen bound to fields the held data does not have.
       const settled = sawRender || navigatedOk
       const canContinue = iteration < maxIterations - 1
       const retry = failedRender && !settled && retriesLeft > 0 && canContinue
       const navRetry = failedNav && !settled && !retry && navRetriesLeft > 0 && canContinue
       const dataRound = calledApi && !navigatedOk && (!sawRender || apiNeedsFollowUp) && canContinue
-      const shouldContinue = retry || navRetry || dataRound
+      const bindingFix =
+        renderGaps.length > 0 && settled && !retry && !navRetry && !dataRound && fixRoundsLeft > 0 && canContinue
+      const shouldContinue = retry || navRetry || dataRound || bindingFix
       if (failedRender && !settled && !shouldContinue) {
         reported = true
         const cut = [...renders.values()].some((r) => r.cutOff)
@@ -689,6 +722,14 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
         escalate()
       }
       if (navRetry) navRetriesLeft--
+      if (bindingFix) {
+        fixRoundsLeft--
+        added.push({
+          role: 'user',
+          content:
+            'The screen you just rendered binds fields its data does not have (bindingWarnings above): those props will show nothing. Re-render the SAME page id using only fields the data actually has (the Live data / Known API responses sections list them), or answer again with render_ui if your bindings were right. Keep everything else on the screen unchanged.'
+        })
+      }
       continuedForData = dataRound && !retry
       if (!shouldContinue) break
     }

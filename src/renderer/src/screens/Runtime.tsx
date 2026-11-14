@@ -22,7 +22,7 @@ import {
   Tooltip
 } from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
-import { buildSystemPrompts } from '@core/agent/prompt'
+import { bindingRepairPrompt, buildSystemPrompts } from '@core/agent/prompt'
 import { executeApi, resolveEndpoint } from '@core/agent/api'
 import {
   bookFields,
@@ -51,7 +51,7 @@ import {
 } from '@core/agent/pregen'
 import { compactHistory } from '@core/agent/history'
 import { nextSpecChars, renderProgress } from '@core/agent/progress'
-import { interpolateCallPath } from '@core/domino/actions'
+import { interpolateBodyFields, interpolateCallPath, selectedRecordId } from '@core/domino/actions'
 import {
   bootNeedsLogin,
   scriptEventOutcome,
@@ -78,6 +78,7 @@ import {
   parseEndpointKey
 } from '@core/runtime/apiBindings'
 import { loadDataSnaps, persistableDataSnaps, saveDataSnaps } from '@core/runtime/dataSnaps'
+import { recoverRowIdentity } from '@core/runtime/rowIdentity'
 import {
   planSourceFetch,
   settleWithin,
@@ -171,16 +172,19 @@ import { Alert } from '@core/ui/components'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
 import {
+  bindingGaps,
   findNode,
   findPage,
   isRefreshFeedsEvent,
   isSignOutEvent,
   isSubscribeFeedEvent,
   isUnsubscribeFeedEvent,
+  promisedCollectionGap,
   referencedDataKeys,
   withKnownPages,
   withTargetPage,
   type ActionEvent,
+  type BindingGap,
   type NavItem,
   type UiSpec
 } from '@core/spec'
@@ -350,6 +354,13 @@ export function Runtime({
   /** Targets already attempted this session — a build that never merges is not retried. */
   const pregenTriedRef = useRef(new Set<string>())
   const clickTriedRef = useRef(new Set<string>())
+  /**
+   * Data-arrival binding repairs: attempts per page (a page gets a bounded
+   * number) and the repair turns in flight (cancelled with the builds when
+   * the app's context changes).
+   */
+  const repairTriesRef = useRef(new Map<string, number>())
+  const repairAbortsRef = useRef(new Set<AbortController>())
   /** Bound `api:GET …` refreshes: running, and when the last one failed. */
   const apiInflightRef = useRef(new Set<string>())
   const apiFailedAtRef = useRef<Record<string, number>>({})
@@ -474,6 +485,22 @@ export function Runtime({
   const stateRef = useRef<Record<string, unknown>>({})
   /** Local writes made while a turn was streaming; merged when it lands. */
   const pendingStateWrites = useRef<Record<string, unknown>>({})
+  /**
+   * The record the user last opened through a Table row / List item, kept by
+   * the runtime itself (state.selected is its carrier). A model's state echo
+   * or a history moment may omit the key — declared rules like
+   * `del = call DELETE /notes/{selected}` must not lose the record then.
+   */
+  const selectedRef = useRef<string | null>(null)
+  /**
+   * The WHOLE record behind that selection, when the select carried one (a
+   * Table row / List item does). Pages reached later by a plain goto — an
+   * edit form, a detail — see only state.selected (an id); their turn gets
+   * these fields in the prompt, so a prefilled edit form is data, not luck.
+   */
+  const selectedRecordRef = useRef<Record<string, unknown> | null>(null)
+  /** Pages already told about a promised collection they did not draw (once each). */
+  const gapWarnedRef = useRef(new Set<string>())
   /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
   const [progress, setProgress] = useState<number | null>(null)
 
@@ -721,6 +748,10 @@ export function Runtime({
     pregenBuildsRef.current.cancelAll()
     pregenTriedRef.current.clear()
     clickTriedRef.current.clear()
+    // A changed context (sign-in, rebuild) also voids binding repairs: the
+    // data behind them was the old context's, and pages may bind anew now.
+    for (const c of repairAbortsRef.current) c.abort()
+    repairTriesRef.current.clear()
   }, [])
 
   const showSpec = useCallback(
@@ -1005,6 +1036,30 @@ export function Runtime({
       if (spec.state !== undefined) {
         stateRef.current = { ...spec.state, ...pendingStateWrites.current }
       }
+      // selected is runtime-owned: whatever the model echoed (or dropped),
+      // the record the user last opened stays addressable for [actions].
+      if (selectedRef.current !== null) {
+        stateRef.current = { ...stateRef.current, selected: selectedRef.current }
+      }
+      // A page that promised a collection and drew none (the silent
+      // stats-only home) is said out loud — once per page per session:
+      // the user learns the screen skipped its plan, not by trial and error.
+      const gapDecl = domino.pages.find((p) => p.id === spec.page)
+      const gapPage = findPage(spec, spec.page)
+      if (gapDecl && gapPage && !gapWarnedRef.current.has(spec.page)) {
+        const gap = promisedCollectionGap(gapDecl, gapPage.layout)
+        if (gap) {
+          gapWarnedRef.current.add(spec.page)
+          armResultToast(
+            {
+              kind: 'notice',
+              text: t('rt.planGapToast', { page: gapDecl.name, kind: gap }),
+              target: null
+            },
+            9_000
+          )
+        }
+      }
       // A non-edit screen (click hit, boot, instant-nav) makes the previous
       // edit's result the new baseline — no cells left to glow.
       if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
@@ -1015,6 +1070,7 @@ export function Runtime({
     [
       armResultToast,
       clearEditHighlight,
+      domino,
       isNavPage,
       recordGraphEdge,
       schedulePreGen,
@@ -1443,6 +1499,9 @@ export function Runtime({
         clearEditHighlight()
       }
       stateRef.current = { ...(snap.spec.state ?? {}) }
+      if (selectedRef.current !== null) {
+        stateRef.current = { ...stateRef.current, selected: selectedRef.current }
+      }
       pendingStateWrites.current = {}
       // Time travel: the moment's own copies become canonical again — and
       // with them, which record its page shows.
@@ -1580,7 +1639,11 @@ export function Runtime({
           // A failed/absent render is the one round worth spending depth on —
           // escalated from the level actually in effect (unset gpt-5 = low).
           escalateReasoning: () =>
-            createAdapter({ ...config, reasoning: nextReasoningLevel(effectiveReasoning(config)) })
+            createAdapter({ ...config, reasoning: nextReasoningLevel(effectiveReasoning(config)) }),
+          // Catch {"$data"} bindings that miss fields the held snapshots have
+          // (they would land as "—" forever) and give the model one round to
+          // re-bind against the real shape.
+          dataSnapshots: () => dataSnapRef.current
         })) {
           if (turnSeq.current !== myTurn) break // superseded by a newer turn
           switch (update.type) {
@@ -1898,6 +1961,8 @@ export function Runtime({
           signal,
           cacheKey: llmCacheKey,
           readOnlyApi: true,
+          // Background screens must bind real fields too — nobody re-asks.
+          dataSnapshots: () => dataSnapRef.current,
           // A predicted press may answer "that page exists": switch, no build.
           ...(build.kind === 'click'
             ? {
@@ -1989,6 +2054,139 @@ export function Runtime({
     setCurrentSpec((prev) => (prev ? mergeKnownPage(prev, merged.spec, merged.pageId) : prev))
     return true
   }, [])
+
+  /**
+   * One invisible read-only turn that re-binds the page currently on screen:
+   * its data arrived AFTER it was built and its bindings resolve to nothing
+   * (a turn's own fix-round only sees snapshots held at render time — a guide
+   * that overpromises the shape ships "—" columns nobody re-asks about). The
+   * repaired page REPLACES the broken one (mergeKnownPage: the new copy wins
+   * for its id; everything the user is looking at otherwise stays put).
+   */
+  const runBindingRepair = useCallback(
+    async (pageId: string, gaps: BindingGap[]): Promise<void> => {
+      if (needsApiKey(config)) return
+      const controller = new AbortController()
+      repairAbortsRef.current.add(controller)
+      const signal = controller.signal
+      let usageSeen = 0
+      try {
+        const knownSchemas = bookFields(schemaBookRef.current)
+        const prompts = buildSystemPrompts(domino, {
+          loggedIn: loggedInRef.current,
+          knownSchemas,
+          dataSnapshots: dataSnapRef.current,
+          pageMap: appMapLines(),
+          feeds: feedsRef.current
+        })
+        const scratch: ChatMessage[] = [
+          { role: 'user', content: bindingRepairPrompt(pageId, gaps) }
+        ]
+        const api = apiRuntime()
+        for await (const update of runAgentTurn({
+          adapter: createAdapter(config),
+          system: prompts.stable,
+          systemDynamic: prompts.dynamic,
+          history: scratch,
+          api,
+          knownSchemas,
+          signal,
+          cacheKey: llmCacheKey,
+          readOnlyApi: true,
+          // Real-field bindings are this turn's whole job.
+          dataSnapshots: () => dataSnapRef.current
+        })) {
+          if (signal.aborted) return
+          switch (update.type) {
+            case 'spec': {
+              if (!update.final) break
+              // Exact id only: a repair that re-imagined the page id fixed a
+              // page nobody is looking at — the broken one stays.
+              const base = knownRef.current
+              const repaired = update.spec.pages.find((p) => p.id === pageId)
+              if (!base || !repaired) return
+              // Never trade a better screen for a worse one: a repair that
+              // still (or newly) leaves binding gaps — a blind re-render that
+              // broke what worked — is dropped, and the user keeps the page
+              // they have. The gap count is measured the same way both times.
+              const still = bindingGaps(
+                { ...update.spec, page: pageId, pages: [repaired], nav: [] },
+                dataSnapRef.current,
+                gaps.length || 1
+              )
+              if (still.length >= gaps.length) return
+              knownRef.current = mergeKnownPage(base, update.spec, pageId)
+              setCurrentSpec((prev) =>
+                prev ? mergeKnownPage(prev, update.spec, pageId) : prev
+              )
+              return
+            }
+            case 'api_result':
+              if (update.blocked) {
+                controller.abort()
+                return
+              }
+              if (reportApiResult(update.result, Boolean(api.token), false)) return
+              if (update.schema) {
+                schemaBookRef.current = rememberSchema(
+                  schemaBookRef.current,
+                  update.endpoint,
+                  update.schema
+                )
+                scheduleSchemaSave()
+              }
+              rememberApiSnapshot(update.endpoint, update.result)
+              break
+            case 'usage': {
+              const step = usageStep(usageSeen, update.usage)
+              usageSeen = step.total
+              if (step.add > 0) setUsageTotal((prev) => prev + step.add)
+              break
+            }
+            // A repair that navigates or errored fixed nothing on screen.
+            case 'navigated':
+            case 'error':
+              return
+          }
+        }
+      } catch {
+        // A failed repair leaves the screen as it was; the attempt is spent.
+      } finally {
+        repairAbortsRef.current.delete(controller)
+      }
+    },
+    [
+      apiRuntime,
+      appMapLines,
+      config,
+      domino,
+      llmCacheKey,
+      rememberApiSnapshot,
+      reportApiResult,
+      scheduleSchemaSave
+    ]
+  )
+
+  /**
+   * Data that lands while a screen is showing can unmask bindings that
+   * resolve to nothing. Whenever snapshots or the shown screen change, check
+   * the SHOWN page (gaps on unopened pages belong to their own visit) and
+   * spend a bounded background turn re-binding it — otherwise the dashes and
+   * empty panels sit there until the user complains about them.
+   */
+  useEffect(() => {
+    if (streaming || needsApiKey(config)) return
+    const spec = currentSpec
+    if (!spec) return
+    const shown = findPage(spec, spec.page)
+    if (!shown) return
+    const gaps = bindingGaps({ ...spec, pages: [shown], nav: [] }, dataSnapRef.current, 3)
+    if (!gaps.length) return
+    const tries = repairTriesRef.current.get(spec.page) ?? 0
+    if (tries >= 3) return
+    repairTriesRef.current.set(spec.page, tries + 1)
+    void runBindingRepair(spec.page, gaps)
+  }, [streaming, currentSpec, dataSnap, config, runBindingRepair])
 
   /**
    * A finished predicted press nobody adopted: its destination joins the
@@ -2585,6 +2783,8 @@ export function Runtime({
       }
       stateRef.current = {}
       pendingStateWrites.current = {}
+      selectedRef.current = null
+      selectedRecordRef.current = null
       // The signed-in stack is not kept after sign-out: the next person on
       // this device must not walk Back into it.
       if (!loggedIn) await session.forget(historyKey(domino.id, true))
@@ -3150,19 +3350,37 @@ export function Runtime({
         : null
       const dest = destination && destination.pageId !== cs?.page ? destination : null
       const observed = !declaredTarget && guidedTo !== null && e.event !== 'navigate'
+      // A record-dependent page reached WITHOUT the record in its press — an
+      // edit/detail opened by a plain goto — only sees state.selected (an id).
+      // Hand the turn the record the runtime captured at select time, so its
+      // fields (an edit form's prefilled inputs, a detail's text) are real.
+      const openRec =
+        (declaredTarget !== undefined || observed) &&
+        plan.recordDependent &&
+        selectedRecordRef.current &&
+        e.event !== 'select'
+          ? // A submit's own values are the newest truth about the record
+            // (saving an edit): they win over the record captured at select.
+            { ...selectedRecordRef.current, ...(e.data && typeof e.data === 'object' ? e.data : {}) }
+          : null
+      const recordCtx = openRec
+        ? ` The record the user opened (its id is state.selected = "${selectedRef.current ?? ''}") is: ${JSON.stringify(openRec)}. Render this record's real field values — prefill an edit form's inputs from it; never leave it empty.`
+        : ''
       // A built destination is reused, not designed again ("추가" buttons
       // regenerated their entry form on every press): the turn makes the
       // press's write, if any, then switches — or re-renders when the page
-      // must show that write's result.
-      const prompt = declaredTarget
-        ? `The user acted on the current screen (see ACTION above). The app declares that this action opens page "${declaredTarget}" — render that page (use exactly that page id).`
-        : plan.reuse
-          ? `The user acted on the current screen (see ACTION above). This action leads to page "${plan.reuse}", which is already built. If the action changes data, make that call_api write first. Then finish with navigate to "${plan.reuse}" (its bound data refreshes on show) when the stored page is still right for this press — an entry form, or a list whose data is bound. Render it again only when it must show something this press produced (the record just created, a confirmation).`
-          : observed
-            ? `The user acted on the current screen (see ACTION above). This action leads to page "${guidedTo}" — render that page${
-                plan.recordDependent ? ' for this press (fresh record/data)' : ''
-              } (use exactly that page id; bind its known endpoints, call_api only for unknown ones or writes).`
-            : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`
+      // must show that write's result. (Reuse is never record-dependent, so
+      // it never carries a record context.)
+      const prompt =
+        (declaredTarget
+          ? `The user acted on the current screen (see ACTION above). The app declares that this action opens page "${declaredTarget}" — render that page (use exactly that page id).`
+          : plan.reuse
+            ? `The user acted on the current screen (see ACTION above). This action leads to page "${plan.reuse}", which is already built. If the action changes data, make that call_api write first. Then finish with navigate to "${plan.reuse}" (its bound data refreshes on show) when the stored page is still right for this press — an entry form, or a list whose data is bound. Render it again only when it must show something this press produced (the record just created, a confirmation).`
+            : observed
+              ? `The user acted on the current screen (see ACTION above). This action leads to page "${guidedTo}" — render that page${
+                  plan.recordDependent ? ' for this press (fresh record/data)' : ''
+                } (use exactly that page id; bind its known endpoints, call_api only for unknown ones or writes).`
+              : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`) + recordCtx
       const opts: TurnOptions & { action: InflightAction } = {
         action: { nodeId: e.nodeId, event: e.event, pageId },
         answers: plan.answer,
@@ -3232,10 +3450,14 @@ export function Runtime({
         } else if (step.kind === 'refresh') {
           await fetchSource(step.source)
         } else if (step.kind === 'call') {
-          // `call METHOD /path [with form]`: {form.x}/{row.x} from the press,
-          // {key} from page state — a half-filled path never runs.
+          // `call METHOD /path [with form] [body k=v]`: {form.x}/{row.x} from
+          // the press, {key} from page state — a half-filled path or body
+          // never runs.
           const path = interpolateCallPath(step.path, { data: e.data, state: stateRef.current })
-          if (!path) {
+          const literals = step.fields
+            ? interpolateBodyFields(step.fields, { data: e.data, state: stateRef.current })
+            : {}
+          if (!path || literals === null) {
             armResultToast(
               { kind: 'notice', text: t('rt.callMissing', { path: step.path }), target: null },
               6_000
@@ -3243,10 +3465,17 @@ export function Runtime({
             return
           }
           const api = apiRuntime()
+          const hasLiterals = Object.keys(literals).length > 0
           const result = await executeApi(api, {
             path,
             method: step.method,
-            body: step.body === 'form' ? e.data : undefined
+            // Declared body fields are the base; a submitted form's own
+            // fields win over same-named literals.
+            body: hasLiterals
+              ? { ...literals, ...(step.body === 'form' ? e.data : undefined) }
+              : step.body === 'form'
+                ? e.data
+                : undefined
           })
           logApi(`${step.method} ${path}`, result.status, result.ms ?? 0)
           // An expired session signs out (and lands on the login side).
@@ -3272,7 +3501,11 @@ export function Runtime({
           const known = knownRef.current
           const resolved = known ? resolvePageId(navRef.current, known.pages, step.page) : null
           const cs = currentSpecRef.current
-          if (resolved && cs) {
+          // A page whose built copy shows ONE record is never switched to
+          // wholesale — that copy belongs to whoever opened it last. The goto
+          // falls through to a turn, which renders it for the record THIS
+          // press is about (an edit form gets the open record's values).
+          if (resolved && cs && !recordPagesRef.current.has(resolved)) {
             recordGraphEdge({ from: pageId, to: resolved, action: e.nodeId, label, kind: 'action' })
             interruptTurn()
             finalizeSpec({ ...cs, page: resolved }, null)
@@ -3350,6 +3583,74 @@ export function Runtime({
               return
             }
           }
+        }
+      }
+
+      // A row/item select names the record the rest of the app is about: its
+      // scalar id is parked in state.selected, so a detail page's declared
+      // rule (`del = call DELETE /notes/{selected} ; goto main`) resolves
+      // without a model turn — the same way a form carries its own values.
+      if (e.event === 'select') {
+        let id = selectedRecordId(e.data)
+        let rec: unknown = e.data?.record
+        // Rows baked into props (never bound to a source) carry no id, which
+        // would leave every {selected} source of the opened page unsolved.
+        // The [data] snapshots still hold the records the row shows, so map
+        // the row back to its record and select that one instead.
+        if (id === null) {
+          const back = recoverRowIdentity(e.data, dataSnapRef.current)
+          if (back) {
+            id = back.id
+            rec = back.record
+          }
+        }
+        if (id !== null) {
+          selectedRef.current = id
+          applyLocalState('selected', id)
+        }
+        if (rec && typeof rec === 'object' && !Array.isArray(rec))
+          selectedRecordRef.current = rec as Record<string, unknown>
+        // The page plan can promise the tap's destination (`rowAction -> note`
+        // in the purpose): once that page is built the runtime opens it on the
+        // spot — the detail reads its fields from bindings (a {selected}
+        // source or $data rows), so no turn and no frozen record. Without a
+        // declared or built target the select still reaches the model, which
+        // draws the detail the first time.
+        const cs = currentSpecRef.current
+        const rowDecl = cs ? domino.pages.find((p) => p.id === cs.page) : undefined
+        if (id !== null && rowDecl?.rowTarget && cs) {
+          const known = knownRef.current
+          const knownPages = (known ?? cs).pages
+          const resolved =
+            resolvePageId(navRef.current, knownPages, rowDecl.rowTarget) ??
+            (findPage(cs, rowDecl.rowTarget) ? rowDecl.rowTarget : null)
+          if (resolved && resolved !== cs.page) {
+            const rowNav = navRef.current.find((i) => i.id === resolved)
+            if (rowNav) setActiveNav(rowNav.id)
+            interruptTurn()
+            finalizeSpec(withKnownPages({ ...cs, page: resolved }, known), null, 'action', {
+              answers: {
+                from: cs.page,
+                action: e.nodeId,
+                label: actionLabel(cs, e.nodeId, e.nodeId),
+                event: 'select',
+                dataKey: id
+              }
+            })
+            return
+          }
+          // Declared but not built yet (or its build is still streaming): ask
+          // for THAT page, the way an [actions] goto falls through — the turn
+          // is told the exact page id, its skeleton shows while it builds, and
+          // a pregen already making it is adopted. The tap lands on its detail
+          // deterministically instead of leaving the model to re-derive the
+          // destination press after press.
+          if (!resolved) {
+            dispatchToAgent(e, pageId, rowDecl.rowTarget)
+            return
+          }
+          // A rowAction that names the page it is on: the select is a no-op.
+          return
         }
       }
 

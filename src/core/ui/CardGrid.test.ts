@@ -67,6 +67,175 @@ describe('CardGrid binding resolution', () => {
   })
 })
 
+describe('bound values render as text a human can read', () => {
+  const card = (_value?: unknown): CardNode => ({
+    name: 'StatCard',
+    id: 's',
+    grid: grid(0),
+    props: { label: 'Log entries', value: { $data: 'v.x' } }
+  })
+
+  it('a list bound where a count was meant shows its size, never raw JSON', () => {
+    const out = html([card(1)], {}, { v: { x: [{ id: 1 }, { id: 2 }, { id: 3 }] } })
+    expect(out).toContain('>3<')
+    expect(out).not.toContain('[{')
+    expect(out).not.toContain('{"id"')
+  })
+
+  it('a scalar list joins readably; a bare object shows a dash, never its keys', () => {
+    const tags = html([card(1)], {}, { v: { x: ['new', 'urgent'] } })
+    expect(tags).toContain('new, urgent')
+    const obj = html([card(1)], {}, { v: { x: { deep: { nested: 1 } } } })
+    expect(obj).not.toContain('deep')
+    expect(obj).not.toContain('{')
+    expect(obj).toContain('—')
+  })
+
+  it('ISO timestamps become "date time", booleans Yes/No', () => {
+    const when = html(
+      [{ name: 'Paragraph', id: 'p', grid: grid(0), props: { text: { $data: 'v.x' } } }],
+      {},
+      { v: { x: '2026-11-13T06:25:19.582Z' } }
+    )
+    expect(when).toContain('2026-11-13 06:25')
+    expect(when).not.toContain('06:25:19')
+    const on = html(
+      [{ name: 'Paragraph', id: 'p', grid: grid(0), props: { text: { $data: 'v.x' } } }],
+      {},
+      { v: { x: true } }
+    )
+    expect(on).toContain('Yes')
+  })
+
+  it('a human-styled column label still finds its field (Plus ones ≡ plusOnes)', () => {
+    const out = html(
+      [
+        {
+          name: 'Table',
+          id: 't',
+          grid: grid(0),
+          props: { columns: ['Name', 'Plus ones'], rows: { $data: 'rows' } }
+        }
+      ],
+      {},
+      { rows: [{ name: 'Ana', plusOnes: 2 }] }
+    )
+    expect(out).toContain('Ana')
+    expect(out).toContain('>2<')
+    expect(out).not.toContain('—')
+  })
+
+  it('a column label that is a unique prefix finds its field; ambiguous ones stay honest', () => {
+    const out = html(
+      [
+        {
+          name: 'Table',
+          id: 't',
+          grid: grid(0),
+          props: {
+            columns: ['Name', 'Created', 'Updated', 'Note'],
+            rows: { $data: 'rows' }
+          }
+        }
+      ],
+      {},
+      {
+        rows: [
+          {
+            name: 'Ana',
+            createdAt: '2026-11-13',
+            updatedAt: '2026-11-14',
+            noteId: 'n1',
+            noteCount: 3
+          }
+        ]
+      }
+    )
+    expect(out).toContain('2026-11-13') // Created → createdAt (the only match)
+    expect(out).toContain('2026-11-14') // Updated → updatedAt
+    expect(out).toContain('—') // Note could be noteId or noteCount: never guessed
+  })
+
+  it('Breadcrumbs survive duplicate ids (HeroUI collections reject them)', () => {
+    const out = html([
+      {
+        name: 'Breadcrumbs',
+        id: 'b',
+        grid: grid(0),
+        props: { items: [{ id: 'main', label: 'Home' }, { id: 'main', label: 'Home' }] }
+      }
+    ])
+    expect(out).toContain('Home')
+    expect(out).not.toContain('could not be displayed')
+  })
+
+  it('a Table with pageSize pages loaded rows locally and shows a pager', () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ n: `row-${i + 1}` }))
+    const out = html(
+      [
+        {
+          name: 'Table',
+          id: 't',
+          grid: grid(0),
+          props: { columns: ['n'], rows, pageSize: 2 }
+        }
+      ]
+    )
+    expect(out).toContain('row-1')
+    expect(out).toContain('row-2')
+    expect(out).not.toContain('row-3') // first page holds only pageSize rows
+    expect(out).toContain('aria-label="Pagination"')
+    expect(out).not.toContain('렌더링 상한') // paging, not a truncation notice
+  })
+  it('a Table without pageSize keeps the whole set (no pager)', () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ n: `row-${i + 1}` }))
+    const out = html([
+      { name: 'Table', id: 't', grid: grid(0), props: { columns: ['n'], rows } }
+    ])
+    expect(out).toContain('row-5')
+    expect(out).not.toContain('aria-label="Pagination"')
+  })
+  it('an Accordion shows a data record\'s description as its body', () => {
+    const out = html([
+      {
+        name: 'Accordion',
+        id: 'a',
+        grid: grid(0),
+        props: { items: [{ title: 'Q one', description: 'because the answer lives in description' }] }
+      }
+    ])
+    expect(out).toContain('Q one')
+    expect(out).toContain('because the answer lives in description')
+  })
+  it('a List of {label,value} pair records shows the value, not a bare label', () => {
+    const out = html([
+      {
+        name: 'List',
+        id: 'l',
+        grid: grid(0),
+        props: { items: [{ label: 'Email', value: 'ana@test.dev' }] }
+      }
+    ])
+    expect(out).toContain('Email')
+    expect(out).toContain('ana@test.dev')
+  })
+  it('an empty bound List says "No items" instead of blank space', () => {
+    const out = html(
+      [{ name: 'List', id: 'l', grid: grid(0), props: { items: { $data: 'x.items' } } }],
+      {},
+      { x: { items: [] } }
+    )
+    expect(out).toContain('No items')
+    const filled = html(
+      [{ name: 'List', id: 'l', grid: grid(0), props: { items: { $data: 'x.items' } } }],
+      {},
+      { x: { items: ['one'] } }
+    )
+    expect(filled).toContain('one')
+    expect(filled).not.toContain('No items')
+  })
+})
+
 describe('PageSkeleton', () => {
   it('shows the destination title and placeholders, busy and inert', () => {
     const out = renderToStaticMarkup(

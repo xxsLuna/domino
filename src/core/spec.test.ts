@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  bindingGaps,
   describeUiSpecProblem,
   findNode,
   isBackEvent,
@@ -7,6 +8,7 @@ import {
   isSignOutEvent,
   iterateNodes,
   normalizeGrid,
+  promisedCollectionGap,
   referencedDataKeys,
   resolveDataBindings,
   resolveStateBindings,
@@ -353,6 +355,149 @@ describe('resolveDataBindings ({"$data"} → live/API snapshots)', () => {
     const out = resolveDataBindings(node({ rows: { $data: 'nope.items' } }), {})
     expect(out.props?.rows).toBeUndefined()
   })
+
+  const tasks = {
+    tasks: {
+      tasks: [
+        { id: '1', title: 'Write', status: 'new', done: false, email: 'a.b@x.dev', size: 10 },
+        { id: '2', title: 'Ship', status: 'done', done: true, email: 'c@x.dev', size: 30 },
+        { id: '3', title: 'Rest', status: 'new', done: false, email: 'd@x.dev', size: 20 }
+      ]
+    }
+  }
+
+  it('filters arrays with [?field==\'value\'] — the shape models emit for tab panels', () => {
+    const out = resolveDataBindings(node({ items: { $data: "tasks.tasks[?status=='new']" } }), tasks)
+    expect(out.props?.items).toEqual([tasks.tasks.tasks[0], tasks.tasks.tasks[2]])
+  })
+
+  it('filters with !=, truthiness and numeric comparisons', () => {
+    const neq = resolveDataBindings(node({ rows: { $data: "tasks.tasks[?status!='new']" } }), tasks)
+    expect(neq.props?.rows).toEqual([tasks.tasks.tasks[1]])
+    const truthy = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[?done]' } }), tasks)
+    expect(truthy.props?.rows).toEqual([tasks.tasks.tasks[1]])
+    const gt = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[?size>15]' } }), tasks)
+    expect(gt.props?.rows).toEqual([tasks.tasks.tasks[1], tasks.tasks.tasks[2]])
+  })
+
+  it('=~ is a case-insensitive substring match; a no-match filter yields []', () => {
+    const like = resolveDataBindings(node({ rows: { $data: "tasks.tasks[?email=~'A.B@']" } }), tasks)
+    expect(like.props?.rows).toEqual([tasks.tasks.tasks[0]])
+    const none = resolveDataBindings(node({ rows: { $data: "tasks.tasks[?status=='gone']" } }), tasks)
+    expect(none.props?.rows).toEqual([])
+  })
+
+  it('supports bracket indexes (incl. negative) after names and filters', () => {
+    const head = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[0].title' } }), tasks)
+    expect(head.props?.rows).toBe('Write')
+    const last = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[-1].title' } }), tasks)
+    expect(last.props?.rows).toBe('Rest')
+    const chain = resolveDataBindings(
+      node({ rows: { $data: "tasks.tasks[?status=='done'][0].title" } }),
+      tasks
+    )
+    expect(chain.props?.rows).toBe('Ship')
+  })
+
+  it('projects a field over a list and keeps dots inside quoted values intact', () => {
+    const titles = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[?done].title' } }), tasks)
+    expect(titles.props?.rows).toEqual(['Ship'])
+    const dotted = resolveDataBindings(
+      node({ rows: { $data: "tasks.tasks[?email=='a.b@x.dev']" } }),
+      tasks
+    )
+    expect(dotted.props?.rows).toEqual([tasks.tasks.tasks[0]])
+  })
+
+  it('a filter on the FIRST segment still finds the source key', () => {
+    const out = resolveDataBindings(node({ rows: { $data: "tasks[?n=='2']" } }), {
+      tasks: [{ n: '1' }, { n: '2' }]
+    })
+    expect(out.props?.rows).toEqual([{ n: '2' }])
+  })
+
+  it('malformed brackets resolve to undefined instead of throwing', () => {
+    const out = resolveDataBindings(node({ rows: { $data: 'tasks.tasks[[oops' } }), tasks)
+    expect(out.props?.rows).toBeUndefined()
+  })
+})
+
+describe('bindingGaps (a fresh render vs the snapshots the runtime holds)', () => {
+  const specOf = (props: Record<string, unknown>): ReturnType<typeof validateUiSpec> =>
+    validateUiSpec({ ...(page([{ name: 'Table', id: 't', props }]) as object) })
+  const sources = { leads: { rows: [{ name: 'Ana', stage: 'new' }], total: 7 } }
+
+  it('flags a guessed field on a held key and names the real ones', () => {
+    const gaps = bindingGaps(specOf({ rows: { $data: 'leads.items' } }), sources)
+    expect(gaps).toHaveLength(1)
+    expect(gaps[0].path).toBe('leads.items')
+    expect(gaps[0].key).toBe('leads')
+    // container keys AND the row fields behind them — what to bind, exactly
+    expect(gaps[0].fields).toEqual(['rows', 'total', 'rows[].name,stage'])
+  })
+
+  it('descends to the level the path broke at to report fields', () => {
+    const gaps = bindingGaps(specOf({ rows: { $data: 'leads.rows.author' } }), sources)
+    expect(gaps).toHaveLength(1)
+    expect(gaps[0].fields).toEqual(['name', 'stage'])
+  })
+
+  it('skips keys the runtime does not hold yet (fetch may still land)', () => {
+    expect(bindingGaps(specOf({ rows: { $data: 'orders.rows' } }), sources)).toEqual([])
+  })
+
+  it('passes paths that resolve, including filter paths yielding []', () => {
+    expect(bindingGaps(specOf({ rows: { $data: 'leads.rows' } }), sources)).toEqual([])
+    expect(bindingGaps(specOf({ rows: { $data: "leads.rows[?stage=='gone']" } }), sources)).toEqual([])
+  })
+
+  it('flags a Table column no row carries, naming the real fields', () => {
+    const spec = validateUiSpec({
+      ...(page([{ name: 'Table', id: 't', props: { columns: ['Name', 'Client'], rows: { $data: 'leads.rows' } } }]) as object)
+    })
+    const gaps = bindingGaps(spec, sources)
+    expect(gaps).toHaveLength(1)
+    expect(gaps[0].path).toContain('column "Client"')
+    expect(gaps[0].key).toBe('leads')
+    expect(gaps[0].fields).toEqual(['name', 'stage'])
+  })
+
+  it('column matching survives spelling variants (Plus ones ≡ plusOnes)', () => {
+    const spec = validateUiSpec({
+      ...(page([{ name: 'Table', id: 't', props: { columns: ['Plus ones', 'Plus-Ones'], rows: { $data: 'g.rows' } } }]) as object)
+    })
+    expect(bindingGaps(spec, { g: { rows: [{ plusOnes: 2 }] } })).toEqual([])
+  })
+
+  it('flags a filter on a field no item has; passes a legitimately empty filter', () => {
+    const guess = specOf({ rows: { $data: 'leads.rows[?completed]' } })
+    const gaps = bindingGaps(guess, sources)
+    expect(gaps).toHaveLength(1)
+    expect(gaps[0].path).toBe('leads.rows[?completed]')
+    expect(gaps[0].fields).toEqual(['name', 'stage'])
+    // Field exists, values simply do not match: not a gap.
+    expect(bindingGaps(specOf({ rows: { $data: 'leads.rows[?name==\'nobody\']' } }), sources)).toEqual([])
+  })
+
+  const statSpec = (value: unknown): ReturnType<typeof validateUiSpec> =>
+    validateUiSpec({
+      ...(page([{ name: 'StatCard', id: 's', props: { label: 'Total', value } }]) as object)
+    })
+
+  it('flags a StatCard value bound to a whole response object with no readable key', () => {
+    const body = { items: [{ id: 1 }], total: 9, count: 7 }
+    const gaps = bindingGaps(statSpec({ $data: 'api:GET /invoices' }), { 'api:GET /invoices': body })
+    expect(gaps).toHaveLength(1)
+    expect(gaps[0].path).toBe('StatCard "s" value')
+    expect(gaps[0].fields).toEqual(['items', 'total', 'count'])
+  })
+
+  it('accepts scalar values and objects the renderer can read (a title)', () => {
+    expect(bindingGaps(statSpec({ $data: 'leads.total' }), sources)).toEqual([])
+    expect(
+      bindingGaps(statSpec({ $data: 'meta' }), { meta: { title: 'Nine', x: 1 } })
+    ).toEqual([])
+  })
 })
 
 describe('nav badges', () => {
@@ -380,5 +525,35 @@ describe('nav badges', () => {
       nav: [{ id: 'inbox', label: 'Inbox', badge: { $data: 'inbox.unread' } }]
     })
     expect([...referencedDataKeys(spec)]).toEqual(['inbox'])
+  })
+})
+
+describe('promisedCollectionGap', () => {
+  const node = (name: string, children?: unknown[]): unknown => ({
+    name,
+    id: name.toLowerCase(),
+    grid: { x: 0, y: 0, w: 12, h: 1 },
+    props: {},
+    ...(children ? { children } : {})
+  })
+  it('catches the stats-only home whose plan promised a Table', () => {
+    const layout = [node('PageHeader'), node('StatCards'), node('Card')] as never
+    expect(promisedCollectionGap({ name: 'Notes', purpose: 'Table of notes with rowAction' }, layout)).toBe(
+      'Table'
+    )
+  })
+  it('keeps quiet when a Table or List (at any depth) draws the promise', () => {
+    const layout = [node('PageHeader'), node('Card', [node('List')])] as never
+    expect(promisedCollectionGap({ name: 'Notes', purpose: 'Table of notes' }, layout)).toBeNull()
+  })
+  it('blames no page that never claimed a collection', () => {
+    const layout = [node('StatCards')] as never
+    expect(
+      promisedCollectionGap({ name: 'Overview', purpose: 'StatCards and a welcome note' }, layout)
+    ).toBeNull()
+  })
+  it('reports the promised kind, lower-case wording included', () => {
+    const layout = [node('StatCards')] as never
+    expect(promisedCollectionGap({ name: 'Leads', purpose: 'list of leads' }, layout)).toBe('List')
   })
 })

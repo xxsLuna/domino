@@ -95,8 +95,17 @@ export type ActionStep =
    * `call POST /leads with form` — one API request under [api] allow. `body`
    * 'form' sends the submitted form values; the path may interpolate
    * `{form.x}` / `{row.x}` (the pressed control's data) and `{stateKey}`.
+   * `fields` are literal body values written as `body status=approved` (a
+   * value may itself be a `{form.x}`/`{stateKey}` placeholder); with `with
+   * form` the form's own fields win over same-named literals.
    */
-  | { kind: 'call'; method: CallMethod; path: string; body: 'form' | 'none' }
+  | {
+      kind: 'call'
+      method: CallMethod
+      path: string
+      body: 'form' | 'none'
+      fields?: Record<string, string>
+    }
 
 /**
  * [pages] — the app's page plan: `id = Name | purpose | nav`. Ids are the
@@ -110,6 +119,14 @@ export interface PageDecl {
   purpose?: string
   /** Listed in the primary navigation. */
   nav: boolean
+  /**
+   * The page a row/item tap on this page opens, declared inside the purpose
+   * as `rowAction -> <page-id>`. The runtime then opens it itself the moment
+   * a row is selected (the record id lands in state.selected first) — an
+   * instant, turn-free open, so the detail's fields must come from bindings
+   * (a `GET /x/{selected}` [data] source), not frozen text.
+   */
+  rowTarget?: string
 }
 
 /**

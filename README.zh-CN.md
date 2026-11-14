@@ -243,6 +243,11 @@ GET /leads/{id} returns one lead for lead-detail. The lead-new page is a Form wi
 规划核对（不一致时给出带行号的警告）。`login` 由运行时负责，无需声明。没有 `[pages]`
 的文件依然可用，此时由模型自行命名页面。
 
+用途中还可以声明行点击的目的地：`… 带 rowAction -> note …`。运行时会在表格行或列表项被
+点击的瞬间打开 `note`（记录的 id 先写入 `state.selected`）——无需模型回合，且列表的每一行
+都有响应。因此详情页必须从绑定读取——以 `{selected}` 为键的 `[data]` 数据源
+（`note = GET /notes/{selected}`）或选择事件已携带的字段——而不是冻结自某一条记录的文本。
+
 **`[data]`** —— `key = GET /path` 或 `key = FEED <url>`，可加 `every Ns`（5-600）。只接受
 `GET` 与 `FEED`：数据源会在每次打开、每回合前以及轮询时重新获取，因此 `POST` / `PUT` /
 `PATCH` / `DELETE` 数据源会被拒绝并给出警告 —— 写操作请放进 `[actions]` 的 `call` 步骤。
@@ -257,10 +262,16 @@ GET /leads/{id} returns one lead for lead-detail. The lead-new page is a Form wi
 | `set <stateKey> = form.<field>` | 把提交的字段写入页面状态 |
 | `refresh <dataKey>` | 重新获取一个 `[data]` 数据源（绑定的属性原地更新） |
 | `goto <page-id>` | 切换到该页面；尚未生成的页面会以完全相同的 id 生成 |
-| `call <METHOD> /path [with form]` | 在 `[api] allow` 范围内发出一次请求（`GET`/`POST`/`PUT`/`PATCH`/`DELETE`）；`with form` 把提交的表单作为请求体。路径可使用 `{form.field}`、`{row.field}`（所选表格/列表行）和 `{stateKey}`，均经过 URI 编码 |
+| `call <METHOD> /path [with form] [body k=v,…]` | 在 `[api] allow` 范围内发出一次请求（`GET`/`POST`/`PUT`/`PATCH`/`DELETE`）；`with form` 把提交的表单作为请求体，`body status=approved` 追加固定字段（值本身也可以是占位符；同名字段以表单值优先）。路径可使用 `{form.field}`、`{row.field}`（所选表格/列表行）和 `{stateKey}`，均经过 URI 编码 |
 
 `new-lead-form = call POST /leads with form ; refresh leads ; goto leads` 会创建线索、重新加载
-列表并返回列表，整个过程不需要任何一次模型回合。
+列表并返回列表，整个过程不需要任何一次模型回合。点选表格行或列表项时，运行时会把该记录的 id
+写入页面状态的 `selected`，详情页的规则因此同样是确定性的：
+
+```
+del-note = call DELETE /notes/{selected} ; refresh notes ; goto main
+approve  = call PATCH /requests/{selected} body status=approved ; refresh requests ; goto main
+```
 
 `[script]` 条件 DSL 支持标识符（`logged_in`、`error`、`event`）、`not`、比较（`==`、`!=`、
 `<`、`>`）、`and` / `or`、括号和点路径（`param.plan == "pro"`）。命令为 `goto <page>`、

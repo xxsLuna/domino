@@ -274,6 +274,7 @@ export function parseDomino(source: string): ParseResult {
   const pages: PageDecl[] = []
   {
     const seen = new Set<string>()
+    const lineOfPage = new Map<string, number>()
     for (const e of sections.get('pages') ?? []) {
       if (!PAGE_ID.test(e.key)) {
         errors.push({
@@ -310,12 +311,28 @@ export function parseDomino(source: string): ParseResult {
           })
         }
       }
+      // `… rowAction -> note …` inside the purpose: tapping a row opens that
+      // page itself, without waiting for a model turn.
+      const rowTarget = purpose
+        ? /\browAction\s*(?:->|→)\s*([A-Za-z0-9_-]+)/i.exec(purpose)?.[1]
+        : undefined
+      lineOfPage.set(e.key.toLowerCase(), e.line)
       pages.push({
         id: e.key,
         name: unquote(parts[0]) || e.key,
         ...(purpose ? { purpose } : {}),
+        ...(rowTarget ? { rowTarget } : {}),
         nav
       })
+    }
+    const pageIds = new Set(pages.map((p) => p.id.toLowerCase()))
+    for (const p of pages) {
+      if (p.rowTarget && !pageIds.has(p.rowTarget.toLowerCase())) {
+        errors.push({
+          line: lineOfPage.get(p.id.toLowerCase()) ?? 1,
+          message: `[pages] ${p.id}: rowAction -> ${p.rowTarget} — no such page declared`
+        })
+      }
     }
   }
 
@@ -485,7 +502,9 @@ export function parseDomino(source: string): ParseResult {
           steps.push({ kind: 'goto', page: goto[1] })
           continue
         }
-        const call = rawStep.match(/^call\s+([A-Za-z]+)\s+(\S+)(?:\s+(?:with\s+)?(form|none))?$/i)
+        const call = rawStep.match(
+          /^call\s+([A-Za-z]+)\s+(\S+)(?:\s+(?:with\s+)?(form|none))?(?:\s+body\s+(.+))?$/i
+        )
         if (call) {
           const method = call[1].toUpperCase() as CallMethod
           const path = call[2]
@@ -504,16 +523,46 @@ export function parseDomino(source: string): ParseResult {
             )
             continue
           }
+          // `body status=approved, note={form.note}` — fixed body values for
+          // state transitions (approve/reject/mark done), same placeholders
+          // as the path. Without this an approve button needs a hidden form
+          // input just to say which status it means.
+          let fields: Record<string, string> | undefined
+          if (call[4] !== undefined) {
+            fields = {}
+            let badBody = false
+            for (const pair of call[4].split(',')) {
+              const kv = /^\s*([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*$/.exec(pair)
+              if (!kv) {
+                fail(`call ${method} ${path}: body "${pair.trim()}" must be field=value`)
+                badBody = true
+                break
+              }
+              const badValue = [...kv[2].matchAll(/\{([^}]*)\}/g)].find(
+                (g) => !CALL_INTERPOLATION.test(g[1])
+              )
+              if (badValue) {
+                fail(
+                  `call ${method} ${path}: body ${kv[1]}="{${badValue[1]}}" must be {form.field}, {row.field} or {stateKey}`
+                )
+                badBody = true
+                break
+              }
+              fields[kv[1]] = kv[2]
+            }
+            if (badBody) continue
+          }
           steps.push({
             kind: 'call',
             method,
             path,
-            body: call[3]?.toLowerCase() === 'form' ? 'form' : 'none'
+            body: call[3]?.toLowerCase() === 'form' ? 'form' : 'none',
+            ...(fields ? { fields } : {})
           })
           continue
         }
         fail(
-          `bad step "${rawStep}" (steps: set <key> = form.<field> | refresh <source> | goto <page> | call <METHOD> /path [with form], joined by ";"; comments start with #)`
+          `bad step "${rawStep}" (steps: set <key> = form.<field> | refresh <source> | goto <page> | call <METHOD> /path [with form] [body k=v,k=v], joined by ";"; comments start by #)`
         )
       }
       if (!bad && steps.length > 0) actions.push({ id: e.key, steps })

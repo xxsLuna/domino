@@ -20,7 +20,20 @@ export function isReasoningLevel(value: unknown): value is ReasoningLevel {
 export function modelTakesReasoning(model: string): boolean {
   // Anthropic: 3.7+ and the 4/5 families think; 3.6 and older reject the param.
   if (/claude/i.test(model)) return !/3[-.][0-6]/.test(model)
-  return /o[134]\b|gpt-5|deepseek[-_ ]?r\d|qwq|glm[-_.]?4\.[5-9]|thinking|reasoner/i.test(model)
+  return /o[134]\b|gpt-5|deepseek[-_ ]?r\d|qwq|glm[-_.]?4\.[5-9]|thinking|reasoner|qwen[-_.]?[34]/i.test(
+    model
+  )
+}
+
+/**
+ * Qwen3-generation chat models: hybrid thinkers served by vLLM-style
+ * backends, which DEFAULT TO THINKING and answer `reasoning_effort:"none"`
+ * with a genuinely thoughtless completion. Screen generation is mechanical
+ * spec transcription — their no-think path is the right default, and the
+ * engine's corrective round brings thinking back when a render failed.
+ */
+export function isQwenHybridModel(model: string): boolean {
+  return /qwen[-_.]?[34]/i.test(model)
 }
 
 /**
@@ -150,6 +163,8 @@ export function effectiveReasoning(
     return anthropicThinkingAlwaysOn(config.model) ? 'low' : undefined
   }
   if (isOpenAIReasoningModel(config.model)) return 'low'
+  // Qwen3 hybrids think by default; unset runs them thoughtless, not "medium".
+  if (isQwenHybridModel(config.model)) return 'none'
   return undefined
 }
 
@@ -159,6 +174,10 @@ export function effectiveReasoning(
  * and the o-series only low/medium/high (anything else is a 400).
  */
 export function openaiReasoningEffort(level: ReasoningLevel, model = 'gpt-5'): string {
+  // Qwen3 chat servers accept none/low/medium/xhigh — "high" would be a 400.
+  if (isQwenHybridModel(model)) {
+    return level === 'high' ? 'xhigh' : level
+  }
   if (level !== 'none') return level
   if (/gpt-5\.\d/i.test(model)) return 'none'
   if (/gpt-5/i.test(model)) return 'minimal'
