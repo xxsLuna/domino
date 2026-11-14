@@ -8,6 +8,7 @@ import {
   isSignOutEvent,
   iterateNodes,
   normalizeGrid,
+  promisedCollectionGap,
   referencedDataKeys,
   resolveDataBindings,
   resolveStateBindings,
@@ -524,5 +525,35 @@ describe('nav badges', () => {
       nav: [{ id: 'inbox', label: 'Inbox', badge: { $data: 'inbox.unread' } }]
     })
     expect([...referencedDataKeys(spec)]).toEqual(['inbox'])
+  })
+})
+
+describe('promisedCollectionGap', () => {
+  const node = (name: string, children?: unknown[]): unknown => ({
+    name,
+    id: name.toLowerCase(),
+    grid: { x: 0, y: 0, w: 12, h: 1 },
+    props: {},
+    ...(children ? { children } : {})
+  })
+  it('catches the stats-only home whose plan promised a Table', () => {
+    const layout = [node('PageHeader'), node('StatCards'), node('Card')] as never
+    expect(promisedCollectionGap({ name: 'Notes', purpose: 'Table of notes with rowAction' }, layout)).toBe(
+      'Table'
+    )
+  })
+  it('keeps quiet when a Table or List (at any depth) draws the promise', () => {
+    const layout = [node('PageHeader'), node('Card', [node('List')])] as never
+    expect(promisedCollectionGap({ name: 'Notes', purpose: 'Table of notes' }, layout)).toBeNull()
+  })
+  it('blames no page that never claimed a collection', () => {
+    const layout = [node('StatCards')] as never
+    expect(
+      promisedCollectionGap({ name: 'Overview', purpose: 'StatCards and a welcome note' }, layout)
+    ).toBeNull()
+  })
+  it('reports the promised kind, lower-case wording included', () => {
+    const layout = [node('StatCards')] as never
+    expect(promisedCollectionGap({ name: 'Leads', purpose: 'list of leads' }, layout)).toBe('List')
   })
 })

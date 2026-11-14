@@ -173,6 +173,7 @@ import {
   isSignOutEvent,
   isSubscribeFeedEvent,
   isUnsubscribeFeedEvent,
+  promisedCollectionGap,
   referencedDataKeys,
   withKnownPages,
   withTargetPage,
@@ -465,6 +466,8 @@ export function Runtime({
    * `del = call DELETE /notes/{selected}` must not lose the record then.
    */
   const selectedRef = useRef<string | null>(null)
+  /** Pages already told about a promised collection they did not draw (once each). */
+  const gapWarnedRef = useRef(new Set<string>())
   /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
   const [progress, setProgress] = useState<number | null>(null)
 
@@ -1003,6 +1006,25 @@ export function Runtime({
       if (selectedRef.current !== null) {
         stateRef.current = { ...stateRef.current, selected: selectedRef.current }
       }
+      // A page that promised a collection and drew none (the silent
+      // stats-only home) is said out loud — once per page per session:
+      // the user learns the screen skipped its plan, not by trial and error.
+      const gapDecl = domino.pages.find((p) => p.id === spec.page)
+      const gapPage = findPage(spec, spec.page)
+      if (gapDecl && gapPage && !gapWarnedRef.current.has(spec.page)) {
+        const gap = promisedCollectionGap(gapDecl, gapPage.layout)
+        if (gap) {
+          gapWarnedRef.current.add(spec.page)
+          armResultToast(
+            {
+              kind: 'notice',
+              text: t('rt.planGapToast', { page: gapDecl.name, kind: gap }),
+              target: null
+            },
+            9_000
+          )
+        }
+      }
       // A non-edit screen (click hit, boot, instant-nav) makes the previous
       // edit's result the new baseline — no cells left to glow.
       if (!cacheKey?.startsWith('edit::')) clearEditHighlight()
@@ -1013,6 +1035,7 @@ export function Runtime({
     [
       armResultToast,
       clearEditHighlight,
+      domino,
       isNavPage,
       recordGraphEdge,
       schedulePreGen,

@@ -435,6 +435,25 @@ export function findNode(spec: UiSpec, id: string): CardNode | null {
   return null
 }
 
+/**
+ * A [pages] purpose that promises a collection ("Table of notes", "list of
+ * leads") whose built page shows neither Table nor List — the silent
+ * stats-only home, caught deterministically. Only the explicit "<kind> of"
+ * phrasing is a promise; a page that never claimed a list is never blamed
+ * for not having one.
+ */
+export function promisedCollectionGap(
+  decl: { name: string; purpose?: string },
+  layout: CardNode[]
+): 'Table' | 'List' | null {
+  const claimed = /\b(table|list)\s+of\b/.exec(`${decl.name} ${decl.purpose ?? ''}`.toLowerCase())
+  if (!claimed) return null
+  for (const node of iterateNodes(layout)) {
+    if (node.name === 'Table' || node.name === 'List') return null
+  }
+  return claimed[1] === 'table' ? 'Table' : 'List'
+}
+
 /** True for the single-key binding object `{"$state": "<key>"}`. */
 const stateBinding = (v: unknown): string | null =>
   isRecord(v) &&
