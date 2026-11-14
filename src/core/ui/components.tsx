@@ -98,9 +98,10 @@ const stampLabel = (s: string): string =>
 /**
  * Display text of a free-form prop. '' for nothing (or an unresolved
  * binding); NEVER raw JSON — a bound prop can resolve to a whole collection
- * (models bind a list where they meant its count), so objects show nothing
- * and lists show their count (or joined scalars). ISO timestamps render as
- * "date time"; booleans as Yes/No.
+ * (models bind a list where they meant its count), so lists show their count
+ * (or joined scalars) and an object with no readable key shows "—": a visible
+ * gap beats blank space that reads as a broken render. ISO timestamps render
+ * as "date time"; booleans as Yes/No.
  */
 const text = (v: unknown): string => {
   if (v === null || v === undefined || isBindingObject(v)) return ''
@@ -124,7 +125,7 @@ const text = (v: unknown): string => {
   const rec = v as Record<string, unknown>
   for (const k of ['text', 'label', 'title', 'name', 'value'])
     if (typeof rec[k] === 'string' || typeof rec[k] === 'number') return text(rec[k])
-  return ''
+  return '—'
 }
 const truthy = (v: unknown): boolean => v === true || v === 'true' || v === 1
 

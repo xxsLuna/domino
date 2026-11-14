@@ -82,12 +82,13 @@ describe('bound values render as text a human can read', () => {
     expect(out).not.toContain('{"id"')
   })
 
-  it('a scalar list joins readably; a bare object shows nothing', () => {
+  it('a scalar list joins readably; a bare object shows a dash, never its keys', () => {
     const tags = html([card(1)], {}, { v: { x: ['new', 'urgent'] } })
     expect(tags).toContain('new, urgent')
     const obj = html([card(1)], {}, { v: { x: { deep: { nested: 1 } } } })
     expect(obj).not.toContain('deep')
     expect(obj).not.toContain('{')
+    expect(obj).toContain('—')
   })
 
   it('ISO timestamps become "date time", booleans Yes/No', () => {
