@@ -78,6 +78,7 @@ import {
   parseEndpointKey
 } from '@core/runtime/apiBindings'
 import { loadDataSnaps, persistableDataSnaps, saveDataSnaps } from '@core/runtime/dataSnaps'
+import { recoverRowIdentity } from '@core/runtime/rowIdentity'
 import {
   planSourceFetch,
   settleWithin,
@@ -466,6 +467,13 @@ export function Runtime({
    * `del = call DELETE /notes/{selected}` must not lose the record then.
    */
   const selectedRef = useRef<string | null>(null)
+  /**
+   * The WHOLE record behind that selection, when the select carried one (a
+   * Table row / List item does). Pages reached later by a plain goto — an
+   * edit form, a detail — see only state.selected (an id); their turn gets
+   * these fields in the prompt, so a prefilled edit form is data, not luck.
+   */
+  const selectedRecordRef = useRef<Record<string, unknown> | null>(null)
   /** Pages already told about a promised collection they did not draw (once each). */
   const gapWarnedRef = useRef(new Set<string>())
   /** Top gauge fill 0–100; null hides it (fades out after a completed turn). */
@@ -2712,6 +2720,7 @@ export function Runtime({
       stateRef.current = {}
       pendingStateWrites.current = {}
       selectedRef.current = null
+      selectedRecordRef.current = null
       // The signed-in stack is not kept after sign-out: the next person on
       // this device must not walk Back into it.
       if (!loggedIn) await session.forget(historyKey(domino.id, true))
@@ -3275,13 +3284,30 @@ export function Runtime({
         : null
       const dest = destination && destination.pageId !== cs?.page ? destination : null
       const observed = !declaredTarget && guidedTo !== null && e.event !== 'navigate'
-      const prompt = declaredTarget
-        ? `The user acted on the current screen (see ACTION above). The app declares that this action opens page "${declaredTarget}" — render that page (use exactly that page id).`
-        : observed
-          ? `The user acted on the current screen (see ACTION above). This action leads to page "${guidedTo}" — render that page${
-              plan.recordDependent ? ' for this press (fresh record/data)' : ''
-            } (use exactly that page id; bind its known endpoints, call_api only for unknown ones or writes).`
-          : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`
+      // A record-dependent page reached WITHOUT the record in its press — an
+      // edit/detail opened by a plain goto — only sees state.selected (an id).
+      // Hand the turn the record the runtime captured at select time, so its
+      // fields (an edit form's prefilled inputs, a detail's text) are real.
+      const openRec =
+        (declaredTarget !== undefined || observed) &&
+        plan.recordDependent &&
+        selectedRecordRef.current &&
+        e.event !== 'select'
+          ? // A submit's own values are the newest truth about the record
+            // (saving an edit): they win over the record captured at select.
+            { ...selectedRecordRef.current, ...(e.data && typeof e.data === 'object' ? e.data : {}) }
+          : null
+      const recordCtx = openRec
+        ? ` The record the user opened (its id is state.selected = "${selectedRef.current ?? ''}") is: ${JSON.stringify(openRec)}. Render this record's real field values — prefill an edit form's inputs from it; never leave it empty.`
+        : ''
+      const prompt =
+        (declaredTarget
+          ? `The user acted on the current screen (see ACTION above). The app declares that this action opens page "${declaredTarget}" — render that page (use exactly that page id).`
+          : observed
+            ? `The user acted on the current screen (see ACTION above). This action leads to page "${guidedTo}" — render that page${
+                plan.recordDependent ? ' for this press (fresh record/data)' : ''
+              } (use exactly that page id; bind its known endpoints, call_api only for unknown ones or writes).`
+            : `The user acted on the current screen (see ACTION above). Compute and render the next screen.`) + recordCtx
       const opts: TurnOptions & { action: InflightAction } = {
         action: { nodeId: e.nodeId, event: e.event, pageId },
         answers: plan.answer,
@@ -3402,7 +3428,11 @@ export function Runtime({
           const known = knownRef.current
           const resolved = known ? resolvePageId(navRef.current, known.pages, step.page) : null
           const cs = currentSpecRef.current
-          if (resolved && cs) {
+          // A page whose built copy shows ONE record is never switched to
+          // wholesale — that copy belongs to whoever opened it last. The goto
+          // falls through to a turn, which renders it for the record THIS
+          // press is about (an edit form gets the open record's values).
+          if (resolved && cs && !recordPagesRef.current.has(resolved)) {
             recordGraphEdge({ from: pageId, to: resolved, action: e.nodeId, label, kind: 'action' })
             interruptTurn()
             finalizeSpec({ ...cs, page: resolved }, null)
@@ -3488,11 +3518,25 @@ export function Runtime({
       // rule (`del = call DELETE /notes/{selected} ; goto main`) resolves
       // without a model turn — the same way a form carries its own values.
       if (e.event === 'select') {
-        const id = selectedRecordId(e.data)
+        let id = selectedRecordId(e.data)
+        let rec: unknown = e.data?.record
+        // Rows baked into props (never bound to a source) carry no id, which
+        // would leave every {selected} source of the opened page unsolved.
+        // The [data] snapshots still hold the records the row shows, so map
+        // the row back to its record and select that one instead.
+        if (id === null) {
+          const back = recoverRowIdentity(e.data, dataSnapRef.current)
+          if (back) {
+            id = back.id
+            rec = back.record
+          }
+        }
         if (id !== null) {
           selectedRef.current = id
           applyLocalState('selected', id)
         }
+        if (rec && typeof rec === 'object' && !Array.isArray(rec))
+          selectedRecordRef.current = rec as Record<string, unknown>
         // The page plan can promise the tap's destination (`rowAction -> note`
         // in the purpose): once that page is built the runtime opens it on the
         // spot — the detail reads its fields from bindings (a {selected}
