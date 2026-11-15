@@ -12,13 +12,12 @@ import { parseFeed } from './parse'
 beforeAll(() => {
   const parse = (source: string, type: string): Document => {
     const problems: string[] = []
+    // xmldom ≥0.9 replaced the errorHandler object with a single onError hook.
     const doc = new DOMParser({
-      errorHandler: {
-        warning: (): void => {},
-        error: (m: unknown): void => void problems.push(String(m)),
-        fatalError: (m: unknown): void => void problems.push(String(m))
+      onError: (level: string, message: string): void => {
+        if (level !== 'warning') problems.push(`${level}: ${message}`)
       }
-    }).parseFromString(source, type) as Document
+    }).parseFromString(source, type) as unknown as Document
     if (problems.length) throw new Error(problems[0])
     return doc
   }
