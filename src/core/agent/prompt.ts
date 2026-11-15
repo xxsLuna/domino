@@ -1,5 +1,5 @@
 import type { DominoFile } from '../domino/types'
-import type { BindingGap } from '../spec'
+import { gapMessage, type BindingGap } from '../spec'
 import { iconNames } from '../ui/icons'
 import { COMPONENT_DEFS } from '../ui/registry'
 import type { ToolCall } from '../llm/types'
@@ -114,7 +114,7 @@ ${aboutApp(domino)}
 - Only "name" values from the registry below are allowed (exact spelling). Unknown names render as errors.
 - Show backend data by BINDING it, not by copying it: any prop that displays it (Table "rows", List "items", StatCard "value", KeyValue…) takes {"$data": "<bind>.<json path>"} (e.g. "rows": {"$data": "api:GET /leads.rows"}). Bindings re-resolve against the latest response on every render and survive restarts; copied values cost tokens and go stale. Copy at most a row or two when a literal example helps (an empty-state illustration), never whole lists.
 - The real bodies you were SHOWN beat any documentation: when the guide (or a page plan) names a field that the Live data / Known API responses do not carry, the guide is wrong — bind the fields the real data has, and choose other columns entirely rather than keeping one whose field does not exist (a "—" column is a broken promise to the user).
-- Bound paths also support list selection: index "items[0]" / "items[-1]" and filters "items[?status=='new']" (==, !=, >, >=, <, <=, =~ contains, or a bare "[?done]" truthy test). To show a subset (a tab panel, a "today" list), bind the FILTERED path — never hand-copy the matching rows into the screen.
+- Bound paths also support list selection: index "items[0]" / "items[-1]" and filters "items[?status=='new']" (==, !=, >, >=, <, <=, =~ contains, a bare "[?done]" truthy test, and its negation "[?!done]" — the open-items half of a done/todo split). To show a subset (a tab panel, a "today" list), bind the FILTERED path — never hand-copy the matching rows into the screen.
 - If a render_ui result carries "bindingWarnings", some of your paths resolve to nothing in data the runtime already holds — those props will show "—". Re-render the same page binding only fields the listed data actually has.
 - Keep a screen compact: at most ~15 layout nodes, and at most ~20 rows in any Table or List (longer payloads are trimmed from your context anyway — show the head, and let pagination or a $data binding carry the rest).
 - render_ui's tool result may carry "notes" — repairs the runtime made to your spec (an unknown component, a page id that wasn't in pages, dropped nodes). The screen was shown; avoid the same mistake in later renders.
@@ -174,12 +174,13 @@ ${pagePlanSection(domino)}
 - App home page id: "${domino.meta.home}".
 ${authStaticRules(domino)}
 - Backend data — bind first, fetch only when you must. Every endpoint listed under "Known API responses" (and every [data] source) can be BOUND directly in render_ui with NO call_api: the bind key is "api:" + the endpoint exactly as listed, e.g. {"$data": "api:GET /leads.rows"}. The runtime fetches every bound GET endpoint itself when the screen is shown (and again right after a write to the same resource), so bound screens stay fresh.
-- Use call_api only for an endpoint whose response shape you don't know yet, and for writes (POST/PUT/PATCH/DELETE). Paths must be within the allow list: ${allowList}, base ${domino.api.baseUrl ?? '(없음)'}. The response JSON comes back as the tool result with its "bind" key.
+- Use call_api only for an endpoint whose response shape you don't know yet, and for writes (POST/PUT/PATCH/DELETE). Paths must be within the allow list: ${allowList}, base ${domino.api.baseUrl ?? '(없음)'}. The response JSON comes back as the tool result with its "bind" key.${domino.api.external ? ' This file declares [api] external = https: you may ALSO call full public https URLs directly (third-party APIs, user-pasted feeds) — private/LAN addresses are refused, and your login token is never sent off the app\'s own backend.' : ''}
 - When a screen needs several unknown endpoints, issue ALL the call_api calls together in one response (parallel tool calls). You may also send call_api and render_ui in the same response (a write plus its result screen, or a read plus a screen that binds it); you only get another pass when a call failed or its response shape changed.
 - If call_api fails (status 0 = unreachable, or >= 400), still render the requested page: an Alert (variant "danger") saying the data couldn't load, and an EmptyState where the data would be. Never switch to a different page because of it${domino.auth.required ? ' — only a 401 means the session expired (render the login page)' : ''}.
 - navigate: answer with navigate when the destination page ALREADY EXISTS (it is in the App map's page list) and its content does not depend on what was pressed — nav items, plain buttons listed under "Connected actions", "back to the list". The runtime switches instantly to the stored screen and your turn ENDS: never call render_ui after a navigate, and never navigate to an id that is not in the page list (design that page with render_ui instead).
 - Data-dependent destinations are RE-RENDERED, never navigated to: a detail page for the selected record (row select / list item), the result of a form submit, search/filter/pagination results. call_api only if needed (a write, or an unknown shape), then render_ui for that SAME page id — keep its stored layout and ids and fill it with the selected record or updated list (plus a success Alert after a create/update/delete). An action that updates the current page (refresh, delete, next, complete, mark done) re-renders the current page id — never navigate for it.
 - A Button or Link that simply opens another page of this app carries "to": "<exact page id>" (a page in the map or one you are about to build) — the runtime then switches on the very first press with no model turn. Never set "to" on buttons that write, delete, submit or depend on a record. Give record pages resource-qualified ids ("order-detail", "customer-edit"), never a bare "detail" or "edit": one id per resource, reused for every record.
+- Every Button that CHANGES server data (Archive, Delete, Approve, Complete, Save) must be backed: an [actions] rule that names it, or a write endpoint inside the [api] allow list you will call for it. A file whose allow list holds only GETs has NO deleting or archiving — never draw such a button anyway: its press can never write, and a named action that does nothing is worse than no button at all.
 ${liveDataStaticSection(domino)}${actionsSection(domino)}${feedStaticSection(domino)}
 # Interaction rules
 - User events arrive as messages like "ACTION {event} from <name>/<id> data {...}". Events: click (Button), submit (Form, data = field values by name), navigate (nav, Breadcrumbs), select (Table row with rowAction, List item: data has the row/item), search (SearchField: {name, query}), change (Select/Switch/Checkbox/RadioGroup outside a Form: {name, value}), page (Pagination: {page}).
@@ -275,6 +276,7 @@ function liveDataStaticSection(domino: DominoFile): string {
 ${decls}
 - BIND this data instead of embedding it: any prop that shows it — List "items", Table "rows", StatCard "value", KeyValue, headings — takes the exact object {"$data": "<key>.<json path>"} (e.g. "items": {"$data": "feed.items"}). The runtime substitutes the latest value on every render and refreshes it without a model turn, so literal values would go stale.
 - Do NOT call_api for these declared sources — their current snapshots are in the session context below.${feedNote}
+- A source with NO snapshot yet (state-gated sources like "GET {rssUrl}" before the user fills the state) must NEVER be guessed at: no invented columns, no example rows, no field names in bindings for it. Draw what the page can honestly show now — the control that triggers the load plus one placeholder (EmptyState or an Alert "waiting" note) where the data will sit — and nothing more. The runtime runs a silent design turn for this screen the moment the records actually arrive; design the real layout from the real fields in THAT turn.
 `
 }
 
@@ -470,18 +472,35 @@ export function describeToolCall(tc: ToolCall): string {
  * at the model's own bindingWarnings; a scratch history has none, so this
  * prompt lists the gaps (path + the fields the data really holds) directly.
  */
+/**
+ * The silent turn that fires when a [data] source's FIRST real snapshot lands
+ * while a page bound to it was designed without ever seeing it (the blind
+ * placeholder page). The model now holds the actual records — this is the
+ * design turn, not a fix round.
+ */
+export function dataDesignPrompt(pageId: string, key: string): string {
+  return (
+    `BACKGROUND DESIGN (no user is waiting). The [data] source "${key}" is bound by the "${pageId}" page ` +
+    `on screen — that page was built BEFORE any data existed, from nothing but its name. ` +
+    `Its FIRST REAL snapshot is now in the Live data section: every field you see there is real. ` +
+    `Redesign the SAME page id "${pageId}" FROM THE ACTUAL RECORDS — never from what a "${key}" might hold: ` +
+    `pick the layout the records call for (records with image URLs and dates deserve thumbnails, summaries and times — ` +
+    `a List row understands image/summary/date/link on its own and opens link in a new tab; ` +
+    `use pageSize for long lists; bind feed.title where it earns the page heading. Never invent paths the snapshot does not hold — no "items.length" or "total" under a feed: counts belong to a Badge next to a heading, or nowhere), ` +
+    `keep every binding {"$data"}-bound (never copy values), keep the ids [guide] and [actions] rely on, ` +
+    `and keep the control that triggers the load (the form/button that filled the state). ` +
+    `Show only what the snapshot really has: a field absent from the records must not appear in the design.`
+  )
+}
+
 export function bindingRepairPrompt(pageId: string, gaps: BindingGap[]): string {
-  const list = gaps
-    .map(
-      (g) =>
-        `- ${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
-    )
-    .join('\n')
+  const list = gaps.map((g) => `- ${gapMessage(g)}`).join('\n')
   return (
     `BACKGROUND FIX (no user is waiting). The "${pageId}" page is on screen, but its data has now arrived and these bindings resolve to nothing:\n` +
     `${list}\n` +
     `Re-render the SAME page id "${pageId}" with the SAME elements, layout, ids and actions — change ONLY the {"$data"} bindings, ` +
     `each to a field the data actually has (the Live data / Known API responses sections list them). ` +
+    `For a filter whose VALUE appears in no record, filter on one of the real values listed, or drop the filter and split the list differently. ` +
     `When a value a prop wanted exists nowhere in the data, drop that prop or element instead of guessing another name.`
   )
 }

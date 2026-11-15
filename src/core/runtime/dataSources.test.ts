@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { DataSourceDecl } from '../domino/types'
 import {
+  isErrorSnapshot,
+  isUrlTemplate,
   planSourceFetch,
   settleWithin,
   sourcesReadingState,
@@ -48,5 +50,31 @@ describe('sourcesReadingState', () => {
     expect(sourcesReadingState(decls, 'query')).toEqual(['a', 'c'])
     expect(sourcesReadingState(decls, 'page')).toEqual(['c'])
     expect(sourcesReadingState(decls, 'other')).toEqual([])
+  })
+})
+
+describe('isUrlTemplate', () => {
+  it('recognizes absolute-literal and whole-URL-template paths', () => {
+    expect(isUrlTemplate('https://api.open-meteo.com/v1/forecast?lat=1')).toBe(true)
+    expect(isUrlTemplate('HTTP://{host}/health')).toBe(true)
+    expect(isUrlTemplate('{rssUrl}')).toBe(true)
+    expect(isUrlTemplate('{proxyHost}/feed?url={rssUrl}')).toBe(true)
+    expect(isUrlTemplate('{host}/feed')).toBe(true) // a leading token supplies the host
+  })
+  it('leaves base-relative paths (even with {state}) alone', () => {
+    expect(isUrlTemplate('/leads?q={query}')).toBe(false)
+    expect(isUrlTemplate('/feeds/{id}')).toBe(false)
+    expect(isUrlTemplate('items/{id}/feed')).toBe(false)
+    expect(isUrlTemplate('feed')).toBe(false)
+  })
+})
+
+describe('isErrorSnapshot', () => {
+  it('recognizes error-only snapshots', () => {
+    expect(isErrorSnapshot({ error: 'HTTP 400' })).toBe(true)
+    expect(isErrorSnapshot({ error: 'unreachable', items: [] })).toBe(false)
+    expect(isErrorSnapshot({ title: 'T', items: [] })).toBe(false)
+    expect(isErrorSnapshot(null)).toBe(false)
+    expect(isErrorSnapshot([])).toBe(false)
   })
 })

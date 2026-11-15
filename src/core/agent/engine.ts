@@ -2,6 +2,7 @@ import type { ChatMessage, ChatRequest, LLMAdapter, ToolCall } from '../llm/type
 import {
   bindingGaps,
   describeUiSpecProblem,
+  gapMessage,
   iterateNodes,
   tryValidateUiSpec as validate,
   type BindingGap,
@@ -624,10 +625,7 @@ export async function* runAgentTurn(opts: AgentTurnOptions): AsyncGenerator<Agen
               ...renderResult(tc.args, outcome),
               ...(gaps.length
                 ? {
-                    bindingWarnings: gaps.map(
-                      (g) =>
-                        `${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
-                    )
+                    bindingWarnings: gaps.map(gapMessage)
                   }
                 : {})
             })

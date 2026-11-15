@@ -71,3 +71,28 @@ export function sourcesReadingState(decls: readonly DataSourceDecl[], stateKey: 
   const token = `{${stateKey}}`
   return decls.filter((d) => d.path.includes(token)).map((d) => d.key)
 }
+
+/** A snapshot that carries nothing but an error — never counts as real data. */
+export function isErrorSnapshot(v: unknown): boolean {
+  return (
+    v !== null &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    'error' in (v as Record<string, unknown>) &&
+    Object.keys(v as Record<string, unknown>).length === 1
+  )
+}
+
+/**
+ * True when a [data] path is a URL template rather than a base-relative path:
+ * a literal scheme (`https://host/v1/items`) or a leading `{stateKey}` that
+ * supplies the whole URL (`{rssUrl}` — the RSS-reader shape, where the user
+ * pastes the feed address). `[api] external = https` is what makes these
+ * fetchable; the scheme/host part can never be percent-encoded, so such
+ * templates interpolate RAW up to the `?` and encoded after it.
+ */
+export function isUrlTemplate(path: string): boolean {
+  return (
+    /^[a-z][a-z0-9+.-]*:\/\/[^/?#]/i.test(path) || /^\{[A-Za-z0-9_]+\}(\/|\?|#|$)/.test(path)
+  )
+}

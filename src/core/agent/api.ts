@@ -1,4 +1,5 @@
 import { httpFetch, readTextCapped } from '../net'
+import { externalTargetError } from '../net/external'
 import { parseFeed } from '../feeds/parse'
 
 /**
@@ -12,12 +13,19 @@ import { parseFeed } from '../feeds/parse'
  *     `https://attacker.example/<allowed-path>`.
  *  2. **path** — the pathname, after dot-segment normalization
  *     (`/leads/../../admin` → `/admin`), must match an allow pattern.
+ *
+ * `[api] external = https` opens one controlled exception to both: an
+ * ABSOLUTE URL may skip the allow list when @core/net/external vouches for it
+ * (public https, not a private/internal host, no credentials). The login
+ * token still never leaves the base origin, external or not.
  */
 
 export interface ApiRuntime {
   baseUrl?: string
   allow: string[]
   token?: string | null
+  /** `[api] external = https` — absolute public URLs bypass the allow list. */
+  external?: boolean
 }
 
 export interface ApiResult {
@@ -179,11 +187,28 @@ export async function executeApi(
       data: { error: `method "${method}" is not allowed for call_api` }
     }
   }
-  if (!isAllowed(req.path, api.allow, api.baseUrl)) {
+  // `[api] external = https`: absolute public URLs skip the allow list, but
+  // only past the shared guard (https, no private/LAN/metadata hosts, no
+  // credentials). Relative paths never take this route — the allow list still
+  // owns everything the base origin can serve.
+  const externalAbsolute =
+    api.external === true && /^[a-z][a-z0-9+.-]*:\/\//i.test(req.path.trim())
+  if (externalAbsolute) {
+    const guard = externalTargetError(req.path)
+    if (guard) {
+      return { path: req.path, status: 403, data: { error: guard } }
+    }
+  } else if (!isAllowed(req.path, api.allow, api.baseUrl)) {
     return {
       path: req.path,
       status: 403,
-      data: { error: `path "${req.path}" is not in the domino [api] allow list` }
+      data: {
+        error:
+          `path "${req.path}" is not in the domino [api] allow list` +
+          (api.external === undefined
+            ? ' — to call a public API by full URL, add [api] external = https'
+            : '')
+      }
     }
   }
   const url = resolveEndpoint(req.path, api.baseUrl)
@@ -194,9 +219,10 @@ export async function executeApi(
       data: { error: `path "${req.path}" cannot be resolved — set [api] base_url in the domino file` }
     }
   }
-  // The login token belongs to the app's own backend only — everything the
-  // model can reach has already passed the allow gate above.
-  const sendToken = Boolean(api.token)
+  // The login token belongs to the app's own backend only — an origin-pinned
+  // allow pattern or an external call may reach another host, and that host
+  // must never see the session's bearer token.
+  const sendToken = Boolean(api.token) && originOf(url) === originOf(api.baseUrl ?? '')
   try {
     const res = await httpFetch(url, {
       method,

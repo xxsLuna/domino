@@ -71,3 +71,21 @@ describe('withScreensSection', () => {
     expect(withScreensSection(once, { spec })).toBe(once)
   })
 })
+
+describe('boundSourceKeys', () => {
+  it('collects the top-level keys of every $data path in a node tree', async () => {
+    const { boundSourceKeys } = await import('../spec')
+    const node = {
+      name: 'List',
+      props: { items: { $data: 'feed.items' }, title: 'x' },
+      children: [{ props: { value: { $data: 'api:GET /kpi.total' } } }]
+    }
+    expect([...boundSourceKeys(node)].sort()).toEqual(['api:GET /kpi', 'feed'])
+  })
+  it('handles filter segments and junk', async () => {
+    const { boundSourceKeys } = await import('../spec')
+    expect([...boundSourceKeys({ a: { $data: 'leads[?stage=="new"]' } })]).toEqual(['leads'])
+    expect([...boundSourceKeys(null)]).toEqual([])
+    expect([...boundSourceKeys('string')]).toEqual([])
+  })
+})

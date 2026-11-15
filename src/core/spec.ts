@@ -596,9 +596,13 @@ function eqLoose(a: unknown, b: unknown): boolean {
   return String(a) === String(b)
 }
 
-/** One `[?field op value]` predicate against a list item (no op → truthy). */
+/** One `[?field op value]` predicate against a list item (no op → truthy; `!` negates). */
 function matchesPredicate(item: unknown, expr: string): boolean {
-  const m = PRED_RE.exec(expr.trim())
+  const ex = expr.trim()
+  // `[?!done]` — the open-side half of a done/todo split. Models write it
+  // unbidden; without support the "open items" list would silently empty.
+  if (ex.startsWith('!')) return !matchesPredicate(item, ex.slice(1))
+  const m = PRED_RE.exec(ex)
   if (!m) return false
   const field = m[1].replace(/^(['"])([\s\S]*)\1$/, '$2')
   let val: unknown = item
@@ -755,6 +759,33 @@ export interface BindingGap {
   key: string
   /** Field names visible one level under where the path stopped matching. */
   fields: string[]
+  /** Value-mismatch filters: the real sentence for the model ("no record has X==y; values: …"). */
+  note?: string
+}
+
+/** How one gap reads to the model (shared by the in-turn warning and the repair turn). */
+export function gapMessage(g: BindingGap): string {
+  return (
+    g.note ??
+    `${g.path} resolves to nothing — "${g.key}" holds: ${g.fields.join(', ') || '(no fields)'}`
+  )
+}
+
+/**
+ * Top-level source keys bound by any {"$data"} path inside a node tree.
+ * The first-data design pass asks "does the shown page bind source X?" with it.
+ */
+export function boundSourceKeys(node: unknown, out = new Set<string>(), depth = 0): Set<string> {
+  if (depth > 24 || node === null || typeof node !== 'object') return out
+  const path = dataBinding(node)
+  if (path !== null) {
+    out.add(/^[^[.]*/.exec(path)?.[0] ?? '')
+    return out
+  }
+  for (const v of Array.isArray(node) ? node : Object.values(node)) {
+    boundSourceKeys(v, out, depth + 1)
+  }
+  return out
 }
 
 /** Field names of a value: object keys, or the first row's keys for arrays. */
@@ -922,9 +953,10 @@ function checkTableColumns(
 
 /**
  * Filters like `items[?completed]` whose field NO item has resolve to `[]` —
- * legal, defined, and an empty panel forever. Only reports when the tested
- * field is absent everywhere (a guessed name), never when it exists and the
- * values simply do not match (a legitimately empty list).
+ * legal, defined, and an empty panel forever. Also catches the twin case:
+ * the field exists but NO record ever equals the `==` literal (a guessed
+ * enum value). Never reports a filter that simply matches nothing right now
+ * (a legitimately empty list) or whose values DO appear.
  */
 function checkEmptyFilters(
   spec: UiSpec,
@@ -949,17 +981,53 @@ function checkEmptyFilters(
         const baseVal = lookupDataPath(sources, base)
         if (Array.isArray(baseVal) && baseVal.length > 0) {
           const firstItem = baseVal.find((r) => isRecord(r))
-          if (isRecord(firstItem) && lookupDataPath(sources, path) !== undefined) {
+          const resolved = lookupDataPath(sources, path)
+          if (isRecord(firstItem) && resolved !== undefined) {
             const fieldKeys = new Set<string>()
             for (const it of baseVal) if (isRecord(it)) for (const k of Object.keys(it)) fieldKeys.add(gapKeyNorm(k))
-            for (const m of path.matchAll(/\[\?\s*([A-Za-z_$][\w$.]*)/g)) {
+            const emptyResult = Array.isArray(resolved) && resolved.length === 0
+            for (const m of path.matchAll(/\[\?\s*([^\]]*)\]/g)) {
               if (gaps.length >= limit) return
-              const field = m[1].split('.').pop() ?? m[1]
-              if (fieldKeys.has(gapKeyNorm(field))) continue
-              if (seen.has(path)) continue
-              seen.add(path)
-              gaps.push({ path, key, fields: [...fieldKeys].slice(0, 24) })
-              break
+              let expr = m[1].trim()
+              const negated = expr.startsWith('!')
+              if (negated) expr = expr.slice(1).trim()
+              const pm = PRED_RE.exec(expr)
+              if (!pm) continue
+              const field = pm[1].replace(/^(['"])([\s\S]*)\1$/, '$2')
+              const last = field.split('.').pop() ?? field
+              if (!fieldKeys.has(gapKeyNorm(last))) {
+                if (seen.has(path)) continue
+                seen.add(path)
+                gaps.push({ path, key, fields: [...fieldKeys].slice(0, 24) })
+                break
+              }
+              // The field EXISTS but no record ever equals the tested value:
+              // a guessed enum ("category=='Breakfast'" over company data) —
+              // the panel is empty forever for a reason the model can fix,
+              // and the note hands it the values the records really hold.
+              if (emptyResult && !negated && pm[2] === '==') {
+                const lit = filterValue(pm[3])
+                const values: string[] = []
+                let matched = false
+                for (const it of baseVal) {
+                  if (!isRecord(it)) continue
+                  const v = it[last]
+                  if (!matched && eqLoose(v, lit)) matched = true
+                  const s = typeof v === 'string' || typeof v === 'number' ? String(v) : null
+                  if (s !== null && !values.includes(s) && values.length < 12) values.push(s)
+                }
+                if (!matched) {
+                  if (seen.has(path)) continue
+                  seen.add(path)
+                  gaps.push({
+                    path,
+                    key,
+                    fields: values,
+                    note: `${path} is empty forever — no record in "${key}" has ${last} == ${JSON.stringify(lit)}; real values: ${values.join(', ') || '(none)'}`
+                  })
+                  break
+                }
+              }
             }
           }
         }

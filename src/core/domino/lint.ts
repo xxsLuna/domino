@@ -1,4 +1,6 @@
 import { isAllowed } from '../agent/api'
+import { externalTargetError } from '../net/external'
+import { isUrlTemplate } from '../runtime/dataSources'
 import { applyScript, buildScriptContext } from './script'
 import type { DominoFile, ParseError } from './types'
 
@@ -91,7 +93,25 @@ export function lintDomino(domino: DominoFile, lineOf: LineOf = () => 1): ParseE
 
   /* -------------------- [api] allow covers reads/writes -------------------- */
   const allowNote = (path: string): string | null => {
-    if (!/^https?:\/\//i.test(path) && !domino.api.baseUrl) {
+    const absolute = /^https?:\/\//i.test(path)
+    // A template whose host comes from state (`GET {rssUrl}`) can only run
+    // through the external guard — the allow list can't speak for a host
+    // that doesn't exist until the user types it.
+    if (!absolute && isUrlTemplate(path)) {
+      return domino.api.external
+        ? null
+        : 'is a full-URL template ({state} supplies the host) — add [api] external = https so the runtime may fetch it'
+    }
+    if (absolute) {
+      if (domino.api.external) {
+        const guard = externalTargetError(samplePath(path))
+        return guard ? `would be refused by the external guard: ${guard}` : null
+      }
+      return isAllowed(samplePath(path), domino.api.allow, domino.api.baseUrl)
+        ? null
+        : 'is not covered by [api] allow — every request would be refused (403); to call a public URL directly, add [api] external = https'
+    }
+    if (!domino.api.baseUrl) {
       return 'has a relative path but [api] has no base_url'
     }
     return isAllowed(samplePath(path), domino.api.allow, domino.api.baseUrl)

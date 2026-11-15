@@ -1,3 +1,4 @@
+import { isUrlTemplate } from '../runtime/dataSources'
 import type {
   ActionDecl,
   ActionStep,
@@ -200,12 +201,22 @@ export function parseDomino(source: string): ParseResult {
   }
 
   /* -------------------------------- api ------------------------------- */
+  // `external = https` opts the file into absolute-URL calls (see net/external).
+  const externalRaw = (get('api', 'external') ?? '').toLowerCase()
+  const externalOn = ['https', 'true', 'on', 'yes', '1'].includes(externalRaw)
+  if (externalRaw && !externalOn && !['false', 'off', 'no', '0'].includes(externalRaw)) {
+    errors.push({
+      line: getLine('api', 'external'),
+      message: `[api] external = "${externalRaw}" is unknown — the only supported value is https`
+    })
+  }
   const api: ApiSection = {
     baseUrl: get('api', 'base_url'),
     allow: (get('api', 'allow') ?? '')
       .split(',')
       .map((s) => s.trim())
-      .filter(Boolean)
+      .filter(Boolean),
+    ...(externalOn ? { external: true } : {})
   }
 
   /* -------------------------------- ui -------------------------------- */
@@ -421,7 +432,9 @@ export function parseDomino(source: string): ParseResult {
           })
           continue
         }
-      } else if (!/^(\/|https?:\/\/)/i.test(path)) {
+      } else if (!/^(\/|https?:\/\/)/i.test(path) && !isUrlTemplate(path)) {
+        // A whole-URL template (`{rssUrl}`, `{proxyHost}/feed`) parses too —
+        // [lint] then asks for the [api] external opt-in it needs at runtime.
         errors.push({
           line: e.line,
           message: `[data] ${e.key}: the path must be "/…" (or an absolute http URL), got "${path}"`
@@ -715,7 +728,7 @@ function knownKeys(section: string): Set<string> {
     case 'auth':
       return new Set(['required', 'login_endpoint', 'token_key', 'skip_if_logged_in'])
     case 'api':
-      return new Set(['base_url', 'allow'])
+      return new Set(['base_url', 'allow', 'external'])
     case 'ui':
       return new Set([
         'theme',

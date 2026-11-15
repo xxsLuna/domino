@@ -1,4 +1,5 @@
 import { httpFetch, readTextCapped } from '../net'
+import { isLoopbackHost } from '../net/external'
 import type { KeyValueStorage } from '../session/prefs'
 import { parseFeed, type FeedData } from './parse'
 
@@ -23,19 +24,9 @@ export function feedsKey(dominoId: string): string {
   return `domino:feeds:${dominoId}`
 }
 
-/**
- * True for this machine's own hosts — the one place plain http is still
- * fetchable everywhere (Electron's main process opens http only on loopback,
- * the local dev relay likewise). Matches that transport contract exactly so
- * the address accepted here can never be one the transports refuse later.
- */
-function isLoopbackHost(hostname: string): boolean {
-  const h = hostname.toLowerCase()
-  if (h === 'localhost' || h.endsWith('.localhost')) return true
-  if (h === '::1' || h === '[::1]') return true
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
-}
-
+// isLoopbackHost is shared with the [api] external guard (@core/net/external):
+// the one place plain http is fetchable everywhere (Electron's main process
+// opens http only on loopback, the local dev relay likewise).
 /** https everywhere; plain http only on this machine (dev mocks, local NAS readers). */
 export function normalizeFeedUrl(raw: string): string | null {
   const trimmed = raw.trim()

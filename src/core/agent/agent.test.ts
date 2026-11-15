@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { DOMParser } from '@xmldom/xmldom'
 import { executeApi, isAllowed, resolveEndpoint } from './api'
 import type { ChatMessage, ChatRequest, LLMAdapter, StreamDelta } from '../llm/types'
@@ -98,6 +98,94 @@ describe('executeApi feed support', () => {
       { path: '/leads' }
     )
     expect(seenAuth).toBe('Bearer secret-token')
+  })
+
+  it("never carries the token off the app's own backend (pinned or external)", async () => {
+    let seenAuth: string | null = null
+    setHttpFetch(async (_input, init) => {
+      seenAuth = new Headers(init?.headers).get('authorization')
+      return new Response('{}', { status: 200 })
+    })
+    await executeApi(
+      { baseUrl: BASE, allow: ['https://other.example/x'], token: 'secret-token', external: true },
+      { path: 'https://other.example/x' }
+    )
+    expect(seenAuth).toBeNull()
+  })
+})
+
+describe('executeApi [api] external = https', () => {
+  afterEach(() => {
+    setHttpFetch((input, init) => globalThis.fetch(input, init))
+  })
+  const FETCHED: string[] = []
+  beforeEach(() => {
+    FETCHED.length = 0
+  })
+  const ok = () =>
+    setHttpFetch(async (input) => {
+      FETCHED.push(String(input))
+      return new Response('{"ok":true}', { status: 200 })
+    })
+
+  it('lets a public https URL through with an EMPTY allow list', async () => {
+    ok()
+    const r = await executeApi(
+      { allow: [], external: true },
+      { path: 'https://www.yna.co.kr/rss/news.xml' }
+    )
+    expect(r.status).toBe(200)
+    expect(FETCHED.at(-1)).toBe('https://www.yna.co.kr/rss/news.xml')
+  })
+
+  it('refuses the same URL when the file did not declare external — and says how to fix it', async () => {
+    ok()
+    const r = await executeApi({ baseUrl: BASE, allow: ['/leads'] }, { path: 'https://api.open-meteo.com/v1/forecast' })
+    expect(r.status).toBe(403)
+    expect((r.data as { error: string }).error).toContain('external = https')
+    expect(FETCHED).toHaveLength(0)
+  })
+
+  it('keeps the guard on declared apps: metadata IPs, private ranges, plain http to strangers', async () => {
+    ok()
+    for (const path of [
+      'http://169.254.169.254/latest/meta-data/',
+      'https://10.1.2.3/admin',
+      'https://192.168.1.10/router',
+      'http://api.stranger.example/feed',
+      'https://user:pw@api.example.com/x'
+    ]) {
+      const r = await executeApi({ allow: [], external: true }, { path })
+      expect(r.status, path).toBe(403)
+    }
+    expect(FETCHED).toHaveLength(0)
+  })
+
+  it('still requires the allow list for RELATIVE paths, external or not', async () => {
+    ok()
+    const r = await executeApi(
+      { baseUrl: BASE, allow: ['/leads'], external: true },
+      { path: '/admin/secrets' }
+    )
+    expect(r.status).toBe(403)
+  })
+
+  it('sends the token to the base backend while external is on, never to the outside', async () => {
+    const seen: Record<string, string | null> = {}
+    setHttpFetch(async (input, init) => {
+      seen[String(input)] = new Headers(init?.headers).get('authorization')
+      return new Response('{}', { status: 200 })
+    })
+    await executeApi(
+      { baseUrl: BASE, allow: ['/leads'], external: true, token: 'tk' },
+      { path: '/leads' }
+    )
+    await executeApi(
+      { baseUrl: BASE, allow: ['/leads'], external: true, token: 'tk' },
+      { path: 'https://feed.example/rss.xml' }
+    )
+    expect(seen['https://api.example.com/v1/leads']).toBe('Bearer tk')
+    expect(seen['https://feed.example/rss.xml']).toBeNull()
   })
 })
 

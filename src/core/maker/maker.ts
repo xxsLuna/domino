@@ -142,6 +142,7 @@ skip_if_logged_in = true
 [api]
 base_url = <https://api.example.com>
 allow = </path, /path/*, ...>  ; comma-separated; the app can call ONLY these paths (wildcard * at the end)
+external = https               ; optional; lets call_api and [data] GET address ABSOLUTE public https URLs directly (third-party APIs, user-pasted feeds) — no proxy backend needed. Private/LAN addresses and http-to-non-localhost are refused; your login token is NEVER sent to an external host.
 
 [ui]
 theme = auto                   ; light | dark | auto
@@ -167,6 +168,10 @@ on auth_failed -> goto login
 <key> = GET /path every 30s
 ; one source per list/read endpoint a screen shows; "every Ns" (5-600) only for live data.
 ; {stateKey} in a path fills from page state, and the source loads only once that key is set.
+; With [api] external = https the path may be a full public URL, or a whole-URL template
+; fed by state ("feed = GET {rssUrl} every 20s" — the user pastes the address); an XML
+; feed body is parsed into {title, items:[{title, link, date?, summary?, image?, author?}]}
+; automatically — a List bound to items already shows thumbnails, summaries and times.
 ; Screens bind them: {"$data": "<key>.<json path>"}. Only GET (or FEED for RSS) — never POST/PUT/PATCH/DELETE.
 
 [actions]                      ; widget behaviors the RUNTIME runs (no model call)
@@ -193,6 +198,7 @@ on auth_failed -> goto login
 - Detail pages that depend on the pressed record stay in [guide] (the model renders them), but still declare the page in [pages].
 - No [auth] section when the app has no sign-in. Without a backend, omit [api], [data] and call steps and describe local-only behavior in [guide].
 - RSS/Atom reader: declare a source like "feeds = FEED @subscriptions every 60s" in [data] (or one fixed "FEED https://…/rss.xml") — the runtime fetches and parses the feed itself, so feed URLs never belong in [api] allow. @subscriptions is the user's runtime-managed list; describing the subscribe/refresh flow in [guide] helps the model render it well.
+- The app must talk to a THIRD-PARTY public API (a feed the user pastes, a weather/weather-map/payment-sandbox endpoint…)? Do NOT invent a proxy backend and do NOT put the third-party host in [api] allow — declare "external = https" in [api] and address the full URL in [data]/call_api. Only apps with a base_url backend of their own need [api] base_url at all: an external-only file has [api] external = https (plus [data]) and nothing else.
 - Write [guide] and the [pages] names/purposes in the user's language. Keys, ids and section names stay in English.
 
 # Example (shortened)

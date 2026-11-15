@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CardNode, PageSpec } from '../spec'
-import { MODAL_MAX_FIELDS, formFieldCount, isModalPresentation } from './presentation'
+import { MODAL_MAX_FIELDS, formFieldCount, isModalPresentation, prettyTime } from './presentation'
 
 const node = (name: string, children?: CardNode[]): CardNode => ({
   name,
@@ -49,5 +49,22 @@ describe('isModalPresentation', () => {
     const nested = page([node('Card', [node('Form', [node('Input'), node('Select')])])])
     expect(formFieldCount(nested)).toBe(2)
     expect(isModalPresentation(nested)).toBe(true)
+  })
+})
+
+describe('prettyTime (feed timestamps in a List meta)', () => {
+  it('reformats RFC-822 and ISO stamps instead of showing the raw wire text', () => {
+    for (const raw of ['Sun, 15 Nov 2026 11:17:23 +0900', '2026-11-15T02:17:00.000Z']) {
+      const out = prettyTime(raw)
+      expect(out).not.toBe(raw)
+      expect(out).not.toMatch(/\+0900|GMT|T\d{2}:\d{2}:\d{2}|\.000Z/)
+      expect(out).toMatch(/\d/)
+    }
+  })
+  it('leaves relative labels, bare times and unparseable look-alikes alone', () => {
+    expect(prettyTime('2 hours ago')).toBe('2 hours ago')
+    expect(prettyTime('09:00')).toBe('09:00')
+    expect(prettyTime('sometime in November')).toBe('sometime in November')
+    expect(prettyTime('Sun, 99 Xyz')).toBe('Sun, 99 Xyz')
   })
 })
