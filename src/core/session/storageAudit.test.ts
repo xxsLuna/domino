@@ -82,6 +82,7 @@ describe('clear helpers', () => {
       'domino:view:A|x::auth:false': '{}',
       'domino:history:A|x': '[]',
       'domino:graph:A|x': '{}',
+      'domino:writers:A|x': '[]',
       'domino:schemas:A|x': '{}',
       'domino:token:A|x': 't',
       'domino:screens:B|y': 'keep-me',
@@ -105,6 +106,9 @@ describe('clear helpers', () => {
     expect(keys).toContain('domino:apisnaps:A|x')
     expect(keys).toContain('domino:feeds:A|x')
     expect(keys).toContain('domino:llm-config:A|x')
+    // Link-learning writer marks go with the graph.
+    expect(keys).toContain('domino:writers:A|x')
+    expect(matchDominoKey('domino:writers:A|x')).toEqual(['graph', 'A|x'])
   })
 
   it('attributes snaps, feeds, the per-domino LLM override and page blobs to the domino', () => {

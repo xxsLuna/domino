@@ -281,4 +281,22 @@ describe('pregenClickTargets', () => {
     expect(pregenClickTargets(known, [], d, 2)).toHaveLength(2)
     expect(pregenClickTargets(known, [], d, 0)).toEqual([])
   })
+
+  it('never presses an "add" button in the background, with or without `to`', () => {
+    const inventory: UiSpec = {
+      version: 1,
+      page: 'main',
+      pages: [
+        {
+          id: 'main',
+          name: 'Main',
+          layout: [
+            btn('add-item', { text: '품목 추가', to: 'item_add' }),
+            btn('add-to-cart', { text: 'Add to cart' })
+          ]
+        }
+      ]
+    }
+    expect(pregenClickTargets(inventory, [], d, 10)).toEqual([])
+  })
 })

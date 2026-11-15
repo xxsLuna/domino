@@ -58,6 +58,8 @@ const PART_PREFIXES: Array<[DominoPart, string]> = [
   ['views', 'domino:view:'],
   ['history', 'domino:history:'],
   ['graph', 'domino:graph:'],
+  // Opener actions seen writing (link learning): they go with the graph.
+  ['graph', 'domino:writers:'],
   ['schemas', 'domino:schemas:'],
   ['snaps', 'domino:apisnaps:'],
   // Last-known [data] snapshots (src/core/runtime/dataSnaps.ts): same kind of data.

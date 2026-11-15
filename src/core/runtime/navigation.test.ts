@@ -9,6 +9,8 @@ import {
   backView,
   keepCanonicalPage,
   cacheableAnswer,
+  messagesWrite,
+  writerKey,
   dismissesPage,
   namedDestination,
   navWithPlan,
@@ -80,6 +82,46 @@ describe('nodeContext', () => {
     expect(nodeContext(known, 'apply')).toMatchObject({ node: { id: 'apply' }, inForm: true })
     expect(nodeContext(known, 'nope')).toEqual({ node: null, inForm: false })
     expect(nodeContext(null, 'go-new')).toEqual({ node: null, inForm: false })
+  })
+})
+
+describe('answerEdge learning', () => {
+  const press = {
+    from: 'main',
+    action: 'add-item',
+    label: '품목 추가',
+    event: 'click',
+    learn: 'item_add'
+  }
+  it('marks a pure switch to the learnable page, and nothing else', () => {
+    expect(answerEdge(press, 'item_add', false, true)).toMatchObject({ reused: true })
+    expect(answerEdge(press, 'item_add', false, false)).not.toHaveProperty('reused')
+    expect(answerEdge(press, 'stores', false, true)).not.toHaveProperty('reused')
+    expect(answerEdge(press, 'item_add', true, true)).toMatchObject({ kind: 'form' })
+    expect(answerEdge({ ...press, learn: undefined }, 'item_add', false, true)).not.toHaveProperty(
+      'reused'
+    )
+  })
+})
+
+describe('messagesWrite', () => {
+  const call = (args: string) => ({
+    role: 'assistant' as const,
+    content: '',
+    toolCalls: [{ id: 'c1', name: 'call_api', args }]
+  })
+  it('spots any non-GET call_api a turn sent, readable or not', () => {
+    expect(messagesWrite([call('{"path":"/x","method":"POST"}')])).toBe(true)
+    expect(messagesWrite([call('{"path":"/x","method":"delete"}')])).toBe(true)
+    expect(messagesWrite([call('{"path":"/x"')])).toBe(true)
+    expect(messagesWrite([call('{"path":"/x"}')])).toBe(false)
+    expect(messagesWrite([call('{"path":"/x","method":"GET"}')])).toBe(false)
+    expect(
+      messagesWrite([
+        { role: 'assistant', content: '', toolCalls: [{ id: 'n', name: 'navigate', args: '{}' }] }
+      ])
+    ).toBe(false)
+    expect(messagesWrite([{ role: 'user', content: 'hi' }])).toBe(false)
   })
 })
 
@@ -252,6 +294,275 @@ describe('planPress', () => {
     expect(
       planPress(base({ e: { event: 'click', nodeId: 'cta' }, edges, recordPages })).switchTo
     ).toBeNull()
+  })
+
+  describe('an "add" button that opens an entry form', () => {
+    // The shape a real build produced: the sidebar's "추가" and the header's
+    // "품목 추가" both open item_add, and only the form's Save writes.
+    const inventory: UiSpec = {
+      version: 1,
+      page: 'main',
+      nav: [
+        { id: 'main', label: '재고' },
+        { id: 'item_add', label: '추가' }
+      ],
+      pages: [
+        {
+          id: 'main',
+          name: '재고 홈',
+          layout: [
+            {
+              name: 'PageHeader',
+              id: 'main-header',
+              children: [
+                { name: 'Button', id: 'add-item', props: { text: '품목 추가', to: 'item_add' } },
+                { name: 'Button', id: 'add-quick', props: { text: '빠른 추가' } }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'item_add',
+          name: '생필품 추가',
+          layout: [
+            {
+              name: 'Form',
+              id: 'item-add-form',
+              children: [{ name: 'Button', id: 'save', props: { text: '저장' } }]
+            }
+          ]
+        }
+      ]
+    }
+    const press = (nodeId: string, edges: GraphEdge[] = [], over: Partial<PressInput> = {}) =>
+      planPress(
+        base({
+          e: { event: 'click', nodeId },
+          pageId: 'main',
+          spec: inventory,
+          known: inventory,
+          nav: inventory.nav ?? [],
+          edges,
+          ...over
+        })
+      )
+    const landed = (action: string, extra: Partial<GraphEdge> = {}): GraphEdge => ({
+      from: 'main',
+      to: 'item_add',
+      action,
+      label: action,
+      kind: 'action',
+      ...extra
+    })
+
+    it('first press: a model turn told to reuse the built form, never to rebuild it', () => {
+      const p = press('add-item')
+      expect(p.switchTo).toBeNull()
+      expect(p.replayable).toBe(false)
+      expect(p.reuse).toBe('item_add')
+      expect(p.guidedTo).toBe('item_add')
+    })
+
+    it('every later press is still a turn: an earlier landing only steers it to reuse', () => {
+      const p = press('add-item', [landed('add-item')])
+      expect(p.switchTo).toBeNull()
+      expect(p.reuse).toBe('item_add')
+      // Without `to`, the landing alone names the page to reuse.
+      expect(press('add-quick', [landed('add-quick')]).reuse).toBe('item_add')
+      expect(press('add-quick').reuse).toBeNull()
+    })
+
+    it('never sends a control that always acts to the reuse prompt', () => {
+      const shop: UiSpec = {
+        ...inventory,
+        pages: [
+          {
+            id: 'main',
+            name: '재고 홈',
+            layout: [
+              { name: 'Button', id: 'pay', props: { text: '결제', to: 'item_add' } },
+              {
+                name: 'Button',
+                id: 'wipe',
+                props: { text: 'Add', to: 'item_add', variant: 'danger' }
+              }
+            ]
+          },
+          inventory.pages[1]
+        ]
+      }
+      const at = (nodeId: string) =>
+        press(nodeId, [landed(nodeId)], { spec: shop, known: shop }).reuse
+      expect(at('pay')).toBeNull()
+      expect(at('wipe')).toBeNull()
+    })
+
+    it('after a write, the turn re-renders: no switch and no reuse', () => {
+      const p = press('add-item', [landed('add-item', { kind: 'form' })])
+      expect(p.switchTo).toBeNull()
+      expect(p.reuse).toBeNull()
+      expect(p.guidedTo).toBe('item_add')
+    })
+
+    it("a nav edge sharing the id does not hide the press's own answer", () => {
+      const nav: GraphEdge = { ...landed('add-item'), kind: 'nav' }
+      expect(press('add-item', [landed('add-item', { kind: 'form' }), nav]).reuse).toBeNull()
+    })
+
+    it('never reuses or switches into a record page', () => {
+      const recordPages = new Map([['item_add', 'rec-1']])
+      const p = press('add-item', [landed('add-item')], { recordPages })
+      expect(p.switchTo).toBeNull()
+      expect(p.reuse).toBeNull()
+    })
+
+    describe('learning the link', () => {
+      const learned = landed('add-item', { reused: true })
+
+      it('the first press may be learned: its `to` names the built form', () => {
+        const p = press('add-item')
+        expect(p.answer.learn).toBe('item_add')
+        expect(p.answer.writes).toBeUndefined()
+        // Without `to` there is nothing to learn.
+        expect(press('add-quick', [landed('add-quick')]).answer.learn).toBeUndefined()
+      })
+
+      it('a learned link switches instantly and stays learned', () => {
+        const p = press('add-item', [learned])
+        expect(p.switchTo).toBe('item_add')
+        expect(p.confirmed).toBe(true)
+        expect(answerEdge(p.answer, 'item_add', false, p.confirmed)).toMatchObject({
+          kind: 'action',
+          reused: true
+        })
+      })
+
+      it('an edit that drops or changes the `to` drops the link', () => {
+        const withProps = (props: Record<string, unknown>): UiSpec => ({
+          ...inventory,
+          pages: [
+            {
+              ...inventory.pages[0],
+              layout: [{ name: 'Button', id: 'add-item', props: { text: '품목 추가', ...props } }]
+            },
+            inventory.pages[1],
+            { id: 'item_wizard', name: 'Wizard', layout: [] }
+          ]
+        })
+        for (const spec of [withProps({}), withProps({ to: 'item_wizard' })]) {
+          const p = press('add-item', [learned], { spec, known: spec })
+          expect(p.switchTo).toBeNull()
+          expect(p.confirmed).toBe(false)
+        }
+      })
+
+      it('a press seen writing is never learned, but keeps the reuse prompt', () => {
+        const p = press('add-item', [landed('add-item', { kind: 'form' })])
+        expect(p.answer.writes).toBe(true)
+        expect(p.answer.learn).toBeUndefined()
+        // Its next write-free answer is a plain link again, never a learned one…
+        const next = answerEdge(p.answer, 'item_add', false, true)
+        expect(next).toMatchObject({ kind: 'action' })
+        expect(next).not.toHaveProperty('reused')
+        // …so the press after it is steered to reuse the built page.
+        expect(press('add-item', [next!], { writers: new Set(['add-item']) }).reuse).toBe(
+          'item_add'
+        )
+      })
+
+      it('an action ever seen sending a write, on any page, is never learned or followed', () => {
+        // Marks are kept per action id: one action keeps one id on every page.
+        const writers = new Set([writerKey({ action: 'add-item' })])
+        const p = press('add-item', [learned], { writers })
+        expect(p.answer.writes).toBe(true)
+        expect(p.answer.learn).toBeUndefined()
+        expect(p.switchTo).toBeNull()
+        expect(p.reuse).toBe('item_add')
+        // Other actions are unaffected.
+        expect(press('add-item', [], { writers: new Set(['other']) }).answer.learn).toBe('item_add')
+      })
+
+      it('marks openers as such, and only openers', () => {
+        expect(press('add-item').answer.opener).toBe(true)
+        const plainSpec: UiSpec = {
+          ...inventory,
+          pages: [
+            {
+              ...inventory.pages[0],
+              layout: [{ name: 'Button', id: 'go', props: { text: 'Go', to: 'stores' } }]
+            },
+            inventory.pages[1]
+          ]
+        }
+        expect(press('go', [], { spec: plainSpec, known: plainSpec }).answer.opener).toBeUndefined()
+      })
+
+      it('never learned on a record page, nor toward one', () => {
+        const recordPages = new Map([['main', 'rec-1']])
+        expect(press('add-item', [], { recordPages }).answer.learn).toBeUndefined()
+        const toRecord = new Map([['item_add', 'rec-1']])
+        expect(press('add-item', [], { recordPages: toRecord }).answer.learn).toBeUndefined()
+      })
+    })
+
+    it('before the page is built, the first build is guided to the declared id', () => {
+      const unbuilt: UiSpec = { ...inventory, pages: inventory.pages.slice(0, 1) }
+      const p = press('add-item', [], { spec: unbuilt, known: unbuilt, nav: [] })
+      expect(p.switchTo).toBeNull()
+      expect(p.reuse).toBeNull()
+      expect(p.guidedTo).toBe('item_add')
+    })
+
+    it('resolves the declared page like any page reference (plan name, nav id)', () => {
+      const unbuilt: UiSpec = { ...inventory, pages: inventory.pages.slice(0, 1) }
+      const plan = [{ id: 'item_new', name: '생필품 추가', nav: false }]
+      const named = { name: 'Button', id: 'add-x', props: { text: '추가', to: '생필품 추가' } }
+      const spec: UiSpec = {
+        ...unbuilt,
+        pages: [{ ...unbuilt.pages[0], layout: [named] }]
+      }
+      const p = press('add-x', [], { spec, known: spec, nav: [], plan })
+      expect(p.guidedTo).toBe('item_new')
+      // A nav id whose page carries another id resolves to the built page.
+      const aliased: UiSpec = {
+        ...inventory,
+        nav: [{ id: 'add', label: '생필품 추가' }],
+        pages: [
+          { ...inventory.pages[0], layout: [{ ...named, props: { text: '추가', to: 'add' } }] },
+          inventory.pages[1]
+        ]
+      }
+      const q = press('add-x', [], { spec: aliased, known: aliased, nav: aliased.nav })
+      expect(q.reuse).toBe('item_add')
+    })
+
+    it('a `to` on a control that is not an opener steers nothing new', () => {
+      const shop: UiSpec = {
+        ...inventory,
+        pages: [
+          {
+            id: 'main',
+            name: '재고 홈',
+            layout: [
+              { name: 'Button', id: 'save-x', props: { text: '저장', to: 'item_add' } },
+              {
+                name: 'Form',
+                id: 'f',
+                children: [
+                  { name: 'Button', id: 'back-list', props: { text: '목록', to: 'item_add' } }
+                ]
+              }
+            ]
+          },
+          inventory.pages[1]
+        ]
+      }
+      for (const id of ['save-x', 'back-list']) {
+        const p = press(id, [], { spec: shop, known: shop })
+        expect(p.guidedTo, id).toBeNull()
+        expect(p.reuse, id).toBeNull()
+      }
+    })
   })
 
   it('labels the answer with the node text and keeps navigate targets as guidance', () => {
@@ -464,6 +775,14 @@ describe('mergeEmbeddedEdges', () => {
     ]
     const out = mergeEmbeddedEdges(local, embedded)
     expect(out).toEqual([local[0], embedded[1]])
+  })
+
+  it("never imports a learned link: it was learned in someone else's state", () => {
+    const embedded: GraphEdge[] = [
+      { from: 'g', to: 'chat', action: 'join', label: '참여', kind: 'action', reused: true }
+    ]
+    const [edge] = mergeEmbeddedEdges([], embedded)
+    expect(edge).toEqual({ from: 'g', to: 'chat', action: 'join', label: '참여', kind: 'action' })
   })
 })
 

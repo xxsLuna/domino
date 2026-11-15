@@ -27,6 +27,12 @@ export interface GraphEdge {
   /** Human label: the button text, form title, tab label… */
   label: string
   kind: GraphEdgeKind
+  /**
+   * A learned link for an opener ("품목 추가" with `to`): the model answered
+   * a press by switching, with no API call at all, to exactly the page the
+   * button declares, and the press never wrote. canAutoLink follows it.
+   */
+  reused?: true
 }
 
 /** Observed-edge key — one destination per (page, action, kind). */
@@ -259,6 +265,39 @@ export function pageMapLines(
 
 const graphKey = (dominoId: string): string => `domino:graph:${dominoId}`
 const MAX_EDGES = 300
+const writersKey = (dominoId: string): string => `domino:writers:${dominoId}`
+const MAX_WRITERS = 300
+
+/**
+ * Opener actions (by id) ever seen sending a write — kept across restarts,
+ * since a write that re-rendered its own page, failed or was interrupted
+ * leaves no data-action edge behind. Such an action is never learned as a
+ * link. Newest last: the cap drops the marks least recently confirmed.
+ */
+export async function loadWriterPresses(
+  storage: KeyValueStorage,
+  dominoId: string
+): Promise<Set<string>> {
+  try {
+    const raw = await storage.get(writersKey(dominoId))
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    return new Set(Array.isArray(parsed) ? parsed.filter((k) => typeof k === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export async function saveWriterPresses(
+  storage: KeyValueStorage,
+  dominoId: string,
+  writers: ReadonlySet<string>
+): Promise<void> {
+  try {
+    await storage.set(writersKey(dominoId), JSON.stringify([...writers].slice(-MAX_WRITERS)))
+  } catch {
+    /* a failed save never breaks the app */
+  }
+}
 
 export async function loadPageGraph(
   storage: KeyValueStorage,
@@ -339,8 +378,26 @@ export function pruneEdgesForPage(
     }
   }
   walk(page.layout, 0)
-  const next = edges.filter((e) => e.from !== page.id || e.kind === 'nav' || ids.has(e.action))
-  return next.length === edges.length ? edges : next
+  const next = edges
+    .filter((e) => e.from !== page.id || e.kind === 'nav' || ids.has(e.action))
+    // An edit may have changed what a kept button does: its learned link is
+    // learned again (one turn) instead of trusted.
+    .map((e) => (e.from === page.id && e.reused ? unlearned(e) : e))
+  return next.length === edges.length && next.every((e, i) => e === edges[i]) ? edges : next
+}
+
+function unlearned(edge: GraphEdge): GraphEdge {
+  const { reused: _reused, ...rest } = edge
+  return rest
+}
+
+/**
+ * The graph without learned links (`reused`): for an auth-state switch (one
+ * user's "already joined" says nothing about the next) and for graphs that
+ * travel in a file. Learning one again costs one model turn.
+ */
+export function withoutLearned(edges: GraphEdge[]): GraphEdge[] {
+  return edges.some((e) => e.reused) ? edges.map((e) => (e.reused ? unlearned(e) : e)) : edges
 }
 
 /**

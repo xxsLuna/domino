@@ -8,8 +8,11 @@ import {
   buildPageGraph,
   collectActions,
   loadPageGraph,
+  loadWriterPresses,
   pruneEdgesForPage,
   savePageGraph,
+  saveWriterPresses,
+  withoutLearned,
   toMermaid,
   upsertAnswerEdge,
   upsertEdge,
@@ -248,6 +251,68 @@ describe('self-loops and data actions', () => {
     ])
     const edges = await loadPageGraph(storage, 'd')
     expect(edges.map((e) => e.action)).toEqual(['ref', 'go-new'])
+  })
+
+  describe('learned links', () => {
+    const memory = () => {
+      const store = new Map<string, string>()
+      return {
+        get: async (k: string) => store.get(k) ?? null,
+        set: async (k: string, v: string) => void store.set(k, v),
+        remove: async (k: string) => void store.delete(k)
+      }
+    }
+    const learned: GraphEdge = {
+      from: 'main',
+      to: 'item_add',
+      action: 'add-item',
+      label: '품목 추가',
+      kind: 'action',
+      reused: true
+    }
+    const plain: GraphEdge = {
+      from: 'main',
+      to: 'stores',
+      action: 'go',
+      label: 'Go',
+      kind: 'action'
+    }
+
+    it('survive a save and load', async () => {
+      const storage = memory()
+      await savePageGraph(storage, 'd', [learned, plain])
+      expect(await loadPageGraph(storage, 'd')).toEqual([learned, plain])
+    })
+
+    it('withoutLearned drops only the flag, and returns the same array when there is none', () => {
+      const { reused: _r, ...bare } = learned
+      expect(withoutLearned([learned, plain])).toEqual([bare, plain])
+      const none = [plain]
+      expect(withoutLearned(none)).toBe(none)
+    })
+
+    it('an edit of the page unlearns its kept buttons', () => {
+      const page = {
+        id: 'main',
+        layout: [
+          { name: 'Button', id: 'add-item' },
+          { name: 'Button', id: 'go' }
+        ]
+      }
+      const { reused: _r, ...bare } = learned
+      expect(pruneEdgesForPage([learned, plain], page)).toEqual([bare, plain])
+      const untouched = [plain]
+      expect(pruneEdgesForPage(untouched, page)).toBe(untouched)
+    })
+
+    it('writer presses survive a restart', async () => {
+      const storage = memory()
+      expect(await loadWriterPresses(storage, 'd')).toEqual(new Set())
+      await saveWriterPresses(storage, 'd', new Set(['join']))
+      expect(await loadWriterPresses(storage, 'd')).toEqual(new Set(['join']))
+      await storage.set('domino:writers:d', 'not json')
+      expect(await loadWriterPresses(storage, 'd')).toEqual(new Set())
+    })
   })
 
   it('upsertAnswerEdge keeps one answer per page+action across action/form kinds', () => {
