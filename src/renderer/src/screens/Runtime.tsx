@@ -82,6 +82,7 @@ import { recoverRowIdentity } from '@core/runtime/rowIdentity'
 import {
   isErrorSnapshot,
   isUrlTemplate,
+  missingSourceVars,
   planSourceFetch,
   settleWithin,
   sourcesReadingState,
@@ -2563,7 +2564,13 @@ export function Runtime({
         // [data] fetch so `{stateKey}` interpolations (e.g. {rssUrl}) resolve
         // on this very session — without this the sources would stay unready
         // forever and a restored feed rendered empty.
-        stateRef.current = { ...(view.known.state ?? {}) }
+        // A state key a [data] template reads can be missing from the saved
+        // view (lost write, older build): fall back to the file's own default
+        // — with neither, `GET {rssUrl}` is silently unready forever.
+        stateRef.current = {
+          ...(domino.screens?.spec.state ?? {}),
+          ...(view.known.state ?? {})
+        }
         pendingStateWrites.current = {}
         const restoredHistory = await session.load()
         if (cancelled) return
@@ -2905,7 +2912,13 @@ export function Runtime({
       const view = await screensRef.current?.loadView(loggedIn)
       if (view && !view.stale && findPage(view.known, view.page)) {
         knownRef.current = view.known
-        stateRef.current = { ...(view.known.state ?? {}) }
+        // A state key a [data] template reads can be missing from the saved
+        // view (lost write, older build): fall back to the file's own default
+        // — with neither, `GET {rssUrl}` is silently unready forever.
+        stateRef.current = {
+          ...(domino.screens?.spec.state ?? {}),
+          ...(view.known.state ?? {})
+        }
         const landing = resolvePageId(view.known.nav ?? [], view.known.pages, target)
         if (landing) {
           const spec = { ...view.known, page: landing }
@@ -3535,6 +3548,23 @@ export function Runtime({
               : String(raw)
           if (value !== undefined && value.trim() !== '') applyLocalState(step.stateKey, value)
         } else if (step.kind === 'refresh') {
+          // An explicit refresh of a source whose own template can't resolve
+          // (`GET {rssUrl}` with an empty rssUrl) would send NO request at all
+          // and stay silent: say so instead of spinning. Filling the input
+          // re-queries the source by itself (sourcesReadingState).
+          const srcDecl = domino.data.find((d) => d.key === step.source)
+          const missingVars = srcDecl ? missingSourceVars(srcDecl.path, stateRef.current) : []
+          if (missingVars.length > 0) {
+            armResultToast(
+              {
+                kind: 'notice',
+                text: t('rt.refreshNotReady', { vars: missingVars.join(', ') }),
+                target: null
+              },
+              6_000
+            )
+            continue
+          }
           await fetchSource(step.source)
         } else if (step.kind === 'call') {
           // `call METHOD /path [with form] [body k=v]`: {form.x}/{row.x} from
@@ -3614,6 +3644,7 @@ export function Runtime({
       applyLocalState,
       armResultToast,
       dispatchToAgent,
+      domino,
       fetchSource,
       finalizeSpec,
       interruptTurn,

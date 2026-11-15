@@ -3,6 +3,7 @@ import type { DataSourceDecl } from '../domino/types'
 import {
   isErrorSnapshot,
   isUrlTemplate,
+  missingSourceVars,
   planSourceFetch,
   settleWithin,
   sourcesReadingState,
@@ -76,5 +77,19 @@ describe('isErrorSnapshot', () => {
     expect(isErrorSnapshot({ title: 'T', items: [] })).toBe(false)
     expect(isErrorSnapshot(null)).toBe(false)
     expect(isErrorSnapshot([])).toBe(false)
+  })
+})
+
+describe('missingSourceVars', () => {
+  it('lists the placeholders a source cannot resolve yet', () => {
+    expect(missingSourceVars('{rssUrl}', {})).toEqual(['rssUrl'])
+    expect(missingSourceVars('{rssUrl}', { rssUrl: '  ' })).toEqual(['rssUrl'])
+    expect(missingSourceVars('{rssUrl}', { rssUrl: null })).toEqual(['rssUrl'])
+    expect(missingSourceVars('/leads?q={query}&page={page}', { query: 'a' })).toEqual(['page'])
+  })
+  it('says nothing about sources that CAN be fetched', () => {
+    expect(missingSourceVars('{rssUrl}', { rssUrl: 'https://x.dev/rss' })).toEqual([])
+    expect(missingSourceVars('/leads', {})).toEqual([])
+    expect(missingSourceVars('/feeds/{id}', { id: 7 })).toEqual([])
   })
 })
