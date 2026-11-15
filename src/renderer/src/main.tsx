@@ -2,10 +2,11 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { I18nProvider } from './i18n'
-import { installPlatformFetch } from './platform'
+import { installLinkHandling, installPlatformFetch } from './platform'
 import './styles.css'
 
 installPlatformFetch()
+installLinkHandling()
 
 // Production web build only: cache the shell so the app (and every screen
 // already opened) keeps working offline. Dev/preview keeps live reloading.

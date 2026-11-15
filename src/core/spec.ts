@@ -281,6 +281,41 @@ export const MAX_NODE_DEPTH = 32
  * `props`, a numeric id becomes a string. Returns null for something that
  * isn't a node at all.
  */
+/**
+ * A display string can end up carrying a binding as TEXT: the model wrote
+ * `총 {"$data": …}건` inside the sentence, or its stream was cut mid-object.
+ * There is no binding for the runtime to resolve there, so the user read a
+ * literal `총 {` on the screen. The fragment goes; the sentence keeps what it
+ * really said ("20초마다 자동 갱신됩니다"), trailing separator and all.
+ */
+function cleanText(s: string): string {
+  const cut = s.indexOf('{"$')
+  const brace = s.lastIndexOf('{')
+  const brokenAt = cut >= 0 ? cut : brace >= 0 && s.indexOf('}', brace + 1) === -1 ? brace : -1
+  if (brokenAt < 0) return s
+  let head = s.slice(0, brokenAt).replace(/[\s,·:;-]+$/, '')
+  // What remains usually ends mid-thought ("자동 갱신됩니다 · 총"): the clause
+  // was pointing at the value that never came, so it goes with the fragment.
+  const sep = Math.max(
+    head.lastIndexOf('·'),
+    head.lastIndexOf(','),
+    head.lastIndexOf('('),
+    head.lastIndexOf(':'),
+    head.lastIndexOf('-')
+  )
+  if (sep > 0 && head.length - sep <= 18) head = head.slice(0, sep).trimEnd()
+  return head
+}
+
+/** Display strings only: a prop value that is a bare string, at any depth. */
+function cleanProps(props: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(props)) {
+    out[k] = typeof v === 'string' ? cleanText(v) : v
+  }
+  return out
+}
+
 function normalizeNode(raw: unknown, depth: number): CardNode | null {
   if (!isRecord(raw)) return null
   const nameKey = NAME_KEYS.find((k) => typeof raw[k] === 'string' && (raw[k] as string).trim() !== '')
@@ -291,7 +326,7 @@ function normalizeNode(raw: unknown, depth: number): CardNode | null {
   if (grid) node.grid = grid
   const stray = Object.entries(raw).filter(([k]) => k !== nameKey && !NODE_KEYS.has(k))
   const props = isRecord(raw.props) ? raw.props : undefined
-  if (props || stray.length) node.props = { ...Object.fromEntries(stray), ...props }
+  if (props || stray.length) node.props = cleanProps({ ...Object.fromEntries(stray), ...props })
   if (Array.isArray(raw.children) && depth < MAX_NODE_DEPTH) {
     node.children = normalizeNodes(raw.children, depth + 1)
   }
@@ -326,7 +361,14 @@ export function normalizeUiSpec(input: unknown): unknown {
           : undefined
     if (!id) return []
     const name = typeof p.name === 'string' && p.name ? p.name : typeof p.title === 'string' && p.title ? p.title : id
-    return [{ id, name, layout: normalizeNodes(p.layout, 0) }]
+    // A page written like a NODE keeps its body: a model that treats a page as
+    // one more card puts the rows under `children` (or `nodes`), and reading
+    // only `layout` would hand back an empty page that renders nothing.
+    const body =
+      Array.isArray(p.layout) && p.layout.length > 0
+        ? p.layout
+        : (p.children ?? p.nodes ?? p.body ?? p.layout)
+    return [{ id, name, layout: normalizeNodes(body, 0) }]
   })
   // Nav items keyed by `page` or missing a label still say where they go.
   const nav = Array.isArray(input.nav)
@@ -786,6 +828,69 @@ export function boundSourceKeys(node: unknown, out = new Set<string>(), depth = 
     boundSourceKeys(v, out, depth + 1)
   }
   return out
+}
+
+/** Does this snapshot hold anything a screen could actually draw? */
+function holdsRecords(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0
+  if (!isRecord(v)) return false
+  const keys = Object.keys(v)
+  // A failed fetch holds an error, not records: nothing was on screen to lose.
+  return keys.length > 0 && !(keys.length === 1 && keys[0] === 'error')
+}
+
+/**
+ * Sources whose records the screen WAS showing and the rewritten screen shows
+ * NONE of. A "make it prettier" turn that swaps a List for a CardGrid keeps
+ * its binding and is not reported; a screen that stopped reading the source
+ * entirely did not restyle anything — it deleted the user's data from view,
+ * which is never what an edit asked for.
+ */
+export function droppedDataSources(
+  before: PageSpec | null | undefined,
+  after: PageSpec | null | undefined,
+  snapshots: Record<string, unknown>
+): string[] {
+  if (!before || !after) return []
+  const kept = boundSourceKeys(after)
+  return [...boundSourceKeys(before)].filter((k) => !kept.has(k) && holdsRecords(snapshots[k]))
+}
+
+/** Components whose whole job is drawing MANY records from one binding. */
+const RECORD_VIEWS = new Set(['List', 'Table', 'Accordion', 'KeyValue'])
+
+/** Paths the page draws record rows from (empty when it shows none). */
+function recordViewPaths(page: PageSpec): string[] {
+  const out: string[] = []
+  for (const node of iterateNodes(page.layout)) {
+    if (!RECORD_VIEWS.has(node.name)) continue
+    for (const prop of ['items', 'rows']) {
+      const path = dataBinding(node.props?.[prop])
+      if (path) out.push(path)
+    }
+  }
+  return out
+}
+
+function hasRows(v: unknown): boolean {
+  return Array.isArray(v) && v.length > 0
+}
+
+/**
+ * Record rows the screen was drawing that the rewritten screen draws NOWHERE.
+ * Finer than droppedDataSources: a redesign can keep `feed.title` in the header
+ * — so the source is still "read" — while deleting the List under it, which is
+ * exactly how a "prettier" draft emptied a news page. Swapping List for Table
+ * or CardGrid is not reported: rows still land on screen.
+ */
+export function droppedRecordViews(
+  before: PageSpec | null | undefined,
+  after: PageSpec | null | undefined,
+  sources: Record<string, unknown>
+): string[] {
+  if (!before || !after) return []
+  if (recordViewPaths(after).some((p) => hasRows(lookupDataPath(sources, p)))) return []
+  return recordViewPaths(before).filter((p) => hasRows(lookupDataPath(sources, p)))
 }
 
 /** Field names of a value: object keys, or the first row's keys for arrays. */

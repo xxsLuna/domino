@@ -4,6 +4,7 @@ import { bridgedFetch, setHttpFetch, type NetTransport } from '@core/net'
 import type { KeyValueStorage } from '@core/session/prefs'
 import { isQuotaError, type BulkKeyValueStorage } from '@core/session/kv'
 import { withQuotaRelief, type StorageErrorEvent } from '@core/session/storageAudit'
+import { externalHrefFor } from '@core/ui/links'
 
 /**
  * Platform bridge: the renderer talks to Electron through window.dominoBridge
@@ -63,6 +64,57 @@ export function isElectron(): boolean {
 /** Android/iOS shell (Capacitor), as opposed to a browser or Electron. */
 export function isNativeMobile(): boolean {
   return Capacitor.isNativePlatform()
+}
+
+/**
+ * Open a link OUTSIDE the current screen.
+ *
+ * - Phone shell (Android/iOS): an in-app browser sheet (Custom Tabs) — the
+ *   app stays open and closing the sheet lands back on the same screen. The
+ *   WebView refuses `target="_blank"` windows by itself, so without this an
+ *   RSS row's article tap silently does nothing.
+ * - Electron: `window.open` is denied by the main process and reopened with
+ *   the system's default browser.
+ * - Web: a new tab.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isNativeMobile()) {
+    try {
+      const { Browser } = await import('@capacitor/browser')
+      await Browser.open({ url })
+      return
+    } catch {
+      /* shell without the Browser plugin: fall back to the plain path */
+    }
+  }
+  window.open(url, '_blank', 'noopener')
+}
+
+/**
+ * On the phone shell only: a pressed link leaves through the in-app browser,
+ * and `window.open` (an update's release page, an APK) gets the same door —
+ * a WebView has no second window for it. Other shells keep native link
+ * behaviour (tabs on web, default browser on Electron).
+ */
+export function installLinkHandling(): void {
+  if (!isNativeMobile()) return
+  document.addEventListener(
+    'click',
+    (e) => {
+      const target = e.target instanceof Element ? e.target : null
+      const anchor = target?.closest('a[href]') as HTMLAnchorElement | null
+      const url = externalHrefFor(anchor, window.location.origin)
+      if (!url) return
+      e.preventDefault()
+      void openExternalUrl(url)
+    },
+    true
+  )
+  window.open = ((url?: string | URL | null) => {
+    const href = url === null || url === undefined ? '' : String(url)
+    if (/^https?:/i.test(href)) void openExternalUrl(href)
+    return null
+  }) as typeof window.open
 }
 
 /** Status/navigation bar icons readable on the current theme (edge-to-edge). */

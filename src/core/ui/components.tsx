@@ -243,11 +243,15 @@ export function PageHeader({
             </h1>
             {badge ? (
               <Chip size="sm" variant="soft" color={tone(badgeVariant)}>
-                {text(badge)}
+                {text(prettyTime(String(badge)))}
               </Chip>
             ) : null}
           </div>
-          {description ? <p className="mt-0.5 text-sm text-muted">{text(description)}</p> : null}
+          {/* A feed's "updated" often rides in as a raw RFC-822 date: the
+              header reads "Nov 15, 1:40 PM", never "Sun, 15 Nov 2026 … +0900". */}
+          {description ? (
+            <p className="mt-0.5 text-sm text-muted">{text(prettyTime(description))}</p>
+          ) : null}
         </div>
       </div>
       {inline.length ? (

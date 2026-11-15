@@ -72,6 +72,23 @@ export function sourcesReadingState(decls: readonly DataSourceDecl[], stateKey: 
   return decls.filter((d) => d.path.includes(token)).map((d) => d.key)
 }
 
+/**
+ * `{stateKey}` placeholders a source path still can't resolve — the exact
+ * condition under which fetchSource stays silent (no request at all). An
+ * explicit refresh on such a source must tell the user why nothing happened
+ * instead of quietly doing nothing.
+ */
+export function missingSourceVars(path: string, state: Record<string, unknown>): string[] {
+  const missing: string[] = []
+  for (const m of path.matchAll(/\{([A-Za-z0-9_]+)\}/g)) {
+    const key = m[1]
+    const v = state[key]
+    if ((v === undefined || v === null || String(v).trim() === '') && !missing.includes(key))
+      missing.push(key)
+  }
+  return missing
+}
+
 /** A snapshot that carries nothing but an error — never counts as real data. */
 export function isErrorSnapshot(v: unknown): boolean {
   return (

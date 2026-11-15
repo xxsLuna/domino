@@ -252,6 +252,10 @@ const ko = {
   'rt.shareDone': '공유 링크를 복사했습니다 — 붙여넣기로 열 수 있습니다.',
   'rt.shareFail': '링크를 만들지 못했습니다: {msg}',
   'rt.staleFallback': '이전에 만들어둔 화면을 그대로 보여 주고 있습니다.',
+  'rt.editKeptData':
+    '수정 결과가 {keys} 데이터를 이 화면에서 없애 버려서 적용하지 않았습니다 — 화면은 그대로입니다. "목록은 유지하고 스타일만 바꿔줘"처럼 다시 요청해 보세요.',
+  'rt.refreshNotReady':
+    '새로고침할 수 없습니다 — {vars} 값이 비어 있어 요청이 나가지 않았습니다. 해당 입력을 채우면 자동으로 다시 불러옵니다.',
   'rt.authExpired': '로그인이 만료되었습니다. 다시 로그인해 주세요.',
   'rt.defChangedTitle': '앱 정의가 바뀌었습니다',
   'rt.defChangedBody':
@@ -527,6 +531,10 @@ const en: Record<MessageKey, string> = {
   'rt.shareDone': 'Share link copied — paste it to open.',
   'rt.shareFail': 'Could not build the link: {msg}',
   'rt.staleFallback': 'Showing the last successfully built screen.',
+  'rt.editKeptData':
+    'That edit would have taken {keys} off this screen, so it was not applied — the screen is unchanged. Ask again as "keep the list, change only the styling".',
+  'rt.refreshNotReady':
+    'Cannot refresh — {vars} is empty, so no request was sent. Fill in that field and it loads automatically.',
   'rt.authExpired': 'Your session expired — please sign in again.',
   'rt.defChangedTitle': 'The app definition changed',
   'rt.defChangedBody':
@@ -787,6 +795,10 @@ const zh: Record<MessageKey, string> = {
   'rt.shareDone': '已复制分享链接 — 粘贴即可打开。',
   'rt.shareFail': '无法生成链接：{msg}',
   'rt.staleFallback': '正在显示上次成功生成的画面。',
+  'rt.editKeptData':
+    '该修改会把 {keys} 数据从此画面删除，因此未应用 — 画面保持不变。请再次提出时说明“保留列表，只改样式”。',
+  'rt.refreshNotReady':
+    '无法刷新 — {vars} 为空，请求未发出。填写该输入后会自动重新加载。',
   'rt.authExpired': '登录已过期，请重新登录。',
   'rt.defChangedTitle': '应用定义已更改',
   'rt.defChangedBody': '已保存的画面基于旧定义生成，不再复用，将按新定义重新生成。',
@@ -1052,6 +1064,10 @@ const ja: Record<MessageKey, string> = {
   'rt.shareDone': '共有リンクをコピーしました — 貼り付けて開けます。',
   'rt.shareFail': 'リンクを作成できませんでした: {msg}',
   'rt.staleFallback': '前回生成した画面をそのまま表示しています。',
+  'rt.editKeptData':
+    'その修正はこの画面の {keys} データを消してしまうため適用しませんでした — 画面はそのままです。「リストは維持してスタイルだけ変えて」のように再度依頼してください。',
+  'rt.refreshNotReady':
+    '更新できません — {vars} が空のためリクエストは送信されませんでした。その入力欄を満たすと自動的に再読み込みされます。',
   'rt.authExpired': 'ログインの有効期限が切れました。もう一度ログインしてください。',
   'rt.defChangedTitle': 'アプリの定義が変更されました',
   'rt.defChangedBody':
@@ -1327,6 +1343,10 @@ const ru: Record<MessageKey, string> = {
   'rt.shareDone': 'Ссылка скопирована — вставьте, чтобы открыть.',
   'rt.shareFail': 'Не удалось создать ссылку: {msg}',
   'rt.staleFallback': 'Показываем последний успешно созданный экран.',
+  'rt.editKeptData':
+    'Правка удалила бы {keys} с этого экрана, поэтому она не применена — экран остался прежним. Повторите запрос так: «сохрани список, измени только стиль».',
+  'rt.refreshNotReady':
+    'Не удалось обновить — поле {vars} пусто, запрос не отправлен. Заполните его, и данные загрузятся автоматически.',
   'rt.authExpired': 'Сеанс истёк — войдите снова.',
   'rt.defChangedTitle': 'Определение приложения изменилось',
   'rt.defChangedBody':
