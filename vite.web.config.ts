@@ -5,6 +5,7 @@ import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
+import { isLoopbackHost, isPrivateHost } from './src/core/net/external'
 
 /**
  * Plain web build (browser + Capacitor/Android webview).
@@ -90,39 +91,59 @@ const CLIENT_VALUE = 'domino-web'
  * directly before it existed, and the CSRF gate still applies. A relay
  * deployed on a public host keeps the strict rules: https only, no
  * loopback/private/link-local targets, five redirect hops max, response
- * bodies capped. Hostname checks can't stop DNS rebinding, which is
- * acceptable for a dev/preview relay; production web hosting must deploy its
- * own relay with the same strict rules.
+ * bodies capped. "Loopback-hosted" is judged from the Host header only when
+ * it NUMERICALLY names the loopback, and every request must carry a
+ * loopback/LAN Host (hostAllowed) — otherwise a DNS-rebinding domain pointed
+ * at this server, or a tunnel past vite's host-allowlist, would pick the
+ * permissive mode and reach this machine's services. Production web hosting
+ * must deploy its own relay with the same strict rules.
  */
 const RELAY_MAX_BYTES = 8 * 1024 * 1024
 const RELAY_MAX_HOPS = 5
 const RELAY_MAX_REQUEST_BYTES = 1024 * 1024
 
+/** Same fence the core applies to `[api] external` targets (shared module). */
 function isPrivateRelayHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/\.$/, '')
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true
-  if (h === '::1' || h === '[::1]') return true
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
-  if (v4) {
-    const a = Number(v4[1])
-    const b = Number(v4[2])
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168)
-    )
-  }
-  return false
+  return isPrivateHost(hostname) || isLoopbackHost(hostname)
 }
 
-/** True when the relay's own request host is this machine (dev/preview). */
-function relayIsLocal(hostHeader: string | string[] | undefined): boolean {
+/**
+ * The Host header a /relay or /zen request may carry. These endpoints exist
+ * for this machine and, when the dev server is shared, the LAN — they are
+ * never the production relay (that lives in the deployed backend). An exact
+ * allowlist closes the hole where vite's own host-allowlist is bypassed by
+ * these middlewares (they run before it): a page on a rebinding domain that
+ * points at this server, or a stray tunnel, must not reach them.
+ */
+function hostHeaderName(hostHeader: string | string[] | undefined): string {
   const raw = (Array.isArray(hostHeader) ? hostHeader[0] : hostHeader) ?? ''
-  const h = raw.replace(/:\d+$/, '').toLowerCase().replace(/^\[|\]$/g, '')
-  return h === 'localhost' || h.endsWith('.localhost') || h === '::1' || h.startsWith('127.')
+  // `[::1]:5173` → `::1`; `example:5173` → `example`; bare IPv6 keeps working.
+  const bracketed = /^\[([^\]]*)\](?::\d+)?$/.exec(raw)
+  if (bracketed) return bracketed[1].toLowerCase()
+  const colon = raw.lastIndexOf(':')
+  if (colon > -1 && /^\d*$/.test(raw.slice(colon + 1))) return raw.slice(0, colon).toLowerCase()
+  return raw.toLowerCase()
+}
+
+function hostAllowed(hostHeader: string | string[] | undefined): boolean {
+  const h = hostHeaderName(hostHeader)
+  if (!h) return false
+  if (h === 'localhost' || h.endsWith('.localhost')) return true
+  return isLoopbackHost(h) || isPrivateHost(h)
+}
+
+/**
+ * True when the relay's own request host is this machine (dev/preview).
+ * Only the NUMERIC loopback forms count: `127.rebinding.example` is a
+ * hostname, not 127.0.0.1 — treating it as local would hand a rebinding page
+ * the permissive mode and every loopback service on this machine.
+ */
+function relayIsLocal(hostHeader: string | string[] | undefined): boolean {
+  const h = hostHeaderName(hostHeader)
+  if (h === 'localhost' || h.endsWith('.localhost') || h === '::1' || h === 'ip6-localhost') {
+    return true
+  }
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
 }
 
 function relayTarget(raw: string | null, localRelay: boolean): URL | null {
@@ -140,7 +161,15 @@ function relayTarget(raw: string | null, localRelay: boolean): URL | null {
   return u
 }
 
-/** Headers that describe the hop, not the payload — never forwarded. */
+/**
+ * Headers that describe the hop, not the payload — never forwarded.
+ * `cookie` is dropped on purpose: the browser attaches THIS server's cookies
+ * to every /relay request, and forwarding them would hand them to whatever
+ * upstream URL the app asked for. `origin`/`referer` describe the local dev
+ * page, not the app's request. `authorization` stays: unlike cookies it is
+ * never ambient — only the app's own code puts it there, aimed at a target
+ * the user configured (BYOK keys ride it to the LLM provider).
+ */
 const RELAY_DROP_HEADERS = new Set([
   'host',
   'connection',
@@ -152,6 +181,9 @@ const RELAY_DROP_HEADERS = new Set([
   'trailer',
   'transfer-encoding',
   'upgrade',
+  'cookie',
+  'origin',
+  'referer',
   CLIENT_HEADER
 ])
 
@@ -187,6 +219,9 @@ function relayPlugin(): Plugin {
   ): Promise<void> => {
     const url = req.url ?? ''
     if (!url.startsWith('/relay')) return next()
+    if (!hostAllowed(req.headers.host)) {
+      return deny(req, res, 'host not allowed (the dev relay serves localhost/LAN only)')
+    }
     const localRelay = relayIsLocal(req.headers.host)
     // Same CSRF gate as /zen — a rejected request never leaves this process.
     if (req.method === 'OPTIONS') return deny(req, res, 'preflight is not allowed')
@@ -271,11 +306,14 @@ function relayPlugin(): Plugin {
         }
       }
       res.end()
-    } catch (err) {
+    } catch {
       if (controller.signal.aborted) return
+      // Static text: undici's error strings quote DNS names, ports and
+      // internal hosts — noise to the app, a map of the LAN to anything
+      // that can read a response.
       res.statusCode = 502
       res.setHeader('content-type', 'text/plain; charset=utf-8')
-      res.end(`relay: ${(err as Error).message}`)
+      res.end('relay: upstream request failed')
     }
   }
   return {
@@ -297,6 +335,9 @@ function zenCsrfGate(): Plugin {
       res.setHeader('content-type', 'text/plain; charset=utf-8')
       res.end(`zen proxy: ${why}`)
     }
+    // The proxy adds a real API key downstream — same host fence as /relay,
+    // or a rebinding/tunnel Host would collect it.
+    if (!hostAllowed(req.headers.host)) return deny('host not allowed')
     if (req.method === 'OPTIONS') return deny('preflight is not allowed')
     const origin = req.headers.origin
     if (origin) {
@@ -322,13 +363,57 @@ function zenCsrfGate(): Plugin {
   }
 }
 
+/**
+ * Content-Security-Policy for the built web/Capacitor page (dev keeps its
+ * inline react preamble, so this applies at build time only).
+ *
+ * script-src 'self' is the point: app screens are DATA rendered through a
+ * component whitelist, so no domino or feed payload ever earns the right to
+ * execute. An injected <script>, inline handler or javascript: URL dies
+ * here even if some render path ever lets markup slip through. style-src
+ * needs 'unsafe-inline' because React/CSS-variable styling writes style
+ * attributes; images/media allow remote because feed thumbnails are remote
+ * by design. frame-ancestors 'none': a domino app is never a clickjacking
+ * surface. The Electron shell has its own pipeline; its CSP is set with the
+ * window headers, not here.
+ */
+function cspPlugin(): Plugin {
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    'img-src \'self\' https: data: blob:',
+    'media-src \'self\' https: blob:',
+    "font-src 'self' data:",
+    "connect-src 'self' https: http://127.0.0.1:* http://localhost:*",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ')
+  return {
+    name: 'domino-csp',
+    apply: 'build',
+    transformIndexHtml: (html) => ({
+      html,
+      tags: [
+        {
+          tag: 'meta',
+          attrs: { 'http-equiv': 'Content-Security-Policy', content: csp },
+          injectTo: 'head-prepend' as const
+        }
+      ]
+    })
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const { DOMINO_ZEN_API_KEY } = loadEnv(mode, __dirname, 'DOMINO_')
   const proxy = { '/zen': zenProxy(DOMINO_ZEN_API_KEY) }
   return {
     root: resolve(__dirname, 'src/renderer'),
     base: './',
-    plugins: [react(), tailwindcss(), zenCsrfGate(), relayPlugin()],
+    plugins: [react(), tailwindcss(), zenCsrfGate(), relayPlugin(), cspPlugin()],
     define: { __APP_VERSION__: JSON.stringify(appVersion), __GIT_HASH__: JSON.stringify(gitHash()) },
     resolve: {
       alias: {

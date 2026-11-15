@@ -367,6 +367,29 @@ export function onQuitFlush(cb: () => Promise<void>): () => void {
 }
 
 /**
+ * On the phone shell only: run the quit flushers when the app falls to the
+ * background — the moment debounced screen state must reach disk. (Capacitor
+ * 8 removed the old `terminate` event; activity teardown surfaces as
+ * pagehide, which the store's own onAppHidden hooks already cover, and a
+ * process kill cannot be caught at all — so the BACKGROUND moment is the
+ * one worth taking early. The stores' writes are idempotent; a double flush
+ * is harmless.)
+ */
+export function installTerminateFlush(): void {
+  if (!isNativeMobile()) return
+  void import('@capacitor/app')
+    .then(({ App }) => {
+      void App.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) return
+        void Promise.allSettled([...quitFlushers].map((f) => f().catch(() => undefined)))
+      })
+    })
+    .catch(() => {
+      /* shell without the App plugin: pagehide stays the only hook */
+    })
+}
+
+/**
  * Run `cb` whenever the app is about to be hidden or unloaded (pagehide,
  * tab/app switch, window close) — the moment debounced persistence must be
  * flushed. Returns an unsubscribe.

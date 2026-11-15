@@ -143,9 +143,15 @@ export async function loadAndParse(source: DominoSource): Promise<LoadedDomino> 
   const parsed = parseLoaded(text, source)
   if (!parsed) {
     const result = parseDomino(text)
-    const detail = result.errors
-      .map((e) => t('load.parseLine', { line: e.line, msg: e.message }))
-      .join('\n')
+    // A junk file can carry hundreds of findings; the alert is a banner, not
+    // a log. The first lines decide "what kind of wrong this is" — the file
+    // diagnostics dialog is where the full list lives.
+    const HEADLINES = 5
+    const shown = result.errors.slice(0, HEADLINES)
+    const detail = [
+      ...shown.map((e) => t('load.parseLine', { line: e.line, msg: e.message })),
+      ...(result.errors.length > shown.length ? [t('load.parseMore', { n: result.errors.length - shown.length })] : [])
+    ].join('\n')
     throw new DominoLoadError(
       `${t('load.parseFail', { name: '.domino', detail: detail || '' })}`,
       result.errors

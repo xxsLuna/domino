@@ -165,8 +165,10 @@ import { protectDomino } from '@core/session/storageAudit'
 import { BottomNav, SideNav } from '@core/ui/AppNav'
 import { navDataKeys, resolveNavItems } from '@core/ui/nav'
 import { CardGrid, PageSkeleton } from '@core/ui/CardGrid'
+import { ErrorBoundary } from '../ErrorBoundary'
 import { changedNodeIds, streamView } from '@core/ui/streaming'
 import { Alert } from '@core/ui/components'
+import { webImage } from '@core/ui/links'
 import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
 import {
@@ -380,6 +382,8 @@ export function Runtime({
   const [dataSnap, setDataSnap] = useState<Record<string, unknown>>({})
   /** When each source was last fetched — turns re-pull anything stale. */
   const dataAtRef = useRef<Record<string, number>>({})
+  /** When the POLL last attempted each source (per-source cadence gate). */
+  const pollAttemptRef = useRef<Record<string, number>>({})
   /** Page-graph edges observed so far (page ←action→ page), persisted per domino. */
   const graphEdgesRef = useRef<GraphEdge[]>([])
   const [graphTick, setGraphTick] = useState(0)
@@ -563,6 +567,10 @@ export function Runtime({
         snapTimer.current = null
         void saveApiSnaps(storage, domino.id, apiSnapsRef.current)
       }
+      // State-driven re-fetch timers belong to THIS screen: a zombie timer
+      // of a closed app kept writing (and fetching) into a dead runtime.
+      for (const timer of stateSourceTimers.current.values()) window.clearTimeout(timer)
+      stateSourceTimers.current.clear()
     },
     [domino.id, persistDataSnaps, storage]
   )
@@ -808,15 +816,21 @@ export function Runtime({
    */
   const failTurn = useCallback(
     (message: string, cacheKey: string | null): void => {
+      // ErrorCard is for USERS: transport strings ("LLM request failed:
+      // 401 Unauthorized — <provider paragraph>", fetch TypeErrors) become
+      // one local sentence. The raw text still reaches the console below
+      // and the diagnostics drawer — the card is not where to debug.
+      const shown = humanLlmError(message, t)
+      if (shown !== message) console.error('[domino] turn failed:', message)
       const fallback = cacheKey ? screensRef.current?.get(cacheKey, schemaHashes()) : null
       if (fallback) {
         showSpec(withTargetPage(fallback.spec, knownRef.current))
-        setError(`${message}\n${t('rt.staleFallback')}`)
+        setError(`${shown}\n${t('rt.staleFallback')}`)
       } else {
         // The optimistic tab highlight pointed at the target that never
         // came: put it back on the page that is actually shown.
         if (currentSpecRef.current) applyNav(currentSpecRef.current)
-        setError(message)
+        setError(shown)
       }
     },
     [applyNav, schemaHashes, showSpec]
@@ -1566,6 +1580,13 @@ export function Runtime({
 
   const runTurn = useCallback(
     async (prompt: string, cacheKey: string | null, opts?: TurnOptions): Promise<TurnOutcome> => {
+      // No key configured = a guaranteed 401 at the provider's doorstep.
+      // A first-time user's very first action used to fire exactly that and
+      // show the provider's English refusal as the app's only feedback.
+      if (needsApiKey(config)) {
+        failTurn(t('rt.needKeyFirst'), cacheKey)
+        return 'failed'
+      }
       const isEdit = Boolean(cacheKey?.startsWith('edit::'))
       const editPageId = isEdit && cacheKey ? cacheKey.slice('edit::'.length).split('::')[0] : null
       /** The screen as it stood when the edit was asked for: the records it
@@ -1719,6 +1740,18 @@ export function Runtime({
                 // not see stay on their blind list for a later design turn.
                 for (const p of merged.pages) notePageBuilt(p.id)
                 if (isEdit && cacheKey && editPageId) {
+                  // An edit must still BE an edit of THIS screen. A retried
+                  // turn that answers with a different app (seen live: a memo
+                  // editor coming back as a CRM dashboard) used to land —
+                  // withKnownPages kept the old pages alive, but the pointer
+                  // jumped and the user's screen was silently gone. The first
+                  // finished draft of the edit must contain the edited page.
+                  if (landedAt === undefined && !update.spec.pages.some((p) => p.id === editPageId)) {
+                    completed = false
+                    failTurn(t('rt.editKeptScreen'), cacheKey)
+                    abort.abort()
+                    return 'failed'
+                  }
                   // A "prettier" screen that stopped reading a source the user
                   // was looking at deleted their records rather than restyling
                   // them: the screen stays exactly as it was, and the banner
@@ -2751,10 +2784,20 @@ export function Runtime({
     const keys = new Set(polledKeys.split(','))
     const decls = domino.data.filter((d) => d.everySec && keys.has(d.key))
     if (decls.length === 0) return
+    // One timer ticks at the FASTEST declared period, but each source only
+    // fires when its OWN `every Ns` has passed since its last attempt: a 5s
+    // feed sharing the screen with a 10-minute one used to hammer the slow
+    // endpoint 120× more often than the file asked for.
     const intervalMs = Math.min(...decls.map((d) => d.everySec!)) * 1000
     const iv = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return
-      for (const d of decls) void fetchSource(d.key)
+      const now = Date.now()
+      for (const d of decls) {
+        const last = pollAttemptRef.current[d.key] ?? 0
+        if (now - last < d.everySec! * 1000) continue
+        pollAttemptRef.current[d.key] = now
+        void fetchSource(d.key)
+      }
     }, intervalMs)
     return () => window.clearInterval(iv)
   }, [polledKeys, domino.data, fetchSource])
@@ -2874,6 +2917,17 @@ export function Runtime({
       sourceInflightRef.current.clear()
       apiInflightRef.current.clear()
       cancelPreGen() // background builds were made for the other context
+      // A background edit built for the side being left must not cross the
+      // boundary in either direction: not its queued requests, and not its
+      // lane — interruptTurn spares the edit lane, so force it shut first or
+      // the in-flight edit request keeps running and its result can still
+      // paint over the NEW auth context (signed-out screens with the signed-
+      // in session's data, and after a login the queued edits could write
+      // with the fresh token). signOut does the same; login was the hole.
+      editQueueRef.current = []
+      setEditCount(0)
+      clearEditHighlight()
+      turnKindRef.current = null
       interruptTurn()
       // The side being left: its pending view write lands before the switch.
       await screensRef.current?.flush()
@@ -2952,6 +3006,7 @@ export function Runtime({
     },
     [
       cancelPreGen,
+      clearEditHighlight,
       domino,
       finalizeSpec,
       interruptTurn,
@@ -3470,8 +3525,11 @@ export function Runtime({
             // (saving an edit): they win over the record captured at select.
             { ...selectedRecordRef.current, ...(e.data && typeof e.data === 'object' ? e.data : {}) }
           : null
+      // redact() like every other prompt payload: the record the user
+      // opened can carry a passwordHash or a token straight from the API —
+      // a record's job is to describe the row, not to authenticate it.
       const recordCtx = openRec
-        ? ` The record the user opened (its id is state.selected = "${selectedRef.current ?? ''}") is: ${JSON.stringify(openRec)}. Render this record's real field values — prefill an edit form's inputs from it; never leave it empty.`
+        ? ` The record the user opened (its id is state.selected = "${selectedRef.current ?? ''}") is: ${JSON.stringify(redact(openRec))}. Render this record's real field values — prefill an edit form's inputs from it; never leave it empty.`
         : ''
       const prompt =
         (declaredTarget
@@ -4675,9 +4733,9 @@ export function Runtime({
           className="hide-phone"
         />
         <div className="app-bar-title">
-          {domino.meta.logo ? (
+          {webImage(domino.meta.logo) ? (
             <img
-              src={domino.meta.logo}
+              src={webImage(domino.meta.logo)}
               alt=""
               className="app-logo"
               onError={(e) => {
@@ -5219,18 +5277,22 @@ export function Runtime({
                 <Modal.Heading>{shownPage.name}</Modal.Heading>
               </Modal.Header>
               <Modal.Body>
-                <CardGrid
-                  page={shownPage}
-                  spec={shown}
-                  onEvent={handleEvent}
-                  streaming={Boolean(previewSpec)}
-                  pending={view?.pending}
-                  hidden={view?.hidden}
-                  chrome={chrome}
-                  density={domino.ui.density}
-                  changed={changed}
-                  data={dataSnap}
-                />
+                {/* Keyed by page: navigating here (or retrying) remounts a
+                    boundary a crashing screen had tripped. */}
+                <ErrorBoundary key={`sheet:${shownPage.id}`}>
+                  <CardGrid
+                    page={shownPage}
+                    spec={shown}
+                    onEvent={handleEvent}
+                    streaming={Boolean(previewSpec)}
+                    pending={view?.pending}
+                    hidden={view?.hidden}
+                    chrome={chrome}
+                    density={domino.ui.density}
+                    changed={changed}
+                    data={dataSnap}
+                  />
+                </ErrorBoundary>
               </Modal.Body>
             </Modal.Dialog>
           </Modal.Container>
@@ -5315,9 +5377,13 @@ export function Runtime({
                 title={t('rt.errorTitle')}
                 message={error}
                 action={
-                  // Retry re-runs the failed request from the page it was
-                  // asked on — from any other page it would answer the wrong screen.
-                  lastTurnRef.current && lastTurnRef.current.page === (currentSpec?.page ?? null)
+                  // With no key, retry is a dead loop — the useful button
+                  // is the one that reaches the settings where the key lives.
+                  needsKey
+                    ? { label: t('rt.settingsKey'), onPress: onOpenSettings }
+                    : // Retry re-runs the failed request from the page it was
+                      // asked on — from any other page it would answer the wrong screen.
+                      lastTurnRef.current && lastTurnRef.current.page === (currentSpec?.page ?? null)
                     ? {
                         label: t('rt.retry'),
                         onPress: () => {
@@ -5340,18 +5406,20 @@ export function Runtime({
               label={t('rt.composing')}
             />
           ) : bodyPage && bodySpec ? (
-            <CardGrid
-              page={bodyPage}
-              spec={bodySpec}
-              onEvent={handleEvent}
-              streaming={sheetMode ? false : Boolean(previewSpec)}
-              pending={sheetMode ? undefined : view?.pending}
-              hidden={sheetMode ? undefined : view?.hidden}
-              chrome={chrome}
-              density={domino.ui.density}
-              changed={sheetMode ? undefined : changed}
-              data={dataSnap}
-            />
+            <ErrorBoundary key={`page:${bodyPage.id}`}>
+              <CardGrid
+                page={bodyPage}
+                spec={bodySpec}
+                onEvent={handleEvent}
+                streaming={sheetMode ? false : Boolean(previewSpec)}
+                pending={sheetMode ? undefined : view?.pending}
+                hidden={sheetMode ? undefined : view?.hidden}
+                chrome={chrome}
+                density={domino.ui.density}
+                changed={sheetMode ? undefined : changed}
+                data={dataSnap}
+              />
+            </ErrorBoundary>
           ) : error ? null : (
             <LoadingScreen />
           )}
@@ -5561,7 +5629,19 @@ function clickPregenMark(pressKey: string): string {
   return `pregen-click::${pressKey}`
 }
 
-const REDACT_KEY = /pass|pwd|(?:^|[^a-z])pw(?:$|[^a-z])|secret|token|key|pin|credential|auth|비밀번호|암호/i
+// What must never ride a prompt to the model. One-way hashes and public
+// labels are fine; anything that authenticates or identifies is not.
+// Substring matching is deliberate (it already catches `passwordHash`); the
+// word-ish `pw` rule exists because `pw` hides inside `s_pw` but would also
+// light up on every `paw`. Genuinely broad keys (`key`, `pin`) trade a few
+// redacted false positives (a "keyword" filter) for not leaking a secret.
+const REDACT_KEY =
+  /pass|pwd|(?:^|[^a-z])pw(?:$|[^a-z])|secret|token|key|pin|credential|auth|otp|cookie|session|ssn|bank|card|계좌|카드|비밀번호|암호/i
+
+/** camelCase too: `userPw` reads as `user Pw` to the word-boundary rule. */
+function isSensitiveKey(k: string): boolean {
+  return REDACT_KEY.test(k) || REDACT_KEY.test(k.replace(/([a-z\d])([A-Z])/g, '$1 $2'))
+}
 
 function redactValue(v: unknown, depth: number): unknown {
   if (depth > 6) return '…'
@@ -5569,7 +5649,7 @@ function redactValue(v: unknown, depth: number): unknown {
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = REDACT_KEY.test(k) ? '••••••' : redactValue(val, depth + 1)
+      out[k] = isSensitiveKey(k) ? '••••••' : redactValue(val, depth + 1)
     }
     return out
   }
@@ -5578,4 +5658,20 @@ function redactValue(v: unknown, depth: number): unknown {
 
 function redact(data: Record<string, unknown>): Record<string, unknown> {
   return redactValue(data, 0) as Record<string, unknown>
+}
+
+/**
+ * One sentence the user can act on, from a transport failure. English-only
+ * provider prose ("…obtain an API key from platform.openai.com…") shown in a
+ * Korean app is what QA filed as unfriendly; unknown strings pass through
+ * untouched (app-level messages are already localized).
+ */
+function humanLlmError(raw: string, t: (key: string) => string): string {
+  if (/Failed to (execute 'fetch'|parse URL)/i.test(raw)) return t('rt.errBadUrl')
+  if (/network error|Failed to fetch|NetworkError|ERR_(CONNECTION|NAME)_NOT_RESOLVED|ECONNREFUSED/i.test(raw))
+    return t('rt.errNetwork')
+  if (/(^|\D)401(\D|$)/.test(raw) || /unauthorized|invalid api key|incorrect api key/i.test(raw))
+    return t('rt.errAuthKey')
+  if (/(^|\D)429(\D|$)/.test(raw) || /rate.?limit|too many requests/i.test(raw)) return t('rt.errRateLimited')
+  return raw
 }

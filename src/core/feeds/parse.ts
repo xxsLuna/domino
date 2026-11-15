@@ -86,14 +86,17 @@ function stripHtml(text: string): string {
 
 /** RSS `<link>` text, else Atom `<link href>` (alternate/relative first). */
 function itemLink(item: Element): string {
+  // Only http(s) survives — the renderer sanitizes links too (webUrl), but
+  // hostile `<link>javascript:…</link>` must not even reach the data layer.
   const text = firstText(item, 'link')
-  if (text) return text
+  if (text && /^https?:\/\/\S+$/i.test(text)) return text.slice(0, MAX_URL_CHARS)
   const links = byLocalName(item, 'link')
   const preferred = links.find((l) => {
     const rel = l.getAttribute('rel')
     return !rel || rel === 'alternate'
   })
-  return (preferred ?? links[0])?.getAttribute('href')?.trim() ?? ''
+  const href = (preferred ?? links[0])?.getAttribute('href')?.trim() ?? ''
+  return /^https?:\/\/\S+$/i.test(href) ? href.slice(0, MAX_URL_CHARS) : ''
 }
 
 /**

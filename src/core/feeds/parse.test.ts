@@ -182,6 +182,19 @@ describe('item images and bylines', () => {
     expect(feed?.items[0].image).toBe('https://d.test/x.gif')
   })
 
+  it('drops non-http item links (scheme filter at the data layer)', () => {
+    const xml = `<rss><channel><title>T</title>
+      <item><title>A</title><link>javascript:alert(1)</link></item>
+      <item><title>B</title><link>mailto:x@y.z</link></item>
+      <item><title>C</title><link>https://ok.test/1</link></item>
+    </channel></rss>`
+    const feed = parseFeed(xml)
+    expect(feed?.items).toHaveLength(3)
+    expect(feed?.items[0].link).toBeFalsy() // '' — the item's own field, no link
+    expect(feed?.items[1].link).toBeFalsy()
+    expect(feed?.items[2].link).toBe('https://ok.test/1')
+  })
+
   it('drops non-http image addresses', () => {
     const xml = `<rss><channel><title>T</title>
       <item><title>A</title><link>https://a.test</link>

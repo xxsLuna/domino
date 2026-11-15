@@ -81,12 +81,43 @@ function stripInlineComment(section: string, value: string): string {
   }
 }
 
+// Resource ceilings for hostile input. A .domino arrives from a shared file,
+// a URL or a model reply, so every unbounded surface gets a cap: total size
+// (memory), line length (a padded line turns a regex into a stall — see the
+// per-line check), and the diagnostics lists (a junk file must not answer
+// with a 5 MB wall of per-line errors).
+const MAX_SOURCE = 20_000_000
+const MAX_LINE = 4_000
+// [screens] spec is a single JSON line for a whole app — legitimately huge.
+const MAX_SCREEN_LINE = 4_000_000
+const MAX_DIAGNOSTICS = 400
+
 /** Parse a .domino v1 file. Never throws; diagnostics carry line numbers. */
 export function parseDomino(source: string): ParseResult {
   const errors: ParseError[] = []
   // Non-fatal notes that are not syntax errors (unknown keys, case-only
   // matches, semantic findings): reported as warnings only.
   const notes: ParseError[] = []
+  // Bounded pushes: once a list is full, only a single "suppressed" marker
+  // can still enter it.
+  const capped = (list: ParseError[]) => (err: ParseError): void => {
+    if (list.length >= MAX_DIAGNOSTICS) {
+      if (!list.some((e) => e.message.startsWith('further messages suppressed'))) {
+        list.push({
+          line: err.line,
+          message: `further messages suppressed (${MAX_DIAGNOSTICS} shown) — the file is truncated or full of junk`
+        })
+      }
+      return
+    }
+    list.push(err)
+  }
+  const E = capped(errors)
+  const N = capped(notes)
+  if (source.length > MAX_SOURCE) {
+    E({ line: 1, message: `file too large (${source.length} chars, limit ${MAX_SOURCE})` })
+    return { ok: false, errors, warnings: errors.slice() }
+  }
   const sections = new Map<string, Array<{ line: number; key: string; value: string }>>()
   const scriptLines: Array<{ line: number; text: string }> = []
   // [guide] is free prose for the agent: kept verbatim (";" and "#" included).
@@ -98,6 +129,14 @@ export function parseDomino(source: string): ParseResult {
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]
     const line = i + 1
+    // A padded line fed to a section's regex is a cheap way to stall the
+    // parser. [screens] JSON and [guide] prose carry no regex-parsed value
+    // and are capped elsewhere (prompt truncation), so they stay whole.
+    const lineCap = current === 'screens' || current === 'guide' ? MAX_SCREEN_LINE : MAX_LINE
+    if (raw.length > lineCap) {
+      E({ line, message: `line too long (${raw.length} chars, limit ${lineCap}) — skipped` })
+      continue
+    }
     const header = sectionHeader(raw)
     if (current === 'guide' && header === null) {
       guideLines.push(raw.trimEnd())
@@ -108,7 +147,7 @@ export function parseDomino(source: string): ParseResult {
 
     if (header !== null) {
       if (!KNOWN_SECTIONS.has(header)) {
-        errors.push({
+        E({
           line,
           message: `unknown section [${header}] (allowed: ${[...KNOWN_SECTIONS].join(', ')})`
         })
@@ -120,7 +159,7 @@ export function parseDomino(source: string): ParseResult {
     }
 
     if (!current) {
-      errors.push({ line, message: `content outside of any section: "${text}"` })
+      E({ line, message: `content outside of any section: "${text}"` })
       continue
     }
 
@@ -132,7 +171,7 @@ export function parseDomino(source: string): ParseResult {
       const rawKv = raw.trim().match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/)
       const value = rawKv ? stripInlineComment(current, rawKv[2].trim()) : ''
       if (!rawKv || !value) {
-        errors.push({ line, message: `expected "key = value", got "${text}"` })
+        E({ line, message: `expected "key = value", got "${text}"` })
         continue
       }
       // Keys keep their case: they are matched exactly against node ids,
@@ -140,7 +179,7 @@ export function parseDomino(source: string): ParseResult {
       // [screens] keys are fixed names (spec/graph), so those fold.
       const key = current === 'screens' ? rawKv[1].toLowerCase() : rawKv[1]
       if (UNSAFE_KEYS.has(key.toLowerCase())) {
-        errors.push({ line, message: `unsafe key "${key}" is not allowed` })
+        E({ line, message: `unsafe key "${key}" is not allowed` })
         continue
       }
       sections.get(current)!.push({ line, key, value })
@@ -149,12 +188,12 @@ export function parseDomino(source: string): ParseResult {
 
     const kv = text.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/)
     if (!kv) {
-      errors.push({ line, message: `expected "key = value", got "${text}"` })
+      E({ line, message: `expected "key = value", got "${text}"` })
       continue
     }
     const key = kv[1].toLowerCase()
     if (UNSAFE_KEYS.has(key)) {
-      errors.push({ line, message: `unsafe key "${key}" is not allowed` })
+      E({ line, message: `unsafe key "${key}" is not allowed` })
       continue
     }
     sections.get(current)!.push({ line, key, value: unquote(kv[2].trim()) })
@@ -181,7 +220,7 @@ export function parseDomino(source: string): ParseResult {
         ? '[meta] name is required'
         : '[meta] section is missing — name is required'
     }
-    errors.push(fatal)
+    E(fatal)
   }
   const home = get('meta', 'home') ?? 'main'
   const guide = guideLines.join('\n').trim()
@@ -194,7 +233,7 @@ export function parseDomino(source: string): ParseResult {
     skipIfLoggedIn: parseBool(get('auth', 'skip_if_logged_in'), true)
   }
   if (auth.required && !auth.loginEndpoint) {
-    errors.push({
+    E({
       line: getLine('auth', 'required'),
       message: '[auth] required = true needs login_endpoint'
     })
@@ -205,7 +244,7 @@ export function parseDomino(source: string): ParseResult {
   const externalRaw = (get('api', 'external') ?? '').toLowerCase()
   const externalOn = ['https', 'true', 'on', 'yes', '1'].includes(externalRaw)
   if (externalRaw && !externalOn && !['false', 'off', 'no', '0'].includes(externalRaw)) {
-    errors.push({
+    E({
       line: getLine('api', 'external'),
       message: `[api] external = "${externalRaw}" is unknown — the only supported value is https`
     })
@@ -222,21 +261,21 @@ export function parseDomino(source: string): ParseResult {
   /* -------------------------------- ui -------------------------------- */
   const themeRaw = (get('ui', 'theme') ?? 'auto').toLowerCase()
   if (themeRaw !== 'light' && themeRaw !== 'dark' && themeRaw !== 'auto') {
-    errors.push({
+    E({
       line: getLine('ui', 'theme'),
       message: `[ui] theme must be light, dark or auto, got "${themeRaw}"`
     })
   }
   const styleRaw = (get('ui', 'style') ?? 'soft').toLowerCase()
   if (styleRaw !== 'soft' && styleRaw !== 'sharp') {
-    errors.push({
+    E({
       line: getLine('ui', 'style'),
       message: `[ui] style must be soft or sharp, got "${styleRaw}"`
     })
   }
   const densityRaw = (get('ui', 'density') ?? 'comfortable').toLowerCase()
   if (densityRaw !== 'comfortable' && densityRaw !== 'compact') {
-    errors.push({
+    E({
       line: getLine('ui', 'density'),
       message: `[ui] density must be comfortable or compact, got "${densityRaw}"`
     })
@@ -246,7 +285,7 @@ export function parseDomino(source: string): ParseResult {
   if (radiusRaw !== undefined) {
     const n = Number(radiusRaw)
     if (!Number.isFinite(n) || n < 0 || n > 99) {
-      errors.push({
+      E({
         line: getLine('ui', 'radius'),
         message: `[ui] radius must be a number 0-99, got "${radiusRaw}"`
       })
@@ -261,7 +300,7 @@ export function parseDomino(source: string): ParseResult {
     const raw = get('ui', key)
     if (raw === undefined) return undefined
     if (isSafeCssColor(raw)) return raw
-    errors.push({
+    E({
       line: getLine('ui', key),
       message: `[ui] ${key} must be a plain CSS color (hex, name or color function), got "${raw}"`
     })
@@ -288,14 +327,14 @@ export function parseDomino(source: string): ParseResult {
     const lineOfPage = new Map<string, number>()
     for (const e of sections.get('pages') ?? []) {
       if (!PAGE_ID.test(e.key)) {
-        errors.push({
+        E({
           line: e.line,
           message: `[pages] "${e.key}": a page id may only use letters, digits, "-" and "_"`
         })
         continue
       }
       if (seen.has(e.key.toLowerCase())) {
-        errors.push({
+        E({
           line: e.line,
           message: `[pages] "${e.key}" is declared twice — the first one wins`
         })
@@ -316,7 +355,7 @@ export function parseDomino(source: string): ParseResult {
         if (!flag) continue
         if (/^nav$/i.test(flag)) nav = true
         else {
-          errors.push({
+          E({
             line: e.line,
             message: `[pages] ${e.key}: unknown flag "${flag}" ignored (expected: id = Name | purpose | nav)`
           })
@@ -339,7 +378,7 @@ export function parseDomino(source: string): ParseResult {
     const pageIds = new Set(pages.map((p) => p.id.toLowerCase()))
     for (const p of pages) {
       if (p.rowTarget && !pageIds.has(p.rowTarget.toLowerCase())) {
-        errors.push({
+        E({
           line: lineOfPage.get(p.id.toLowerCase()) ?? 1,
           message: `[pages] ${p.id}: rowAction -> ${p.rowTarget} — no such page declared`
         })
@@ -352,7 +391,7 @@ export function parseDomino(source: string): ParseResult {
   for (const { line, text } of scriptLines) {
     const rule = parseScriptLine(text)
     if (!rule) {
-      errors.push({
+      E({
         line,
         message: `bad script rule "${text}" (expected: when <cond> -> <cmd>  or  on <event> -> <cmd>; commands: goto <page>, render <page>, call [METHOD] <path>)`
       })
@@ -363,7 +402,7 @@ export function parseDomino(source: string): ParseResult {
       if (problem) {
         // A syntactically broken condition can only ever evaluate to false;
         // report it at load time instead of failing silently at runtime.
-        errors.push({ line, message: `bad condition "${rule.when}": ${problem}` })
+        E({ line, message: `bad condition "${rule.when}": ${problem}` })
         continue
       }
     }
@@ -381,7 +420,7 @@ export function parseDomino(source: string): ParseResult {
     const seen = new Set<string>()
     for (const e of sections.get('data') ?? []) {
       if (seen.has(e.key.toLowerCase())) {
-        errors.push({
+        E({
           line: e.line,
           message: `[data] "${e.key}" is declared twice — the first one wins`
         })
@@ -389,7 +428,7 @@ export function parseDomino(source: string): ParseResult {
       }
       const write = /^(POST|PUT|PATCH|DELETE)\s/i.exec(e.value)
       if (write) {
-        errors.push({
+        E({
           line: e.line,
           message: `[data] ${e.key}: ${write[1].toUpperCase()} is not allowed — [data] sources are re-fetched on open, before each turn and on polls, so they must be read-only (GET or FEED). Put writes in an [actions] call step.`
         })
@@ -397,19 +436,21 @@ export function parseDomino(source: string): ParseResult {
       }
       const m = e.value.match(/^(GET|FEED)\s+(.+)$/i)
       if (!m) {
-        errors.push({
+        E({
           line: e.line,
           message: `[data] ${e.key}: expected "GET /path?query (every Ns)" or "FEED <url> (every Ns)", got "${e.value}"`
         })
         continue
       }
-      const rest = m[2].trim()
-      const ev = /\s+every\s+(\d+)\s*s?$/i.exec(rest)
+      // trimEnd first: with trailing blanks gone, the suffix regex cannot
+      // backtrack over an unbounded run of spaces (quadratic stall).
+      const rest = m[2].trimEnd()
+      const ev = /\s+every\s+(\d+)s?$/i.exec(rest)
       const path = (ev ? rest.slice(0, ev.index) : rest).trim()
       // `{state key}` segments may hold spaces; the rest of a path may not.
       const spacesOutside = path.replace(/\{[^}]*\}/g, '').includes(' ')
       if (spacesOutside) {
-        errors.push({
+        E({
           line: e.line,
           message: `[data] ${e.key}: the path must be "/…" (or an absolute http URL), got "${path}"`
         })
@@ -426,7 +467,7 @@ export function parseDomino(source: string): ParseResult {
           /^\{[A-Za-z0-9_]+\}$/.test(path) ||
           /^https?:\/\//i.test(path)
         if (!ok) {
-          errors.push({
+          E({
             line: e.line,
             message: `[data] ${e.key}: FEED needs an absolute https URL, a bare {stateKey} holding one, or @subscriptions, got "${path}"`
           })
@@ -435,13 +476,13 @@ export function parseDomino(source: string): ParseResult {
       } else if (!/^(\/|https?:\/\/)/i.test(path) && !isUrlTemplate(path)) {
         // A whole-URL template (`{rssUrl}`, `{proxyHost}/feed`) parses too —
         // [lint] then asks for the [api] external opt-in it needs at runtime.
-        errors.push({
+        E({
           line: e.line,
           message: `[data] ${e.key}: the path must be "/…" (or an absolute http URL), got "${path}"`
         })
         continue
       }
-      if (interpolationGap(path, e, errors)) continue
+      if (interpolationGap(path, e, E)) continue
       seen.add(e.key.toLowerCase())
       data.push({
         key: e.key,
@@ -462,7 +503,7 @@ export function parseDomino(source: string): ParseResult {
     const seen = new Set<string>()
     for (const e of sections.get('actions') ?? []) {
       if (seen.has(e.key.toLowerCase())) {
-        errors.push({
+        E({
           line: e.line,
           message: `[actions] "${e.key}" is declared twice — the first one wins`
         })
@@ -472,7 +513,7 @@ export function parseDomino(source: string): ParseResult {
       const steps: ActionStep[] = []
       let bad = false
       const fail = (message: string): void => {
-        errors.push({ line: e.line, message: `[actions] ${e.key}: ${message}` })
+        E({ line: e.line, message: `[actions] ${e.key}: ${message}` })
         bad = true
       }
       for (const rawStep of e.value
@@ -488,7 +529,7 @@ export function parseDomino(source: string): ParseResult {
           if (!dataKeys.has(source)) {
             const near = data.find((d) => d.key.toLowerCase() === source.toLowerCase())?.key
             if (near) {
-              notes.push({
+              N({
                 line: e.line,
                 message: `[actions] ${e.key}: refresh "${source}" matches [data] "${near}" only by case — write "${near}"`
               })
@@ -496,7 +537,7 @@ export function parseDomino(source: string): ParseResult {
             } else {
               // Kept (the rest of the rule still runs); said at load time
               // instead of silently doing nothing at runtime.
-              errors.push({
+              E({
                 line: e.line,
                 message: `[actions] ${e.key}: refresh "${source}" — no such [data] source`
               })
@@ -609,7 +650,7 @@ export function parseDomino(source: string): ParseResult {
         parsed = JSON.parse(rawSpec)
       } catch {
         json = false
-        errors.push({
+        E({
           line,
           message: '[screens] spec is not valid JSON — the app must be generated from scratch'
         })
@@ -622,7 +663,7 @@ export function parseDomino(source: string): ParseResult {
         const spec = version === 1 ? tryValidateUiSpec(parsed) : null
         if (!spec) {
           const why = version === 1 ? describeUiSpecProblem(parsed) : 'version 1 required'
-          errors.push({
+          E({
             line,
             message: `[screens] spec is not a valid UiSpec (${why ?? 'version 1 + pages required'}) — the app will be generated from scratch`
           })
@@ -645,7 +686,7 @@ export function parseDomino(source: string): ParseResult {
                 )
               }
             } catch {
-              errors.push({ line, message: '[screens] graph is not valid JSON — ignored' })
+              E({ line, message: '[screens] graph is not valid JSON — ignored' })
             }
           }
         }
@@ -665,7 +706,7 @@ export function parseDomino(source: string): ParseResult {
       extra[e.key] = e.value
       // Keys of an unknown section were reported with the section itself.
       if (KNOWN_SECTIONS.has(section)) {
-        notes.push({
+        N({
           line: e.line,
           message: `[${section}] unknown key "${e.key}" — ignored (known: ${[...known].join(', ')})`
         })
@@ -688,7 +729,7 @@ export function parseDomino(source: string): ParseResult {
     extras,
     id: `${name}|${api.baseUrl ?? ''}`
   }
-  notes.push(...lintDomino(domino, getLine))
+  for (const note of lintDomino(domino, getLine)) N(note)
   return { ok: true, domino, errors, warnings: sortByLine([...errors, ...notes]) }
 }
 
@@ -707,11 +748,11 @@ function sortByLine(list: ParseError[]): ParseError[] {
 function interpolationGap(
   path: string,
   entry: { line: number; key: string },
-  errors: ParseError[]
+  report: (err: ParseError) => void
 ): boolean {
   for (const m of path.matchAll(/\{([^}]*)\}/g)) {
     if (!/^[A-Za-z0-9_]+$/.test(m[1])) {
-      errors.push({
+      report({
         line: entry.line,
         message: `[data] ${entry.key}: interpolation "{${m[1]}}" must be a plain state key like {rssUrl}`
       })
@@ -754,13 +795,19 @@ function parseBool(v: string | undefined, fallback: boolean): boolean {
 }
 
 function parseScriptLine(text: string): Omit<ScriptRule, 'line'> | null {
-  const m = text.match(/^(when|on)\s+(.+?)\s*->\s*(.+)$/)
-  if (!m) return null
-  const [, keyword, lhs, rhs] = m
-  const command = parseCommand(rhs.trim())
+  // Split on the arrow with indexOf, NOT a lazy `(.+?)\s*->` regex: the old
+  // pattern's nested quantifier backtracking turned `when` + a few thousand
+  // spaces into minutes of parser stall (verified 10 s at 3 k chars).
+  const arrow = text.indexOf('->')
+  if (arrow < 0) return null
+  const head = text.slice(0, arrow).trimEnd()
+  const rhs = text.slice(arrow + 2).trim()
+  const kw = /^(when|on)\s+(.+)$/is.exec(head)
+  if (!kw || !rhs) return null
+  const command = parseCommand(rhs)
   if (!command) return null
-  if (keyword === 'when') return { when: lhs.trim(), command }
-  return { event: lhs.trim().toLowerCase(), command }
+  if (kw[1].toLowerCase() === 'when') return { when: kw[2].trim(), command }
+  return { event: kw[2].trim().toLowerCase(), command }
 }
 
 function parseCommand(rhs: string): ScriptCommand | null {

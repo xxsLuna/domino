@@ -47,6 +47,7 @@ import {
 import type { CardNode } from '../spec'
 import { useCell, useLayout, useRuntime, useStateKeys } from './context'
 import { Icon } from './icons'
+import { webImage } from './links'
 import { prettyTime } from './presentation'
 
 export { RuntimeContext, useRuntime, type Runtime } from './context'
@@ -1794,7 +1795,7 @@ function toListItems(items: unknown): ListItem[] {
       title: text(r.title ?? r.label ?? r.name ?? r.text),
       description,
       icon: r.icon ? text(r.icon) : undefined,
-      avatar: r.avatar ? text(r.avatar) : undefined,
+      avatar: webImage(r.avatar),
       ...(thumbnail ? { thumbnail } : {}),
       meta,
       badge: r.badge !== undefined && r.badge !== '' ? text(r.badge) : undefined,
@@ -2055,9 +2056,10 @@ export function Avatar({
   size?: string
 }) {
   const s = size === 'sm' || size === 'lg' ? size : 'md'
+  const safeSrc = webImage(src)
   const avatar = (
     <HAvatar size={s} color="accent" variant="soft">
-      {src ? <HAvatar.Image src={src} alt={text(name)} /> : null}
+      {safeSrc ? <HAvatar.Image src={safeSrc} alt={text(name)} /> : null}
       <HAvatar.Fallback>{initials(text(name))}</HAvatar.Fallback>
     </HAvatar>
   )
@@ -2342,7 +2344,9 @@ export function Image({
     aspectRatio: aspect ? String(aspect).replace(':', '/') : undefined,
     width: width ?? undefined
   }
-  if (failed || !src) {
+  // A spec-written src is model/author-authored: only pictures earn an <img>.
+  const safeSrc = webImage(src)
+  if (failed || !safeSrc) {
     return (
       <div
         className={`grid min-h-24 place-items-center bg-default text-sm text-muted ${shape}`}
@@ -2359,7 +2363,7 @@ export function Image({
     <img
       className={`max-w-full object-cover ${shape}`}
       style={style}
-      src={src}
+      src={safeSrc}
       alt={text(alt)}
       loading="lazy"
       decoding="async"

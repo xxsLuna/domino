@@ -15,8 +15,8 @@
  *  - no `user:pass@` userinfo — a credential hidden in a URL is a leak.
  *
  * Hostname checks are best-effort (DNS can rebalance to a private address);
- * the web build layers the deploy-side relay rules on top (see the
- * isPrivateRelayHost check in vite.web.config.ts, same shape).
+ * the web build layers the deploy-side relay rules on top — the dev relay
+ * imports these same two predicates (see vite.web.config.ts).
  */
 
 /** This machine's own hosts — the only place plain http is fetchable. */
@@ -34,6 +34,21 @@ export function isPrivateHost(hostname: string): boolean {
   // `metadata.google.internal` and friends resolve to link-local inside clouds.
   if (h === 'internal' || h.endsWith('.internal')) return true
   if (h === '::1') return true
+  // IPv4 written inside an IPv6 address: the stack routes these to the
+  // embedded v4 address, so judge that one. Both spellings, because the URL
+  // parser rewrites one into the other — `::ffff:127.0.0.1` arrives here as
+  // its HEX form `::ffff:7f00:1`.
+  const embedded = /:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h)
+  if (embedded) return isPrivateHost(embedded[1])
+  const mapped = /^::ffff:([0-9a-f]{1,4}(?::[0-9a-f]{1,4})?)$/.exec(h)
+  if (mapped) {
+    const parts = mapped[1].split(':').map((p) => parseInt(p, 16))
+    const word32 =
+      parts.length === 2 ? ((parts[0] << 16) | parts[1]) >>> 0 : (parts[0] ?? 0) >>> 0
+    return isPrivateHost(
+      `${(word32 >>> 24) & 255}.${(word32 >>> 16) & 255}.${(word32 >>> 8) & 255}.${word32 & 255}`
+    )
+  }
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
   if (v4) {
     const a = Number(v4[1])
@@ -42,6 +57,8 @@ export function isPrivateHost(hostname: string): boolean {
       a === 0 ||
       a === 10 ||
       a === 127 ||
+      // CGNAT (100.64.0.0/10): carriers' internal space — never a public site.
+      (a === 100 && b >= 64 && b <= 127) ||
       (a === 169 && b === 254) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 168)

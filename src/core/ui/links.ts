@@ -5,6 +5,18 @@
  */
 
 /**
+ * Image addresses: web URLs plus inline/local pictures. A spec-written
+ * `file://…` src is a local-file oracle, and `javascript:` in an img src is
+ * inert but noise — neither earns a slot. Used by the component renderer
+ * and the app chrome (the [meta] logo).
+ */
+export function webImage(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined
+  const u = (typeof v === 'string' ? v : String(v)).trim()
+  return /^(https?:\/\/|data:image\/|blob:)/i.test(u) ? u : undefined
+}
+
+/**
  * The http(s) address a tapped anchor should open outside the app — or null
  * when the press stays inside. mailto:/tel:/… anchors are left to the system,
  * and a same-origin link that was never meant to pop a tab navigates in the

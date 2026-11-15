@@ -226,6 +226,35 @@ describe('runaway nesting', () => {
     )
     expect([...iterateNodes(spec.pages[0].layout)].map((n) => n.id)).toEqual(['a', 'a1', 'a2', 'b'])
   })
+
+  it('clamps deeply nested PROP VALUES — not just children', () => {
+    // `children` was capped while a 10k-deep value inside props sailed
+    // through z.unknown(), then blew the stack in resolveStateBindings
+    // (every render) and JSON.stringify (the save path): permanent white.
+    const deep = (depth: number): unknown => {
+      let v: unknown = 1
+      for (let i = 0; i < depth; i++) v = [v]
+      return v
+    }
+    const spec = validateUiSpec(page([{ name: 'Card', props: { data: deep(10_000) } }]))
+    const node = spec.pages[0].layout[0]
+    expect(() => resolveStateBindings(node, {})).not.toThrow()
+    expect(() => resolveDataBindings(node, {})).not.toThrow()
+    expect(() => JSON.stringify(spec)).not.toThrow()
+    // Clamped, not deleted: the prop survives with its shallow part.
+    expect(node.props?.data).toBeTruthy()
+  })
+
+  it('clamps deep state values too', () => {
+    const deep: { value: unknown } = { value: 1 }
+    let cur = deep
+    for (let i = 0; i < 10_000; i++) cur = { value: cur }
+    const spec = validateUiSpec({
+      ...(page([{ name: 'Card' }]) as Record<string, unknown>),
+      state: { blob: cur }
+    })
+    expect(() => JSON.stringify(spec.state)).not.toThrow()
+  })
 })
 
 describe('client-side state', () => {

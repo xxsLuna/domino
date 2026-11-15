@@ -41,6 +41,22 @@ describe('normalizeFeedUrl', () => {
     expect(normalizeFeedUrl('not a url')).toBeNull()
     expect(normalizeFeedUrl('example.com/feed.xml')).toBeNull()
   })
+
+  it('fences https away from private space — FEED fetches skip the [api] guard', () => {
+    // FEED sources fetch directly, so the [api] external fence must exist here
+    // too: cloud metadata and LAN probes over https are the classic SSRF.
+    expect(normalizeFeedUrl('https://169.254.169.254/latest/meta-data/')).toBeNull()
+    expect(normalizeFeedUrl('https://10.0.0.5/feed.xml')).toBeNull()
+    expect(normalizeFeedUrl('https://[::ffff:127.0.0.1]:8787/feed.xml')).toBeNull()
+    expect(normalizeFeedUrl('https://router.local/feed.xml')).toBeNull()
+    expect(normalizeFeedUrl('https://100.64.0.1/feed.xml')).toBeNull()
+    expect(normalizeFeedUrl('https://example.com/feed.xml')).not.toBeNull()
+  })
+
+  it('rejects credentials hidden in the URL', () => {
+    expect(normalizeFeedUrl('https://admin:s3cret@corp.example/feed.xml')).toBeNull()
+    expect(normalizeFeedUrl('http://user@127.0.0.1:8787/feed.xml')).toBeNull()
+  })
 })
 
 describe('feed store round-trip', () => {

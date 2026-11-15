@@ -307,11 +307,52 @@ function cleanText(s: string): string {
   return head
 }
 
+/**
+ * Nesting inside one prop/state VALUE gets the same treatment children got
+ * (MAX_NODE_DEPTH): `children` was capped but a 10k-deep prop value sailed
+ * through zod's `z.unknown()` and blew the stack in resolveValue (every
+ * render) and JSON.stringify (the save path) — a white screen with nothing
+ * left to click. The renderer has error boundaries now, but the value must
+ * not enter the store broken in the first place.
+ */
+export const MAX_VALUE_DEPTH = 48
+
+/** Iterative depth measure — a recursive one would be the bug it detects. */
+function valueDepth(v: unknown): number {
+  let max = 0
+  const stack: Array<{ v: unknown; d: number }> = [{ v, d: 0 }]
+  while (stack.length) {
+    const cur = stack.pop()!
+    if (cur.d > max) max = cur.d
+    if (max > MAX_VALUE_DEPTH) return max
+    if (Array.isArray(cur.v)) for (const x of cur.v) stack.push({ v: x, d: cur.d + 1 })
+    else if (isRecord(cur.v)) for (const x of Object.values(cur.v)) stack.push({ v: x, d: cur.d + 1 })
+  }
+  return max
+}
+
+/** Replace what is past the depth ceiling with null (bounded recursion). */
+function clampValue(v: unknown, depth = 0): unknown {
+  if (depth >= MAX_VALUE_DEPTH) return null
+  if (Array.isArray(v)) return v.map((x) => clampValue(x, depth + 1))
+  if (isRecord(v)) {
+    const out: Record<string, unknown> = {}
+    for (const [k, x] of Object.entries(v)) out[k] = clampValue(x, depth + 1)
+    return out
+  }
+  return v
+}
+
+/** Only the oversized corners pay: shallow props keep their exact shape. */
+function boundValue(v: unknown): unknown {
+  return valueDepth(v) > MAX_VALUE_DEPTH ? clampValue(v) : v
+}
+
 /** Display strings only: a prop value that is a bare string, at any depth. */
 function cleanProps(props: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(props)) {
-    out[k] = typeof v === 'string' ? cleanText(v) : v
+    out[k] = typeof v === 'string' ? cleanText(v) : boundValue(v)
   }
   return out
 }
@@ -381,7 +422,10 @@ export function normalizeUiSpec(input: unknown): unknown {
     : input.nav
   // Client-side state: only an object survives; anything else is dropped so
   // one odd value can't fail validation (bindings then simply resolve stale).
-  const state = isRecord(input.state) ? input.state : undefined
+  // Deep values are clamped — state rides into bindings and JSON.stringify.
+  const state = isRecord(input.state)
+    ? Object.fromEntries(Object.entries(input.state).map(([k, v]) => [k, boundValue(v)]))
+    : undefined
   return {
     ...input,
     version: 1,
@@ -505,15 +549,18 @@ const stateBinding = (v: unknown): string | null =>
     ? (v['$state'] as string)
     : null
 
-function resolveValue(v: unknown, state: Record<string, unknown>): unknown {
+function resolveValue(v: unknown, state: Record<string, unknown>, depth = 0): unknown {
+  // normalizeUiSpec clamps authored values; this bound also covers state fed
+  // at runtime from an API snapshot deeper than any screen should walk.
+  if (depth > MAX_VALUE_DEPTH) return v
   const key = stateBinding(v)
   if (key !== null) return state[key]
-  if (Array.isArray(v)) return v.map((x) => resolveValue(x, state))
+  if (Array.isArray(v)) return v.map((x) => resolveValue(x, state, depth + 1))
   if (isRecord(v)) {
     let replaced = false
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v)) {
-      const next = resolveValue(val, state)
+      const next = resolveValue(val, state, depth + 1)
       if (next !== val) replaced = true
       out[k] = next
     }
@@ -756,15 +803,16 @@ function lookupDataPath(sources: Record<string, unknown>, path: string): unknown
   return cur
 }
 
-function resolveDataValue(v: unknown, sources: Record<string, unknown>): unknown {
+function resolveDataValue(v: unknown, sources: Record<string, unknown>, depth = 0): unknown {
+  if (depth > MAX_VALUE_DEPTH) return v
   const path = dataBinding(v)
   if (path !== null) return lookupDataPath(sources, path)
-  if (Array.isArray(v)) return v.map((x) => resolveDataValue(x, sources))
+  if (Array.isArray(v)) return v.map((x) => resolveDataValue(x, sources, depth + 1))
   if (isRecord(v)) {
     let replaced = false
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v)) {
-      const next = resolveDataValue(val, sources)
+      const next = resolveDataValue(val, sources, depth + 1)
       if (next !== val) replaced = true
       out[k] = next
     }

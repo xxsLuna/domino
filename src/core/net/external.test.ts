@@ -38,8 +38,33 @@ describe('isPrivateHost', () => {
       expect(isPrivateHost(h)).toBe(true)
     }
   })
+  it('blocks IPv4 written inside IPv6 and CGNAT', () => {
+    // `::ffff:a.b.c.d` routes to the embedded v4 address — the URL parser
+    // keeps the dotted tail, so the old hextet-only check waved it through.
+    expect(isPrivateHost('::ffff:127.0.0.1')).toBe(true)
+    expect(isPrivateHost('[::ffff:169.254.169.254]')).toBe(true)
+    expect(isPrivateHost('::192.168.1.9')).toBe(true)
+    expect(isPrivateHost('0:0:0:0:0:ffff:10.0.0.1')).toBe(true)
+    // The URL parser serializes mapped addresses in HEX: that is the form
+    // that actually reaches this check from `new URL(…).hostname`.
+    expect(isPrivateHost('::ffff:7f00:1')).toBe(true)
+    expect(isPrivateHost('::ffff:a9fe:a9fe')).toBe(true) // ::ffff:169.254.169.254
+    expect(isPrivateHost('::ffff:808:808')).toBe(false) // ::ffff:8.8.8.8
+    // CGNAT (100.64.0.0/10) is carrier-internal, never a public website.
+    expect(isPrivateHost('100.64.0.1')).toBe(true)
+    expect(isPrivateHost('100.127.255.9')).toBe(true)
+  })
   it('leaves public space open', () => {
-    for (const h of ['8.8.8.8', 'example.com', 'www.yna.co.kr', '172.15.0.1', '172.32.0.1']) {
+    for (const h of [
+      '8.8.8.8',
+      'example.com',
+      'www.yna.co.kr',
+      '172.15.0.1',
+      '172.32.0.1',
+      '100.63.0.1',
+      '100.128.0.1',
+      '::ffff:8.8.8.8'
+    ]) {
       expect(isPrivateHost(h)).toBe(false)
     }
   })

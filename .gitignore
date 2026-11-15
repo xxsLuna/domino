@@ -21,3 +21,7 @@ android/app/build/
 android/app/src/main/assets/public/
 android/app/src/main/assets/capacitor.config.json
 .zcode/
+
+# Local harnesses & agent worktrees — never commit (contain real LLM keys)
+scratch/
+.claude/

@@ -257,6 +257,58 @@ describe('hardening', () => {
     expect(res.domino?.ui.warning).toBe('rebeccapurple')
     expect(res.errors.filter((e) => e.message.includes('plain CSS color'))).toHaveLength(2)
   })
+
+  it('parses a space-padded script rule without stalling (ReDoS guard)', () => {
+    // The old `when (.+?)\s*->` regex backtracked cubicly on a padded line
+    // with no arrow (measured 10 s at 3 k chars). It must now be rejected
+    // outright, fast — and a padded rule that DOES carry its arrow keeps
+    // parsing exactly as before.
+    const started = Date.now()
+    const res = parseDomino(`[meta]\nname = X\n[script]\nwhen ${' '.repeat(3000)}x\n`)
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(res.errors.some((e) => e.message.includes('bad script rule'))).toBe(true)
+    expect(res.domino?.script).toHaveLength(0)
+
+    const kept = parseDomino(`[meta]\nname = X\n[script]\nwhen ${' '.repeat(300)}x -> goto main\n`)
+    expect(kept.errors).toEqual([])
+    expect(kept.domino?.script).toHaveLength(1)
+    expect(kept.domino?.script[0]).toMatchObject({ when: 'x', command: { kind: 'goto', page: 'main' } })
+  })
+
+  it('parses an every-suffix padded with spaces without stalling', () => {
+    // A long run of spaces before `every` used to backtrack the suffix regex
+    // quadratically; the parse must stay fast and the source must parse.
+    const started = Date.now()
+    const res = parseDomino(
+      `[meta]\nname = X\n[data]\nfeed = GET /a${' '.repeat(3000)}every 20s\n`
+    )
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(res.errors).toEqual([])
+    expect(res.domino?.data[0]).toMatchObject({ path: '/a', everySec: 20 })
+  })
+
+  it('rejects over-long lines but keeps parsing the rest', () => {
+    const res = parseDomino(
+      `[meta]\nname = X\n[ui]\nprimary = ${'a'.repeat(5000)}\ndanger = red\n`
+    )
+    expect(res.errors.some((e) => e.message.includes('line too long'))).toBe(true)
+    expect(res.domino?.ui.danger).toBe('red')
+  })
+
+  it('caps diagnostics instead of answering junk with a wall of text', () => {
+    const junk = Array.from({ length: 2000 }, (_, i) => `garbage line ${i}`).join('\n')
+    const res = parseDomino(junk)
+    expect(res.ok).toBe(false)
+    expect(res.errors.length).toBeLessThanOrEqual(401)
+    expect(res.errors.some((e) => e.message.includes('further messages suppressed'))).toBe(true)
+  })
+
+  it('refuses a source past the size ceiling without parsing it', () => {
+    const huge = '[meta]\nname = X\n[guide]\n' + 'x'.repeat(21 * 1024 * 1024)
+    const res = parseDomino(huge)
+    expect(res.ok).toBe(false)
+    expect(res.errors[0].message).toContain('file too large')
+  })
 })
 
 describe('[data] and [actions] sections', () => {

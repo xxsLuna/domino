@@ -1,5 +1,5 @@
 import { httpFetch, readTextCapped } from '../net'
-import { isLoopbackHost } from '../net/external'
+import { isLoopbackHost, isPrivateHost } from '../net/external'
 import type { KeyValueStorage } from '../session/prefs'
 import { parseFeed, type FeedData } from './parse'
 
@@ -24,9 +24,12 @@ export function feedsKey(dominoId: string): string {
   return `domino:feeds:${dominoId}`
 }
 
-// isLoopbackHost is shared with the [api] external guard (@core/net/external):
-// the one place plain http is fetchable everywhere (Electron's main process
-// opens http only on loopback, the local dev relay likewise).
+// isLoopbackHost/isPrivateHost are shared with the [api] external guard
+// (@core/net/external): the one place plain http is fetchable everywhere
+// (Electron's main process opens http only on loopback, the local dev relay
+// likewise). FEED sources fetch directly — no [api] guard runs on their way —
+// so they need the same fence here: a shared .domino must not turn the app
+// into a probe for cloud metadata (169.254) or LAN services.
 /** https everywhere; plain http only on this machine (dev mocks, local NAS readers). */
 export function normalizeFeedUrl(raw: string): string | null {
   const trimmed = raw.trim()
@@ -37,7 +40,9 @@ export function normalizeFeedUrl(raw: string): string | null {
   } catch {
     return null
   }
-  if (u.protocol === 'https:') return u.href
+  // A credential hidden in a URL is a leak, not a feature.
+  if (u.username || u.password) return null
+  if (u.protocol === 'https:') return isPrivateHost(u.hostname) ? null : u.href
   if (u.protocol === 'http:' && isLoopbackHost(u.hostname)) return u.href
   return null
 }

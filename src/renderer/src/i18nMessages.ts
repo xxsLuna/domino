@@ -254,8 +254,18 @@ const ko = {
   'rt.staleFallback': '이전에 만들어둔 화면을 그대로 보여 주고 있습니다.',
   'rt.editKeptData':
     '수정 결과가 {keys} 데이터를 이 화면에서 없애 버려서 적용하지 않았습니다 — 화면은 그대로입니다. "목록은 유지하고 스타일만 바꿔줘"처럼 다시 요청해 보세요.',
+  'rt.editKeptScreen':
+    '수정 결과가 이 화면을 아예 다른 화면으로 바꿔 놓아서 적용하지 않았습니다 — 화면은 그대로입니다. "이 화면의 목록은 유지하고 스타일만 바꿔줘"처럼 다시 요청해 보세요.',
   'rt.refreshNotReady':
     '새로고침할 수 없습니다 — {vars} 값이 비어 있어 요청이 나가지 않았습니다. 해당 입력을 채우면 자동으로 다시 불러옵니다.',
+  'rt.needKeyFirst':
+    'LLM 키가 아직 없습니다 — 설정에서 API 키를 넣으면 바로 시작할 수 있습니다.',
+  'rt.errNetwork': '서버에 연결하지 못했습니다 — 네트워크 상태를 확인한 뒤 다시 시도해 주세요.',
+  'rt.errAuthKey':
+    'LLM 서버가 이 키를 거부했습니다(401) — 설정에서 API 키와 베이스 URL을 확인해 주세요.',
+  'rt.errBadUrl':
+    'LLM 요청 주소를 만들 수 없습니다 — 설정의 베이스 URL(주소 형식)을 확인해 주세요.',
+  'rt.errRateLimited': '요청이 너무 많습니다(429) — 잠시 뒤 다시 시도해 주세요.',
   'rt.authExpired': '로그인이 만료되었습니다. 다시 로그인해 주세요.',
   'rt.defChangedTitle': '앱 정의가 바뀌었습니다',
   'rt.defChangedBody':
@@ -276,7 +286,8 @@ const ko = {
   'load.reqFail': '요청 실패: {msg}',
   'load.httpFail': 'HTTP {status} {text} — {url}',
   'load.parseFail': '{name}을(를) 해석하지 못했습니다:\n{detail}',
-  'load.parseLine': '{line}행: {msg}'
+  'load.parseLine': '{line}행: {msg}',
+  'load.parseMore': '…그 외 {n}건 — 전체 목록은 파일 진단에서 볼 수 있습니다'
 } as const
 
 export type MessageKey = keyof typeof ko
@@ -533,8 +544,15 @@ const en: Record<MessageKey, string> = {
   'rt.staleFallback': 'Showing the last successfully built screen.',
   'rt.editKeptData':
     'That edit would have taken {keys} off this screen, so it was not applied — the screen is unchanged. Ask again as "keep the list, change only the styling".',
+  'rt.editKeptScreen':
+    'That edit replaced this screen with a different one entirely, so it was not applied — the screen is unchanged. Ask again as "keep this screen\'s list, change only the styling".',
   'rt.refreshNotReady':
     'Cannot refresh — {vars} is empty, so no request was sent. Fill in that field and it loads automatically.',
+  'rt.needKeyFirst': 'No LLM key yet — add an API key in Settings and it starts right away.',
+  'rt.errNetwork': 'Could not reach the server — check your connection and try again.',
+  'rt.errAuthKey': 'The LLM server rejected this key (401) — check the API key and base URL in Settings.',
+  'rt.errBadUrl': 'The LLM request URL is malformed — check the base URL format in Settings.',
+  'rt.errRateLimited': 'Too many requests (429) — try again in a moment.',
   'rt.authExpired': 'Your session expired — please sign in again.',
   'rt.defChangedTitle': 'The app definition changed',
   'rt.defChangedBody':
@@ -556,7 +574,8 @@ const en: Record<MessageKey, string> = {
   'load.reqFail': 'Request failed: {msg}',
   'load.httpFail': 'HTTP {status} {text} — {url}',
   'load.parseFail': 'Could not parse {name}:\n{detail}',
-  'load.parseLine': 'line {line}: {msg}'
+  'load.parseLine': 'line {line}: {msg}',
+  'load.parseMore': '… and {n} more — the file diagnostics dialog lists them all'
 }
 
 const zh: Record<MessageKey, string> = {
@@ -797,8 +816,15 @@ const zh: Record<MessageKey, string> = {
   'rt.staleFallback': '正在显示上次成功生成的画面。',
   'rt.editKeptData':
     '该修改会把 {keys} 数据从此画面删除，因此未应用 — 画面保持不变。请再次提出时说明“保留列表，只改样式”。',
+  'rt.editKeptScreen':
+    '该修改把这个画面整个换成了别的画面，因此未应用 — 画面保持不变。请再次提出时说明“保留此画面的列表，只改样式”。',
   'rt.refreshNotReady':
     '无法刷新 — {vars} 为空，请求未发出。填写该输入后会自动重新加载。',
+  'rt.needKeyFirst': '尚未设置 LLM 密钥 — 在设置中填入 API 密钥即可开始。',
+  'rt.errNetwork': '无法连接服务器 — 请检查网络后重试。',
+  'rt.errAuthKey': 'LLM 服务器拒绝了此密钥(401) — 请在设置中检查 API 密钥与基础 URL。',
+  'rt.errBadUrl': '无法构成 LLM 请求地址 — 请检查设置中的基础 URL 格式。',
+  'rt.errRateLimited': '请求过多(429) — 请稍后重试。',
   'rt.authExpired': '登录已过期，请重新登录。',
   'rt.defChangedTitle': '应用定义已更改',
   'rt.defChangedBody': '已保存的画面基于旧定义生成，不再复用，将按新定义重新生成。',
@@ -817,7 +843,8 @@ const zh: Record<MessageKey, string> = {
   'load.reqFail': '请求失败：{msg}',
   'load.httpFail': 'HTTP {status} {text} — {url}',
   'load.parseFail': '无法解析 {name}：\n{detail}',
-  'load.parseLine': '第 {line} 行：{msg}'
+  'load.parseLine': '第 {line} 行：{msg}',
+  'load.parseMore': '…另有 {n} 条 —— 完整列表请见文件诊断'
 }
 
 const ja: Record<MessageKey, string> = {
@@ -1066,8 +1093,15 @@ const ja: Record<MessageKey, string> = {
   'rt.staleFallback': '前回生成した画面をそのまま表示しています。',
   'rt.editKeptData':
     'その修正はこの画面の {keys} データを消してしまうため適用しませんでした — 画面はそのままです。「リストは維持してスタイルだけ変えて」のように再度依頼してください。',
+  'rt.editKeptScreen':
+    'その修正はこの画面をまったく別の画面に置き換えるため適用しませんでした — 画面はそのままです。「この画面のリストは維持してスタイルだけ変えて」のように再度依頼してください。',
   'rt.refreshNotReady':
     '更新できません — {vars} が空のためリクエストは送信されませんでした。その入力欄を満たすと自動的に再読み込みされます。',
+  'rt.needKeyFirst': 'LLM キーが未設定です — 設定で API キーを入力するとすぐ使えます。',
+  'rt.errNetwork': 'サーバーに接続できませんでした — ネットワークを確認して再試行してください。',
+  'rt.errAuthKey': 'LLM サーバーがこのキーを拒否しました(401) — 設定の API キーとベース URL を確認してください。',
+  'rt.errBadUrl': 'LLM リクエスト URL を作成できません — 設定のベース URL 形式を確認してください。',
+  'rt.errRateLimited': 'リクエストが多すぎます(429) — しばらくしてから再試行してください。',
   'rt.authExpired': 'ログインの有効期限が切れました。もう一度ログインしてください。',
   'rt.defChangedTitle': 'アプリの定義が変更されました',
   'rt.defChangedBody':
@@ -1091,7 +1125,8 @@ const ja: Record<MessageKey, string> = {
   'load.reqFail': 'リクエスト失敗：{msg}',
   'load.httpFail': 'HTTP {status} {text} — {url}',
   'load.parseFail': '{name} を解析できませんでした：\n{detail}',
-  'load.parseLine': '{line} 行：{msg}'
+  'load.parseLine': '{line} 行：{msg}',
+  'load.parseMore': '…ほか {n} 件 — 一覧はファイル診断にあります'
 }
 
 const ru: Record<MessageKey, string> = {
@@ -1345,8 +1380,15 @@ const ru: Record<MessageKey, string> = {
   'rt.staleFallback': 'Показываем последний успешно созданный экран.',
   'rt.editKeptData':
     'Правка удалила бы {keys} с этого экрана, поэтому она не применена — экран остался прежним. Повторите запрос так: «сохрани список, измени только стиль».',
+  'rt.editKeptScreen':
+    'Правка полностью заменяла этот экран другим, поэтому она не применена — экран остался прежним. Повторите запрос так: «сохрани список этого экрана, измени только стиль».',
   'rt.refreshNotReady':
     'Не удалось обновить — поле {vars} пусто, запрос не отправлен. Заполните его, и данные загрузятся автоматически.',
+  'rt.needKeyFirst': 'Ключ LLM ещё не задан — добавьте API-ключ в настройках, и всё заработает.',
+  'rt.errNetwork': 'Не удалось связаться с сервером — проверьте сеть и повторите попытку.',
+  'rt.errAuthKey': 'LLM-сервер отклонил этот ключ (401) — проверьте API-ключ и base URL в настройках.',
+  'rt.errBadUrl': 'Не удалось составить URL запроса к LLM — проверьте формат base URL в настройках.',
+  'rt.errRateLimited': 'Слишком много запросов (429) — повторите попытку через некоторое время.',
   'rt.authExpired': 'Сеанс истёк — войдите снова.',
   'rt.defChangedTitle': 'Определение приложения изменилось',
   'rt.defChangedBody':
@@ -1369,7 +1411,8 @@ const ru: Record<MessageKey, string> = {
   'load.reqFail': 'Ошибка запроса: {msg}',
   'load.httpFail': 'HTTP {status} {text} — {url}',
   'load.parseFail': 'Не удалось разобрать {name}:\n{detail}',
-  'load.parseLine': 'строка {line}: {msg}'
+  'load.parseLine': 'строка {line}: {msg}',
+  'load.parseMore': '…и ещё {n} — полный список в диагностике файла'
 }
 
 export const MESSAGES: Record<Lang, Dict> = {
