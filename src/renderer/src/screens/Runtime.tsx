@@ -208,6 +208,7 @@ import { flushStorage, getStorage, onAppHidden, onQuitFlush, onStorageError } fr
 import { PageGraphDialog } from './PageGraphDialog'
 import { activeLang, LANG_ENGLISH, LANG_NATIVE, t, type Lang } from '../i18n'
 import { detectSpecLanguage } from '@core/specLang'
+import { useMediaQuery } from '../useMediaQuery'
 
 interface RuntimeProps {
   loaded: LoadedDomino
@@ -4430,7 +4431,7 @@ export function Runtime({
   // A same-origin base URL ("/zen/…") goes through the dev proxy, which may add the key.
   const needsKey = needsApiKey(config)
   const shownPage = shown ? (shown.pages.find((p) => p.id === shown.page) ?? shown.pages[0]) : null
-  // Full-screen sheet: a short form pages over the moment it was opened from.
+  // Modal sheet: a short form pages over the moment it was opened from.
   // Both derives read the stack fresh — every push/jump already re-renders.
   const behindIdx = sheetBehindIndex()
   const behindPage =
@@ -4440,6 +4441,9 @@ export function Runtime({
   const behindSpec =
     behindPage && knownRef.current ? { ...knownRef.current, page: behindPage.id } : null
   const sheetMode = behindIdx >= 0 && behindSpec !== null
+  // In a wide window the sheet reads as a centered card; in a phone-width
+  // window it rises from the bottom. Either way the calling page stays visible.
+  const sheetWide = useMediaQuery('(min-width: 720px)')
   // The body shows the page BEHIND the sheet; the overlay carries the sheet.
   const bodyPage = sheetMode ? behindPage : shownPage
   const bodySpec = sheetMode ? behindSpec : shown
@@ -5261,16 +5265,20 @@ export function Runtime({
         </Modal.Container>
       </Modal.Backdrop>
 
-      {/* Short forms arrive as a full-screen sheet over the page they were
-          opened from; closing it (X, Escape, Android back, Cancel) = goBack. */}
+      {/* Short forms arrive as a modal sheet over the page they were opened
+          from — a centered card in a wide window, a bottom sheet on a phone —
+          with the calling page kept visible behind the blurred backdrop, so
+          it reads as a modal and never as a new full window; closing it
+          (X, Escape, Android back, Cancel) = goBack. */}
       {sheetMode && shown && shownPage ? (
         <Modal.Backdrop
           isOpen
+          variant="blur"
           onOpenChange={(open) => {
             if (!open) goBack()
           }}
         >
-          <Modal.Container size="full" placement="center" scroll="inside">
+          <Modal.Container size="lg" placement={sheetWide ? 'center' : 'bottom'} scroll="inside">
             <Modal.Dialog aria-label={shownPage.name}>
               <Modal.CloseTrigger />
               <Modal.Header>
