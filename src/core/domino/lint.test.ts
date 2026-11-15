@@ -71,3 +71,35 @@ describe('lintDomino', () => {
     ).toEqual([])
   })
 })
+
+describe('[api] external = https in lint', () => {
+  it('asks for external when a full-URL template has no opt-in', () => {
+    const msgs = lint('[meta]\nname = X\n[data]\nfeed = GET {rssUrl} every 20s\n')
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toContain('add [api] external = https')
+  })
+
+  it('accepts full-URL templates once the file opts in', () => {
+    const msgs = lint(
+      '[meta]\nname = X\n[api]\nexternal = https\n[data]\nfeed = GET {rssUrl} every 20s\n'
+    )
+    expect(msgs).toEqual([])
+  })
+
+  it('checks literal absolute URLs against the guard when external is on', () => {
+    const msgs = lint(
+      '[meta]\nname = X\n[api]\nexternal = https\n[data]\nx = GET https://169.254.169.254/latest\n'
+    )
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toContain('external guard')
+  })
+
+  it('points at external for a public absolute URL the allow list cannot cover', () => {
+    const msgs = lint(
+      '[meta]\nname = X\n[api]\nbase_url = https://api.test\nallow = /x\n' +
+        '[data]\nm = GET https://api.open-meteo.com/v1/forecast\n'
+    )
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toContain('external = https')
+  })
+})

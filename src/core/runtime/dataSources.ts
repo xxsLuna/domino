@@ -71,3 +71,17 @@ export function sourcesReadingState(decls: readonly DataSourceDecl[], stateKey: 
   const token = `{${stateKey}}`
   return decls.filter((d) => d.path.includes(token)).map((d) => d.key)
 }
+
+/**
+ * True when a [data] path is a URL template rather than a base-relative path:
+ * a literal scheme (`https://host/v1/items`) or a leading `{stateKey}` that
+ * supplies the whole URL (`{rssUrl}` — the RSS-reader shape, where the user
+ * pastes the feed address). `[api] external = https` is what makes these
+ * fetchable; the scheme/host part can never be percent-encoded, so such
+ * templates interpolate RAW up to the `?` and encoded after it.
+ */
+export function isUrlTemplate(path: string): boolean {
+  return (
+    /^[a-z][a-z0-9+.-]*:\/\/[^/?#]/i.test(path) || /^\{[A-Za-z0-9_]+\}(\/|\?|#|$)/.test(path)
+  )
+}

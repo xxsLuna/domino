@@ -634,3 +634,22 @@ describe('[script] call commands', () => {
     ])
   })
 })
+
+describe('[api] external', () => {
+  it('reads external = https as the opt-in flag', () => {
+    const res = parseDomino('[meta]\nname = X\n[api]\nbase_url = https://api.test\nexternal = https\n')
+    expect(res.errors).toEqual([])
+    expect(res.domino?.api.external).toBe(true)
+  })
+
+  it('treats off-values as no opt-in', () => {
+    const res = parseDomino('[meta]\nname = X\n[api]\nallow = /x\nexternal = false\n')
+    expect(res.errors).toEqual([])
+    expect(res.domino?.api.external).toBeUndefined()
+  })
+
+  it('rejects an unknown external value', () => {
+    const res = parseDomino('[meta]\nname = X\n[api]\nexternal = http\n')
+    expect(res.errors.some((e) => e.message.includes('external'))).toBe(true)
+  })
+})

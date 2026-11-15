@@ -80,6 +80,7 @@ import {
 import { loadDataSnaps, persistableDataSnaps, saveDataSnaps } from '@core/runtime/dataSnaps'
 import { recoverRowIdentity } from '@core/runtime/rowIdentity'
 import {
+  isUrlTemplate,
   planSourceFetch,
   settleWithin,
   sourcesReadingState,
@@ -1057,6 +1058,7 @@ export function Runtime({
     () => ({
       baseUrl: domino.api.baseUrl,
       allow: domino.api.allow,
+      external: domino.api.external,
       token: loggedInRef.current ? sessionTokenRef.current : null
     }),
     [domino]
@@ -1109,6 +1111,22 @@ export function Runtime({
     return ready ? filled : null
   }, [])
 
+  /**
+   * URL templates (`GET {rssUrl}`, `https://host/v1/{ver}/items`) interpolate
+   * RAW up to the first `?` — a scheme/host cannot survive percent-encoding —
+   * and encoded after it, so query values stay safe. The external guard in
+   * executeApi validates the whole filled URL before anything leaves.
+   */
+  const interpolateUrlPath = useCallback(
+    (path: string): string | null => {
+      const cut = path.indexOf('?')
+      const head = interpolateDataPath(cut === -1 ? path : path.slice(0, cut), true)
+      const tail = cut === -1 ? '' : interpolateDataPath(path.slice(cut))
+      return head === null || tail === null ? null : head + tail
+    },
+    [interpolateDataPath]
+  )
+
   /** Store one source's snapshot and stamp its fetch time (ref-first: async-safe). */
   const commitSourceSnapshot = useCallback(
     (key: string, value: unknown): void => {
@@ -1159,7 +1177,9 @@ export function Runtime({
           ? decl.path === '@subscriptions'
             ? `@subscriptions ${feedsRef.current.map((f) => f.url).join(' ')}`
             : (interpolateDataPath(decl.path, true) ?? '')
-          : (interpolateDataPath(decl.path) ?? '')
+          : (isUrlTemplate(decl.path)
+              ? interpolateUrlPath(decl.path)
+              : interpolateDataPath(decl.path)) ?? ''
       const running = sourceInflightRef.current.get(key)
       if (running && running.path === identity) return running.promise
       const seq = (sourceSeqRef.current[key] ?? 0) + 1
@@ -1228,7 +1248,14 @@ export function Runtime({
       sourceInflightRef.current.set(key, { path: identity, promise })
       return promise
     },
-    [apiRuntime, commitSourceSnapshot, domino.data, interpolateDataPath, reportApiResult]
+    [
+      apiRuntime,
+      commitSourceSnapshot,
+      domino.data,
+      interpolateDataPath,
+      interpolateUrlPath,
+      reportApiResult
+    ]
   )
 
   /** Refresh every declared source in the background (bound cells update as each lands). */

@@ -25,6 +25,13 @@ export interface AuthSection {
 export interface ApiSection {
   baseUrl?: string
   allow: string[]
+  /**
+   * `[api] external = https` — the file opts into ABSOLUTE-URL calls: call_api
+   * and [data] sources may address public https APIs directly (feeds, weather,
+   * payment sandboxes…) without a proxy backend. Enforced by @core/net/external;
+   * the login token is never carried to a non-base origin.
+   */
+  external?: boolean
 }
 
 export interface UiSection {
