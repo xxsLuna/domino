@@ -5,7 +5,8 @@
  * context (executeApi's response cap is 400k chars). Every consumer of this
  * module wants the same narrow shape: feed title plus a bounded item list.
  * Full-HTML entries (`content:encoded`) are deliberately dropped; a feed item
- * is a headline and a link, not an article.
+ * is a headline, a link, and — when the feed carries one — a picture and a
+ * byline, because a news reader without thumbnails is not a news reader.
  *
  * DOMParser handles CDATA, entity decoding and namespaces natively, so this
  * module stays a thin extractor. It runs in the renderer (Chromium-family on
@@ -18,6 +19,10 @@ export interface FeedItem {
   link: string
   date?: string
   summary?: string
+  /** Article image when the feed carries one (media:*, enclosure, or an <img>). */
+  image?: string
+  /** Byline (dc:creator / author / author name) when present. */
+  author?: string
 }
 
 export interface FeedData {
@@ -29,6 +34,13 @@ export interface FeedData {
 const MAX_ITEMS = 50
 const MAX_TITLE_CHARS = 200
 const MAX_SUMMARY_CHARS = 300
+const MAX_URL_CHARS = 600
+
+/** An image address only if it's fetchable as one. */
+function httpImage(url: string | null | undefined): string {
+  const u = (url ?? '').trim()
+  return /^https?:\/\/\S+$/i.test(u) ? u.slice(0, MAX_URL_CHARS) : ''
+}
 
 /**
  * Descendants whose local name matches, prefix-agnostic (`atom:link` counts
@@ -84,17 +96,60 @@ function itemLink(item: Element): string {
   return (preferred ?? links[0])?.getAttribute('href')?.trim() ?? ''
 }
 
+/**
+ * The item's picture, wherever feeds hide it: media:thumbnail → media:content
+ * (image type first) → image enclosure → the first <img> inside the
+ * description/content HTML. Only http(s) addresses survive.
+ */
+function itemImage(el: Element): string {
+  for (const t of byLocalName(el, 'thumbnail')) {
+    const u = httpImage(t.getAttribute('url'))
+    if (u) return u
+  }
+  const contents = byLocalName(el, 'content').filter((c) => httpImage(c.getAttribute('url')))
+  const typed = contents.find((c) => (c.getAttribute('type') ?? '').startsWith('image/'))
+  if (typed) return httpImage(typed.getAttribute('url'))
+  for (const encl of byLocalName(el, 'enclosure')) {
+    if ((encl.getAttribute('type') ?? '').startsWith('image/')) {
+      const u = httpImage(encl.getAttribute('url'))
+      if (u) return u
+    }
+  }
+  const rawHtml = firstText(el, 'encoded', 'content', 'description', 'summary')
+  if (rawHtml.toLowerCase().includes('<img')) {
+    try {
+      const doc = new DOMParser().parseFromString(rawHtml, 'text/html')
+      const img = doc.getElementsByTagName('img')[0]
+      const u = httpImage(img?.getAttribute('src'))
+      if (u) return u
+    } catch {
+      /* XML-only parser (node tests) — the src regex below still answers. */
+    }
+    // One bounded src read from the raw entry: an HTML fragment an XML parser
+    // rejects (two roots) still names its first image this way.
+    const m = /<img[^>]*\ssrc=["']([^"'>]+)["']/i.exec(rawHtml)
+    const u = httpImage(m?.[1])
+    if (u) return u
+  }
+  return ''
+}
+
 function parseItem(el: Element): FeedItem | null {
   const title = clip(firstText(el, 'title'), MAX_TITLE_CHARS)
   const link = itemLink(el)
   if (!title && !link) return null
   const summary = clip(stripHtml(firstText(el, 'description', 'summary')), MAX_SUMMARY_CHARS)
   const date = firstText(el, 'pubDate', 'updated', 'published', 'date')
+  // dc:creator (RSS) or plain <author>/<name> (Atom).
+  const author = clip(firstText(el, 'creator', 'author', 'name'), MAX_TITLE_CHARS)
+  const image = itemImage(el)
   return {
     title,
     link,
     ...(date ? { date } : {}),
-    ...(summary ? { summary } : {})
+    ...(summary ? { summary } : {}),
+    ...(image ? { image } : {}),
+    ...(author ? { author } : {})
   }
 }
 

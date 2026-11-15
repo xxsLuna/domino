@@ -276,6 +276,7 @@ function liveDataStaticSection(domino: DominoFile): string {
 ${decls}
 - BIND this data instead of embedding it: any prop that shows it — List "items", Table "rows", StatCard "value", KeyValue, headings — takes the exact object {"$data": "<key>.<json path>"} (e.g. "items": {"$data": "feed.items"}). The runtime substitutes the latest value on every render and refreshes it without a model turn, so literal values would go stale.
 - Do NOT call_api for these declared sources — their current snapshots are in the session context below.${feedNote}
+- A source with NO snapshot yet (state-gated sources like "GET {rssUrl}" before the user fills the state) must NEVER be guessed at: no invented columns, no example rows, no field names in bindings for it. Draw what the page can honestly show now — the control that triggers the load plus one placeholder (EmptyState or an Alert "waiting" note) where the data will sit — and nothing more. The runtime runs a silent design turn for this screen the moment the records actually arrive; design the real layout from the real fields in THAT turn.
 `
 }
 
@@ -471,6 +472,27 @@ export function describeToolCall(tc: ToolCall): string {
  * at the model's own bindingWarnings; a scratch history has none, so this
  * prompt lists the gaps (path + the fields the data really holds) directly.
  */
+/**
+ * The silent turn that fires when a [data] source's FIRST real snapshot lands
+ * while a page bound to it was designed without ever seeing it (the blind
+ * placeholder page). The model now holds the actual records — this is the
+ * design turn, not a fix round.
+ */
+export function dataDesignPrompt(pageId: string, key: string): string {
+  return (
+    `BACKGROUND DESIGN (no user is waiting). The [data] source "${key}" is bound by the "${pageId}" page ` +
+    `on screen — that page was built BEFORE any data existed, from nothing but its name. ` +
+    `Its FIRST REAL snapshot is now in the Live data section: every field you see there is real. ` +
+    `Redesign the SAME page id "${pageId}" FROM THE ACTUAL RECORDS — never from what a "${key}" might hold: ` +
+    `pick the layout the records call for (records with image URLs and dates deserve thumbnails, summaries and times — ` +
+    `a List row understands image/summary/date/link on its own and opens link in a new tab; ` +
+    `use pageSize for long lists; bind feed.title where it earns the page heading. Never invent paths the snapshot does not hold — no "items.length" or "total" under a feed: counts belong to a Badge next to a heading, or nowhere), ` +
+    `keep every binding {"$data"}-bound (never copy values), keep the ids [guide] and [actions] rely on, ` +
+    `and keep the control that triggers the load (the form/button that filled the state). ` +
+    `Show only what the snapshot really has: a field absent from the records must not appear in the design.`
+  )
+}
+
 export function bindingRepairPrompt(pageId: string, gaps: BindingGap[]): string {
   const list = gaps.map((g) => `- ${gapMessage(g)}`).join('\n')
   return (

@@ -170,7 +170,8 @@ on auth_failed -> goto login
 ; {stateKey} in a path fills from page state, and the source loads only once that key is set.
 ; With [api] external = https the path may be a full public URL, or a whole-URL template
 ; fed by state ("feed = GET {rssUrl} every 20s" — the user pastes the address); an XML
-; feed body is parsed into {title, items:[{title, link, …}]} automatically, bind it as usual.
+; feed body is parsed into {title, items:[{title, link, date?, summary?, image?, author?}]}
+; automatically — a List bound to items already shows thumbnails, summaries and times.
 ; Screens bind them: {"$data": "<key>.<json path>"}. Only GET (or FEED for RSS) — never POST/PUT/PATCH/DELETE.
 
 [actions]                      ; widget behaviors the RUNTIME runs (no model call)

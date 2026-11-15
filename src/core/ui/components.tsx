@@ -1746,9 +1746,19 @@ interface ListItem {
   description?: string
   icon?: string
   avatar?: string
+  /** Rectangular picture (news/feed records carry `image`) — avatar stays circular. */
+  thumbnail?: string
   meta?: string
   badge?: string
   badgeVariant?: string
+  /** http(s) address of the underlying record — the row opens it externally. */
+  link?: string
+}
+
+/** Only web-fetchable addresses survive into img src / href (hostile feeds). */
+function webUrl(v: unknown): string | undefined {
+  const u = v === undefined ? '' : text(v).trim()
+  return /^https?:\/\/\S+$/i.test(u) ? u : undefined
 }
 
 function toListItems(items: unknown): ListItem[] {
@@ -1756,21 +1766,28 @@ function toListItems(items: unknown): ListItem[] {
   return items.map((it) => {
     if (it === null || typeof it !== 'object') return { title: text(it) }
     const r = it as Record<string, unknown>
+    // Feed-shaped records (RSS/Atom parsed by the runtime) say summary/date/
+    // image/link — the row understands them without the model re-mapping.
+    const description =
+      r.description || r.subtitle || r.summary || r.excerpt
+        ? text(r.description ?? r.subtitle ?? r.summary ?? r.excerpt)
+        : r.value !== undefined && (typeof r.value === 'string' || typeof r.value === 'number')
+          ? text(r.value) // {"label","value"} pair records: show the value, not a bare label
+          : undefined
+    const meta = r.meta || r.time || r.date || r.pubDate ? text(r.meta ?? r.time ?? r.date ?? r.pubDate) : undefined
+    const thumbnail = webUrl(r.thumbnail ?? r.image ?? r.imageUrl)
     return {
       raw: it,
       id: r.id === undefined || r.id === null || r.id === '' ? undefined : text(r.id),
       title: text(r.title ?? r.label ?? r.name ?? r.text),
-      description:
-        r.description || r.subtitle
-          ? text(r.description ?? r.subtitle)
-          : r.value !== undefined && (typeof r.value === 'string' || typeof r.value === 'number')
-            ? text(r.value) // {"label","value"} pair records: show the value, not a bare label
-            : undefined,
+      description,
       icon: r.icon ? text(r.icon) : undefined,
       avatar: r.avatar ? text(r.avatar) : undefined,
-      meta: r.meta || r.time ? text(r.meta ?? r.time) : undefined,
+      ...(thumbnail ? { thumbnail } : {}),
+      meta,
       badge: r.badge !== undefined && r.badge !== '' ? text(r.badge) : undefined,
-      badgeVariant: r.badgeVariant ? text(r.badgeVariant) : undefined
+      badgeVariant: r.badgeVariant ? text(r.badgeVariant) : undefined,
+      link: webUrl(r.link ?? r.url ?? r.href)
     }
   })
 }
@@ -1807,7 +1824,9 @@ export function List({
   const cur = Math.min(pageNum, pages)
   const list = toListItems(paged ? capped.slice((cur - 1) * size, cur * size) : capped)
   const pager = paged ? <PagerStrip current={cur} pages={pages} go={setPageNum} /> : null
-  const rich = list.some((i) => i.description || i.icon || i.avatar || i.badge || i.meta || i.id)
+  const rich = list.some(
+    (i) => i.description || i.icon || i.avatar || i.thumbnail || i.badge || i.meta || i.id || i.link
+  )
 
   // Same contract as Table: an empty (or not-yet-resolved) list says so —
   // a bound list that silently renders nothing reads as a broken app.
@@ -1840,7 +1859,17 @@ export function List({
       {list.map((item, i) => {
         const inner = (
           <>
-            {item.avatar ? (
+            {item.thumbnail ? (
+              <img
+                src={item.thumbnail}
+                alt=""
+                loading="lazy"
+                className="size-12 shrink-0 rounded-lg bg-default object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none'
+                }}
+              />
+            ) : item.avatar ? (
               <HAvatar size="sm">
                 <HAvatar.Image src={item.avatar} alt={item.title} />
                 <HAvatar.Fallback>{initials(item.title)}</HAvatar.Fallback>
@@ -1885,6 +1914,17 @@ export function List({
               >
                 {inner}
               </button>
+            ) : item.link ? (
+              // Feed records carry their own address: the row IS the link —
+              // http(s) only, and a new tab never gets an opener handle.
+              <a
+                href={item.link}
+                target="_blank"
+                rel="noreferrer noopener"
+                className={`${cls} transition-colors hover:bg-default`}
+              >
+                {inner}
+              </a>
             ) : (
               <div className={cls}>{inner}</div>
             )}

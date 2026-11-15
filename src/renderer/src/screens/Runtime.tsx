@@ -22,7 +22,7 @@ import {
   Tooltip
 } from '@heroui/react'
 import { runAgentTurn } from '@core/agent/engine'
-import { bindingRepairPrompt, buildSystemPrompts } from '@core/agent/prompt'
+import { bindingRepairPrompt, buildSystemPrompts, dataDesignPrompt } from '@core/agent/prompt'
 import { executeApi, resolveEndpoint } from '@core/agent/api'
 import {
   bookFields,
@@ -80,6 +80,7 @@ import {
 import { loadDataSnaps, persistableDataSnaps, saveDataSnaps } from '@core/runtime/dataSnaps'
 import { recoverRowIdentity } from '@core/runtime/rowIdentity'
 import {
+  isErrorSnapshot,
   isUrlTemplate,
   planSourceFetch,
   settleWithin,
@@ -169,6 +170,7 @@ import { Icon } from '@core/ui/icons'
 import { themeVars } from '@core/ui/theme'
 import {
   bindingGaps,
+  boundSourceKeys,
   findNode,
   findPage,
   isRefreshFeedsEvent,
@@ -337,6 +339,18 @@ export function Runtime({
    */
   const repairTriesRef = useRef(new Map<string, number>())
   const repairAbortsRef = useRef(new Set<AbortController>())
+  /**
+   * First-real-data design tracking: when each [data] source first answered
+   * with records, when each page design was built, and which (page, source)
+   * design turns are already spent. A page bound to a source whose first
+   * arrival postdates its design was built blind — it gets ONE silent
+   * redesign from the real fields.
+   */
+  const snapFirstAtRef = useRef<Record<string, number>>({})
+  const pageBuiltAtRef = useRef<Record<string, number>>({})
+  /** Source keys with no snapshot when each page was built (it designed blind). */
+  const pageBlindRef = useRef<Record<string, string[]>>({})
+  const designSpentRef = useRef(new Set<string>())
   /** Bound `api:GET …` refreshes: running, and when the last one failed. */
   const apiInflightRef = useRef(new Set<string>())
   const apiFailedAtRef = useRef<Record<string, number>>({})
@@ -728,6 +742,8 @@ export function Runtime({
     // data behind them was the old context's, and pages may bind anew now.
     for (const c of repairAbortsRef.current) c.abort()
     repairTriesRef.current.clear()
+    // …and first-data design turns likewise (fresh pages, fresh data).
+    designSpentRef.current.clear()
   }, [])
 
   const showSpec = useCallback(
@@ -1092,6 +1108,25 @@ export function Runtime({
   }, [])
 
   /**
+   * A page design just landed: stamp the moment and which [data] sources it
+   * could NOT see (no snapshot, or only an error). When such a source later
+   * delivers its first records, this design gets one turn to grow up from the
+   * real fields — nobody should ship a placeholder forever.
+   */
+  const notePageBuilt = useCallback(
+    (pageId: string): void => {
+      pageBuiltAtRef.current[pageId] = Date.now()
+      pageBlindRef.current[pageId] = domino.data
+        .filter((d) => {
+          const v = dataSnapRef.current[d.key]
+          return v === undefined || isErrorSnapshot(v)
+        })
+        .map((d) => d.key)
+    },
+    [domino.data]
+  )
+
+  /**
    * `{stateKey}` interpolations of a [data] path resolve against the live
    * screen state. Any key missing or empty → null: the source isn't ready
    * (no RSS URL typed yet) and fetching would ask the backend for nothing.
@@ -1130,6 +1165,11 @@ export function Runtime({
   /** Store one source's snapshot and stamp its fetch time (ref-first: async-safe). */
   const commitSourceSnapshot = useCallback(
     (key: string, value: unknown): void => {
+      // First REAL records (not an {error}) time-stamp the source: a page
+      // bound to it that was designed before this moment never saw data.
+      if (!isErrorSnapshot(value) && !(key in snapFirstAtRef.current)) {
+        snapFirstAtRef.current[key] = Date.now()
+      }
       dataSnapRef.current = { ...dataSnapRef.current, [key]: value }
       dataAtRef.current = { ...dataAtRef.current, [key]: Date.now() }
       setDataSnap(dataSnapRef.current)
@@ -1668,6 +1708,9 @@ export function Runtime({
                       )
                     : update.spec
                 const merged = withKnownPages(landed, knownRef.current)
+                // These designs just met today's data; sources they could
+                // not see stay on their blind list for a later design turn.
+                for (const p of merged.pages) notePageBuilt(p.id)
                 if (isEdit && cacheKey && editPageId) {
                   const pushed = landEdit(
                     merged,
@@ -1885,6 +1928,7 @@ export function Runtime({
       landEdit,
       llmCacheKey,
       logApi,
+      notePageBuilt,
       prefetchForTurn,
       refreshAfterWrite,
       rememberApiSnapshot,
@@ -2027,25 +2071,35 @@ export function Runtime({
     if (!result.spec || !base) return false
     const merged = mergeBuiltPage(base, result.spec, pageId)
     if (!merged) return false
+    notePageBuilt(pageId)
     knownRef.current = merged.spec
     setCurrentSpec((prev) => (prev ? mergeKnownPage(prev, merged.spec, merged.pageId) : prev))
     return true
-  }, [])
+  }, [notePageBuilt])
 
   /**
-   * One invisible read-only turn that re-binds the page currently on screen:
-   * its data arrived AFTER it was built and its bindings resolve to nothing
-   * (a turn's own fix-round only sees snapshots held at render time — a guide
-   * that overpromises the shape ships "—" columns nobody re-asks about). The
-   * repaired page REPLACES the broken one (mergeKnownPage: the new copy wins
-   * for its id; everything the user is looking at otherwise stays put).
+   * One invisible read-only turn for the page currently on screen — two modes:
+   *  - BINDING REPAIR: data arrived after the build and bindings resolve to
+   *    nothing; the turn re-binds against the real shape (gap-count decides).
+   *  - FIRST-DATA DESIGN (opts.prompt = dataDesignPrompt): the page was built
+   *    blind (its source had no snapshot at design time) and real records
+   *    just landed; the turn designs the layout from the actual fields, and
+   *    is accepted as long as it introduces no new gaps.
+   * The new page REPLACES the old one (mergeKnownPage: the new copy wins for
+   * its id; everything the user is looking at otherwise stays put).
    */
   const runBindingRepair = useCallback(
-    async (pageId: string, gaps: BindingGap[]): Promise<void> => {
+    async (
+      pageId: string,
+      gaps: BindingGap[],
+      opts?: { prompt?: string; acceptStill?: (stillCount: number) => boolean }
+    ): Promise<void> => {
       if (needsApiKey(config)) return
       const controller = new AbortController()
       repairAbortsRef.current.add(controller)
       const signal = controller.signal
+      // Default acceptance: strictly fewer gaps than the broken page had.
+      const acceptStill = opts?.acceptStill ?? ((n: number) => n < gaps.length)
       let usageSeen = 0
       try {
         const knownSchemas = bookFields(schemaBookRef.current)
@@ -2057,7 +2111,7 @@ export function Runtime({
           feeds: feedsRef.current
         })
         const scratch: ChatMessage[] = [
-          { role: 'user', content: bindingRepairPrompt(pageId, gaps) }
+          { role: 'user', content: opts?.prompt ?? bindingRepairPrompt(pageId, gaps) }
         ]
         const api = apiRuntime()
         for await (const update of runAgentTurn({
@@ -2091,7 +2145,8 @@ export function Runtime({
                 dataSnapRef.current,
                 gaps.length || 1
               )
-              if (still.length >= gaps.length) return
+              if (!acceptStill(still.length)) return
+              notePageBuilt(pageId)
               knownRef.current = mergeKnownPage(base, update.spec, pageId)
               setCurrentSpec((prev) =>
                 prev ? mergeKnownPage(prev, update.spec, pageId) : prev
@@ -2138,6 +2193,7 @@ export function Runtime({
       config,
       domino,
       llmCacheKey,
+      notePageBuilt,
       rememberApiSnapshot,
       reportApiResult,
       scheduleSchemaSave
@@ -2145,11 +2201,15 @@ export function Runtime({
   )
 
   /**
-   * Data that lands while a screen is showing can unmask bindings that
-   * resolve to nothing. Whenever snapshots or the shown screen change, check
-   * the SHOWN page (gaps on unopened pages belong to their own visit) and
-   * spend a bounded background turn re-binding it — otherwise the dashes and
-   * empty panels sit there until the user complains about them.
+   * Data that lands while a screen is showing gets that screen redesigned.
+   * Whenever snapshots or the shown screen change, the SHOWN page is checked
+   * (unopened pages wait for their own visit):
+   *  - bindings that resolve to nothing spend a bounded repair turn;
+   *  - a page DESIGNED WITHOUT ITS DATA (built while its source had no
+   *    snapshot, still not reading that source — the placeholder layout it
+   *    drew before any record existed) spends one silent design turn from the
+   *    actual records. A page that already BINDS the source renders the
+   *    arriving record as-is: reopening a built page stays turn-free.
    */
   useEffect(() => {
     if (streaming || needsApiKey(config)) return
@@ -2158,12 +2218,43 @@ export function Runtime({
     const shown = findPage(spec, spec.page)
     if (!shown) return
     const gaps = bindingGaps({ ...spec, pages: [shown], nav: [] }, dataSnapRef.current, 3)
-    if (!gaps.length) return
-    const tries = repairTriesRef.current.get(spec.page) ?? 0
-    if (tries >= 3) return
-    repairTriesRef.current.set(spec.page, tries + 1)
-    void runBindingRepair(spec.page, gaps)
-  }, [streaming, currentSpec, dataSnap, config, runBindingRepair])
+    if (gaps.length) {
+      const tries = repairTriesRef.current.get(spec.page) ?? 0
+      if (tries >= 3) return
+      repairTriesRef.current.set(spec.page, tries + 1)
+      void runBindingRepair(spec.page, gaps)
+      return
+    }
+    // No data is on screen for this page to break — safe to (re)design from
+    // the first snapshot of a source this design never saw. Pages restored
+    // from an older session carry no blind list (undefined): every source
+    // arriving fresh this session counts — a source that was already
+    // restored holds its -1 sentinel and never fires.
+    const built = pageBuiltAtRef.current[spec.page] ?? 0
+    const blind = pageBlindRef.current[spec.page]
+    const bound = boundSourceKeys(shown)
+    for (const d of domino.data) {
+      const at = snapFirstAtRef.current[d.key]
+      if (!at || at <= built) continue
+      if (blind && !blind.includes(d.key)) continue
+      // The page already reads this source: the arriving record renders into
+      // the bindings as they stand (wrong fields would surface as gaps and
+      // go through repair). Redesigning it here would bill a turn to every
+      // first open of a pre-built detail page — the row-open contract says
+      // built screens cost zero. Only the placeholder that never referenced
+      // the source needs its look decided from the real records.
+      if (bound.has(d.key)) continue
+      const once = `${spec.page}::${d.key}`
+      if (designSpentRef.current.has(once)) continue
+      designSpentRef.current.add(once)
+      void runBindingRepair(spec.page, gaps, {
+        prompt: dataDesignPrompt(spec.page, d.key),
+        // A redesign that would ship new dead bindings is no redesign.
+        acceptStill: (still) => still <= gaps.length
+      })
+      break
+    }
+  }, [streaming, currentSpec, dataSnap, config, runBindingRepair, domino.data])
 
   /**
    * A finished predicted press nobody adopted: its destination joins the
@@ -2368,6 +2459,14 @@ export function Runtime({
         ...(signedOutBoot ? {} : lastData),
         ...apiSnapBindings(snaps),
         ...dataSnapRef.current
+      }
+      // Restored real data predates every page design: a source that came
+      // back with records was already visible to the design that is being
+      // restored, so it must not trigger a first-data redesign every reopen
+      // (-1 = "known before anything was built this session"). A restored
+      // {error} is NOT data — its next real answer still earns the design turn.
+      for (const [k, v] of Object.entries(signedOutBoot ? {} : lastData)) {
+        if (!(k in snapFirstAtRef.current) && !isErrorSnapshot(v)) snapFirstAtRef.current[k] = -1
       }
       graphEdgesRef.current = edges
       // An export "with the app" seeds this device's action graph — what this
@@ -2932,6 +3031,10 @@ export function Runtime({
       dataSnapRef.current = {}
       dataAtRef.current = {}
       apiFailedAtRef.current = {}
+      // Data leaves the device for this user: first-arrival times and spent
+      // design turns go with it (a sign-in gets its own design pass).
+      snapFirstAtRef.current = {}
+      designSpentRef.current.clear()
       setDataSnap({})
       // Later fetches start fresh, without the token — never joining (or
       // being outrun by) a signed-in request still in flight.

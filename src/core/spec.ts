@@ -771,6 +771,23 @@ export function gapMessage(g: BindingGap): string {
   )
 }
 
+/**
+ * Top-level source keys bound by any {"$data"} path inside a node tree.
+ * The first-data design pass asks "does the shown page bind source X?" with it.
+ */
+export function boundSourceKeys(node: unknown, out = new Set<string>(), depth = 0): Set<string> {
+  if (depth > 24 || node === null || typeof node !== 'object') return out
+  const path = dataBinding(node)
+  if (path !== null) {
+    out.add(/^[^[.]*/.exec(path)?.[0] ?? '')
+    return out
+  }
+  for (const v of Array.isArray(node) ? node : Object.values(node)) {
+    boundSourceKeys(v, out, depth + 1)
+  }
+  return out
+}
+
 /** Field names of a value: object keys, or the first row's keys for arrays. */
 function shapeFields(v: unknown): string[] {
   if (Array.isArray(v)) return v.length && isRecord(v[0]) ? Object.keys(v[0]) : []

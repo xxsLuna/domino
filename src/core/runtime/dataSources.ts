@@ -72,6 +72,17 @@ export function sourcesReadingState(decls: readonly DataSourceDecl[], stateKey: 
   return decls.filter((d) => d.path.includes(token)).map((d) => d.key)
 }
 
+/** A snapshot that carries nothing but an error — never counts as real data. */
+export function isErrorSnapshot(v: unknown): boolean {
+  return (
+    v !== null &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    'error' in (v as Record<string, unknown>) &&
+    Object.keys(v as Record<string, unknown>).length === 1
+  )
+}
+
 /**
  * True when a [data] path is a URL template rather than a base-relative path:
  * a literal scheme (`https://host/v1/items`) or a leading `{stateKey}` that

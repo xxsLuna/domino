@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DataSourceDecl } from '../domino/types'
 import {
+  isErrorSnapshot,
   isUrlTemplate,
   planSourceFetch,
   settleWithin,
@@ -65,5 +66,15 @@ describe('isUrlTemplate', () => {
     expect(isUrlTemplate('/feeds/{id}')).toBe(false)
     expect(isUrlTemplate('items/{id}/feed')).toBe(false)
     expect(isUrlTemplate('feed')).toBe(false)
+  })
+})
+
+describe('isErrorSnapshot', () => {
+  it('recognizes error-only snapshots', () => {
+    expect(isErrorSnapshot({ error: 'HTTP 400' })).toBe(true)
+    expect(isErrorSnapshot({ error: 'unreachable', items: [] })).toBe(false)
+    expect(isErrorSnapshot({ title: 'T', items: [] })).toBe(false)
+    expect(isErrorSnapshot(null)).toBe(false)
+    expect(isErrorSnapshot([])).toBe(false)
   })
 })

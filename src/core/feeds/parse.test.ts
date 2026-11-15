@@ -137,3 +137,59 @@ describe('parseFeed', () => {
     expect(parseFeed('')).toBeNull()
   })
 })
+
+describe('item images and bylines', () => {
+  it('takes media:content image urls and dc:creator (the wire feed shape)', () => {
+    const xml = `<rss xmlns:media="http://search.yahoo.com/mrss/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <channel><title>News</title>
+        <item>
+          <title>Story</title><link>https://n.test/1</link>
+          <dc:creator>Reporter</dc:creator>
+          <media:content url="https://img.test/1.jpg" type="image/jpeg"/>
+        </item>
+        <item>
+          <title>No media</title><link>https://n.test/2</link>
+          <media:content url="https://v.test/2.mp4" type="video/mp4"/>
+        </item>
+      </channel></rss>`
+    const feed = parseFeed(xml)
+    expect(feed?.items[0].image).toBe('https://img.test/1.jpg')
+    expect(feed?.items[0].author).toBe('Reporter')
+    expect(feed?.items[1].image).toBeUndefined()
+  })
+
+  it('prefers media:thumbnail, then image enclosures', () => {
+    const xml = `<rss xmlns:media="urn:media"><channel><title>T</title>
+      <item><title>A</title><link>https://a.test</link>
+        <media:content url="https://big.test/a.jpg" type="image/jpeg"/>
+        <media:thumbnail url="https://thumb.test/a.jpg"/>
+      </item>
+      <item><title>B</title><link>https://b.test</link>
+        <enclosure url="https://enc.test/b.png" type="image/png" length="1"/>
+      </item>
+    </channel></rss>`
+    const feed = parseFeed(xml)
+    expect(feed?.items[0].image).toBe('https://thumb.test/a.jpg')
+    expect(feed?.items[1].image).toBe('https://enc.test/b.png')
+  })
+
+  it('falls back to the first img in the description html', () => {
+    const xml = `<rss><channel><title>T</title>
+      <item><title>A</title><link>https://a.test</link>
+        <description><![CDATA[<p>hi</p><img src="https://d.test/x.gif" alt="x"/>]]></description>
+      </item>
+    </channel></rss>`
+    const feed = parseFeed(xml)
+    expect(feed?.items[0].image).toBe('https://d.test/x.gif')
+  })
+
+  it('drops non-http image addresses', () => {
+    const xml = `<rss><channel><title>T</title>
+      <item><title>A</title><link>https://a.test</link>
+        <enclosure url="javascript:alert(1)" type="image/png" length="1"/>
+      </item>
+    </channel></rss>`
+    const feed = parseFeed(xml)
+    expect(feed?.items[0].image).toBeUndefined()
+  })
+})
