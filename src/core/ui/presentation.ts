@@ -45,3 +45,34 @@ export function isModalPresentation(page: PageSpec): boolean {
   const fields = formFieldCount(page)
   return fields >= 1 && fields <= MODAL_MAX_FIELDS
 }
+
+/**
+ * Feed timestamps arrive as RFC-822/ISO text ("Sun, 15 Nov 2026 11:17:23
+ * +0900"); shown verbatim they read like a crash log. When a meta string
+ * parses as a date AND looks like one (a full date or a weekday/month name —
+ * "09:00" and "2 hours ago" stay as written), render it in the viewer's own
+ * calendar format instead.
+ */
+export function prettyTime(raw: string): string {
+  const s = raw.trim()
+  if (
+    s.length < 10 ||
+    !/\d{4}-\d{2}-\d{2}|\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/i.test(
+      s
+    )
+  ) {
+    return raw
+  }
+  const t = Date.parse(s)
+  if (Number.isNaN(t)) return raw
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(new Date(t))
+  } catch {
+    return raw
+  }
+}

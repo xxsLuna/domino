@@ -47,6 +47,7 @@ import {
 import type { CardNode } from '../spec'
 import { useCell, useLayout, useRuntime, useStateKeys } from './context'
 import { Icon } from './icons'
+import { prettyTime } from './presentation'
 
 export { RuntimeContext, useRuntime, type Runtime } from './context'
 
@@ -1768,13 +1769,20 @@ function toListItems(items: unknown): ListItem[] {
     const r = it as Record<string, unknown>
     // Feed-shaped records (RSS/Atom parsed by the runtime) say summary/date/
     // image/link — the row understands them without the model re-mapping.
-    const description =
+    const feedDesc =
       r.description || r.subtitle || r.summary || r.excerpt
-        ? text(r.description ?? r.subtitle ?? r.summary ?? r.excerpt)
+        ? text(r.description ?? r.subtitle ?? r.summary ?? r.excerpt).trim()
+        : undefined
+    const description =
+      feedDesc !== undefined
+        ? // feed summaries that are barely glyphs left ("(") render as noise
+          feedDesc.length > 1
+          ? feedDesc
+          : undefined
         : r.value !== undefined && (typeof r.value === 'string' || typeof r.value === 'number')
           ? text(r.value) // {"label","value"} pair records: show the value, not a bare label
           : undefined
-    const meta = r.meta || r.time || r.date || r.pubDate ? text(r.meta ?? r.time ?? r.date ?? r.pubDate) : undefined
+    const meta = r.meta || r.time || r.date || r.pubDate ? prettyTime(text(r.meta ?? r.time ?? r.date ?? r.pubDate)) : undefined
     const thumbnail = webUrl(r.thumbnail ?? r.image ?? r.imageUrl)
     return {
       raw: it,
