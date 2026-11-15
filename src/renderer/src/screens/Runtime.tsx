@@ -172,6 +172,7 @@ import {
   bindingGaps,
   boundSourceKeys,
   droppedDataSources,
+  droppedRecordViews,
   findNode,
   findPage,
   isRefreshFeedsEvent,
@@ -1721,11 +1722,11 @@ export function Runtime({
                   // was looking at deleted their records rather than restyling
                   // them: the screen stays exactly as it was, and the banner
                   // says what the rejected draft had dropped.
-                  const lost = droppedDataSources(
-                    editBefore,
-                    findPage(merged, editPageId),
-                    dataSnapRef.current
-                  )
+                  const target = findPage(merged, editPageId)
+                  const lost = [
+                    ...droppedDataSources(editBefore, target, dataSnapRef.current),
+                    ...droppedRecordViews(editBefore, target, dataSnapRef.current)
+                  ]
                   if (lost.length) {
                     completed = false
                     failTurn(t('rt.editKeptData', { keys: lost.join(', ') }), cacheKey)
@@ -2170,7 +2171,11 @@ export function Runtime({
               // reading a source the screen was drawing would replace a
               // screen full of records with a pretty empty one.
               const shownPage = base.pages.find((p) => p.id === pageId)
-              if (droppedDataSources(shownPage, repaired, dataSnapRef.current).length) return
+              if (
+                droppedDataSources(shownPage, repaired, dataSnapRef.current).length ||
+                droppedRecordViews(shownPage, repaired, dataSnapRef.current).length
+              )
+                return
               notePageBuilt(pageId)
               knownRef.current = mergeKnownPage(base, update.spec, pageId)
               setCurrentSpec((prev) =>

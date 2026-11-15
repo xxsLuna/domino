@@ -3,6 +3,7 @@ import {
   bindingGaps,
   describeUiSpecProblem,
   droppedDataSources,
+  droppedRecordViews,
   findNode,
   isBackEvent,
   isCancelEvent,
@@ -625,5 +626,61 @@ describe('a page written like a node keeps its body', () => {
       ]
     })
     expect(spec.pages[0].layout.map((n) => n.id)).toEqual(['a'])
+  })
+})
+
+describe('droppedRecordViews (records must still land on screen)', () => {
+  const pg = (nodes: CardNode[]) => ({ id: 'feed', name: 'Feed', layout: nodes })
+  const header = {
+    name: 'PageHeader',
+    id: 'h',
+    props: { title: '실시간 피드', description: { $data: 'feed.title' } }
+  } as CardNode
+  const list = { name: 'List', id: 'l', props: { items: { $data: 'feed.items' } } } as CardNode
+  const emptyList = { name: 'List', id: 'l2', props: { items: { $data: 'notes.items' } } } as CardNode
+  const sources = {
+    feed: { title: 'T', items: [{ title: 'a' }, { title: 'b' }] },
+    notes: { items: [] }
+  }
+
+  it('refuses a redesign that kept the header binding and deleted the list', () => {
+    expect(droppedRecordViews(pg([header, list]), pg([header]), sources)).toEqual(['feed.items'])
+  })
+
+  it('lets a restyle that swaps List for a Table through', () => {
+    const table = { name: 'Table', id: 't', props: { rows: { $data: 'feed.items' } } } as CardNode
+    expect(droppedRecordViews(pg([list]), pg([table]), sources)).toEqual([])
+  })
+
+  it('says nothing when there were no rows to lose', () => {
+    expect(droppedRecordViews(pg([emptyList]), pg([header]), sources)).toEqual([])
+    expect(droppedRecordViews(null, pg([header]), sources)).toEqual([])
+  })
+})
+
+describe('a binding written as text never reaches the screen', () => {
+  it('drops an embedded binding object and a stream-cut brace', () => {
+    const spec = validateUiSpec({
+      page: 'p',
+      pages: [
+        {
+          id: 'p',
+          name: 'P',
+          layout: [
+            {
+              name: 'Paragraph',
+              id: 'a',
+              props: { text: '20초마다 자동 갱신됩니다 · 총 {"$data": "feed.items.length"}건' }
+            },
+            { name: 'Paragraph', id: 'b', props: { text: '총 {' } },
+            { name: 'Paragraph', id: 'c', props: { text: 'use {name} to filter' } }
+          ]
+        }
+      ]
+    })
+    const [a, b, c] = spec.pages[0].layout
+    expect(a.props?.text).toBe('20초마다 자동 갱신됩니다')
+    expect(b.props?.text).toBe('총')
+    expect(c.props?.text).toBe('use {name} to filter')
   })
 })

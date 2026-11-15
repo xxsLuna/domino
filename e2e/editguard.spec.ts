@@ -42,4 +42,27 @@ test.describe('an edit never deletes the records on screen', () => {
     ).toBeVisible()
     await expect(page.getByRole('button', { name: '다시 시도' })).toBeVisible()
   })
+
+  test('a draft that keeps a header binding but deletes the row component is refused too', async ({
+    page,
+    request
+  }) => {
+    test.setTimeout(120_000)
+    await seedMockLlm(page)
+    await page.goto('/')
+    await page.getByLabel('domino URL').fill(ROW_APP)
+    await page.getByRole('button', { name: '열기' }).click()
+
+    const rows = page.locator('.runtime-body ul li button')
+    await expect(rows.first()).toBeVisible({ timeout: 20_000 })
+    const rowCount = await rows.count()
+
+    // This draft still reads `memos` (a header binding), so only the finer
+    // rule — rows must land somewhere — can catch it.
+    await submitEdit(page, request, 'KEEP THE HEADER and make it prettier')
+
+    await expect(rows).toHaveCount(rowCount, { timeout: 10_000 })
+    await expect(page.getByText('Much prettier')).toHaveCount(0)
+    await expect(page.locator('.runtime-banner', { hasText: '적용하지 않았습니다' })).toBeVisible()
+  })
 })

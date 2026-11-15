@@ -500,6 +500,23 @@ function pickSpec(messages) {
       ])
       return { ...bare, nav: ROW_NAV }
     }
+    // The subtler draft: the source is still "read" (a header binding), yet the
+    // component that drew the rows is gone — the records left the screen anyway.
+    if (/KEEP[- ]THE[- ]HEADER/i.test(request)) {
+      const bare = page(target, 'Memos', [
+        {
+          name: 'PageHeader',
+          id: `${target}-header`,
+          props: {
+            title: 'Much prettier',
+            description: { $data: 'memos.memos' },
+            badge: { $data: 'memos.memos' }
+          },
+          grid: { x: 0, y: 0, w: 12, h: 1 }
+        }
+      ])
+      return { ...bare, nav: ROW_NAV }
+    }
     const builders = { main: dashboardSpec, leads: leadsSpec, settings: settingsSpec }
     // An app-wide request ("red theme everywhere") comes back as EVERY page
     // changed — that multi-page result is what the runtime merges.

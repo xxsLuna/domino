@@ -486,7 +486,7 @@ export function dataDesignPrompt(pageId: string, key: string): string {
     `Redesign the SAME page id "${pageId}" FROM THE ACTUAL RECORDS — never from what a "${key}" might hold: ` +
     `pick the layout the records call for (records with image URLs and dates deserve thumbnails, summaries and times — ` +
     `a List row understands image/summary/date/link on its own and opens link in a new tab; ` +
-    `use pageSize for long lists; bind feed.title where it earns the page heading. Never invent paths the snapshot does not hold — no "items.length" or "total" under a feed: counts belong to a Badge next to a heading, or nowhere), ` +
+    `use pageSize for long lists; bind feed.title where it earns the page heading. Never invent paths the snapshot does not hold — no "items.length" or "total" under a feed: counts belong to a Badge next to a heading, or nowhere, and a binding is ALWAYS its own prop object, NEVER written inside a text string — a text prop holding 총 {"$data": …}건 shows the raw braces to the user. The redesigned page must still draw the records through a List/Table of its own — a prettier header with no rows is a worse screen, not a better one), ` +
     `keep every binding {"$data"}-bound (never copy values), keep the ids [guide] and [actions] rely on, ` +
     `and keep the control that triggers the load (the form/button that filled the state). ` +
     `Show only what the snapshot really has: a field absent from the records must not appear in the design.`
