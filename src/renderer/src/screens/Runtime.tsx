@@ -171,6 +171,7 @@ import { themeVars } from '@core/ui/theme'
 import {
   bindingGaps,
   boundSourceKeys,
+  droppedDataSources,
   findNode,
   findPage,
   isRefreshFeedsEvent,
@@ -1565,6 +1566,10 @@ export function Runtime({
     async (prompt: string, cacheKey: string | null, opts?: TurnOptions): Promise<TurnOutcome> => {
       const isEdit = Boolean(cacheKey?.startsWith('edit::'))
       const editPageId = isEdit && cacheKey ? cacheKey.slice('edit::'.length).split('::')[0] : null
+      /** The screen as it stood when the edit was asked for: the records it
+       *  was drawing are what the edit must never take away. */
+      const editBefore =
+        editPageId && currentSpecRef.current ? findPage(currentSpecRef.current, editPageId) : null
       // Retry re-runs it with the same press attached (edge, cache policy).
       lastTurnRef.current = { prompt, cacheKey, page: currentSpecRef.current?.page ?? null, opts }
       /**
@@ -1712,6 +1717,21 @@ export function Runtime({
                 // not see stay on their blind list for a later design turn.
                 for (const p of merged.pages) notePageBuilt(p.id)
                 if (isEdit && cacheKey && editPageId) {
+                  // A "prettier" screen that stopped reading a source the user
+                  // was looking at deleted their records rather than restyling
+                  // them: the screen stays exactly as it was, and the banner
+                  // says what the rejected draft had dropped.
+                  const lost = droppedDataSources(
+                    editBefore,
+                    findPage(merged, editPageId),
+                    dataSnapRef.current
+                  )
+                  if (lost.length) {
+                    completed = false
+                    failTurn(t('rt.editKeptData', { keys: lost.join(', ') }), cacheKey)
+                    abort.abort()
+                    return 'failed'
+                  }
                   const pushed = landEdit(
                     merged,
                     cacheKey,
@@ -2146,6 +2166,11 @@ export function Runtime({
                 gaps.length || 1
               )
               if (!acceptStill(still.length)) return
+              // Same rule for the silent turns: a redesign that stopped
+              // reading a source the screen was drawing would replace a
+              // screen full of records with a pretty empty one.
+              const shownPage = base.pages.find((p) => p.id === pageId)
+              if (droppedDataSources(shownPage, repaired, dataSnapRef.current).length) return
               notePageBuilt(pageId)
               knownRef.current = mergeKnownPage(base, update.spec, pageId)
               setCurrentSpec((prev) =>

@@ -326,7 +326,14 @@ export function normalizeUiSpec(input: unknown): unknown {
           : undefined
     if (!id) return []
     const name = typeof p.name === 'string' && p.name ? p.name : typeof p.title === 'string' && p.title ? p.title : id
-    return [{ id, name, layout: normalizeNodes(p.layout, 0) }]
+    // A page written like a NODE keeps its body: a model that treats a page as
+    // one more card puts the rows under `children` (or `nodes`), and reading
+    // only `layout` would hand back an empty page that renders nothing.
+    const body =
+      Array.isArray(p.layout) && p.layout.length > 0
+        ? p.layout
+        : (p.children ?? p.nodes ?? p.body ?? p.layout)
+    return [{ id, name, layout: normalizeNodes(body, 0) }]
   })
   // Nav items keyed by `page` or missing a label still say where they go.
   const nav = Array.isArray(input.nav)
@@ -786,6 +793,32 @@ export function boundSourceKeys(node: unknown, out = new Set<string>(), depth = 
     boundSourceKeys(v, out, depth + 1)
   }
   return out
+}
+
+/** Does this snapshot hold anything a screen could actually draw? */
+function holdsRecords(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0
+  if (!isRecord(v)) return false
+  const keys = Object.keys(v)
+  // A failed fetch holds an error, not records: nothing was on screen to lose.
+  return keys.length > 0 && !(keys.length === 1 && keys[0] === 'error')
+}
+
+/**
+ * Sources whose records the screen WAS showing and the rewritten screen shows
+ * NONE of. A "make it prettier" turn that swaps a List for a CardGrid keeps
+ * its binding and is not reported; a screen that stopped reading the source
+ * entirely did not restyle anything — it deleted the user's data from view,
+ * which is never what an edit asked for.
+ */
+export function droppedDataSources(
+  before: PageSpec | null | undefined,
+  after: PageSpec | null | undefined,
+  snapshots: Record<string, unknown>
+): string[] {
+  if (!before || !after) return []
+  const kept = boundSourceKeys(after)
+  return [...boundSourceKeys(before)].filter((k) => !kept.has(k) && holdsRecords(snapshots[k]))
 }
 
 /** Field names of a value: object keys, or the first row's keys for arrays. */

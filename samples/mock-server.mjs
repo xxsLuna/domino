@@ -487,6 +487,19 @@ function pickSpec(messages) {
       }
       return spec
     }
+    // A "prettier" draft that stops reading the page's own [data] source:
+    // the runtime must refuse it and leave the records on screen (e2e/editguard).
+    if (/REMOVE[- ]THE[- ]LIST|목록을? (?:지워|빼|삭제)/i.test(request)) {
+      const bare = page(target, 'Memos', [
+        {
+          name: 'PageHeader',
+          id: `${target}-header`,
+          props: { title: 'Much prettier', description: 'a header and nothing else' },
+          grid: { x: 0, y: 0, w: 12, h: 1 }
+        }
+      ])
+      return { ...bare, nav: ROW_NAV }
+    }
     const builders = { main: dashboardSpec, leads: leadsSpec, settings: settingsSpec }
     // An app-wide request ("red theme everywhere") comes back as EVERY page
     // changed — that multi-page result is what the runtime merges.

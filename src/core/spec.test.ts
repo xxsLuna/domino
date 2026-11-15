@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   bindingGaps,
   describeUiSpecProblem,
+  droppedDataSources,
   findNode,
   isBackEvent,
   isCancelEvent,
@@ -572,5 +573,57 @@ describe('promisedCollectionGap', () => {
   it('reports the promised kind, lower-case wording included', () => {
     const layout = [node('StatCards')] as never
     expect(promisedCollectionGap({ name: 'Leads', purpose: 'list of leads' }, layout)).toBe('List')
+  })
+})
+
+describe('droppedDataSources (an edit keeps the records on screen)', () => {
+  const pg = (nodes: CardNode[]) => ({ id: 'feed', name: 'Feed', layout: nodes })
+  const list = { name: 'List', id: 'l', props: { items: { $data: 'feed.items' } } } as CardNode
+  const notesList = { name: 'List', id: 'n', props: { items: { $data: 'notes' } } } as CardNode
+  const snaps = { feed: { title: 'T', items: [{ title: 'a' }] }, notes: [] }
+
+  it('reports a source the page stopped reading', () => {
+    expect(droppedDataSources(pg([list]), pg([{ name: 'PageHeader', id: 'h' }]), snaps)).toEqual([
+      'feed'
+    ])
+  })
+
+  it('lets a restyle that still reads the source through', () => {
+    const grid = { name: 'CardGrid', id: 'g', props: { items: { $data: 'feed.items' } } } as CardNode
+    expect(droppedDataSources(pg([list]), pg([grid]), snaps)).toEqual([])
+  })
+
+  it('ignores sources that were showing nothing anyway', () => {
+    expect(droppedDataSources(pg([list, notesList]), pg([]), snaps)).toEqual(['feed'])
+    expect(droppedDataSources(pg([notesList]), pg([]), snaps)).toEqual([])
+    expect(droppedDataSources(pg([notesList]), pg([]), { ...snaps, notes: { error: 'HTTP 500' } })).toEqual([])
+    expect(droppedDataSources(null, pg([]), snaps)).toEqual([])
+  })
+})
+
+describe('a page written like a node keeps its body', () => {
+  it('reads children or nodes as the layout when layout is missing', () => {
+    const kids = validateUiSpec({
+      page: 'p',
+      pages: [{ id: 'p', name: 'P', children: [{ name: 'List', id: 'l' }] }]
+    })
+    expect(kids.pages[0].layout.map((n) => n.name)).toEqual(['List'])
+    const alt = validateUiSpec({ page: 'p', pages: [{ id: 'p', name: 'P', nodes: [{ name: 'Card', id: 'c' }] }] })
+    expect(alt.pages[0].layout.map((n) => n.name)).toEqual(['Card'])
+  })
+
+  it('prefers layout when both are present', () => {
+    const spec = validateUiSpec({
+      page: 'p',
+      pages: [
+        {
+          id: 'p',
+          name: 'P',
+          layout: [{ name: 'Card', id: 'a' }],
+          children: [{ name: 'List', id: 'b' }]
+        }
+      ]
+    })
+    expect(spec.pages[0].layout.map((n) => n.id)).toEqual(['a'])
   })
 })
